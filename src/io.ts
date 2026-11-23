@@ -1,14 +1,11 @@
-/**
- * Byte-faithful document I/O.
- *
- * A ledger is edited by agents and read by humans, so every write must change
- * only the lines it means to change. The original file's encoding markers —
- * a UTF-8 BOM, its line-ending style, whether it ends with a newline, and its
- * permission bits — are recorded on read and restored on write.
- */
-
-import { closeSync, fsyncSync, openSync, renameSync, statSync, readFileSync, writeSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  closeSync, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync,
+  readFileSync, renameSync, unlinkSync, writeFileSync, type Stats,
+} from "node:fs";
 import { dirname, join } from "node:path";
+
+export type ExpectedStat = Pick<Stats, "dev" | "ino" | "size" | "mtimeMs" | "ctimeMs">;
 
 export type Document = {
   /** Source with BOM removed and CRLF normalised to LF. */
@@ -16,62 +13,77 @@ export type Document = {
   bom: boolean;
   eol: "\n" | "\r\n";
   finalNewline: boolean;
-  stat: { size: number; mtimeMs: number };
+  stat: ExpectedStat;
 };
 
-export type ExpectedStat = { size: number; mtimeMs: number };
+function sameSnapshot(a: ExpectedStat, b: ExpectedStat): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size &&
+    a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+}
 
 export function readDocument(path: string): Document {
-  const raw = readFileSync(path);
-  const { size, mtimeMs } = statSync(path);
-  let text = raw.toString("utf8");
-  const bom = text.charCodeAt(0) === 0xfeff;
-  if (bom) text = text.slice(1);
-
-  const eol: "\n" | "\r\n" = text.includes("\r\n") ? "\r\n" : "\n";
-  if (eol === "\r\n") text = text.replaceAll("\r\n", "\n");
-
-  const finalNewline = text.endsWith("\n");
-  return { text, bom, eol, finalNewline, stat: { size, mtimeMs } };
-}
-
-/** Rebuild the on-disk byte string from logical lines. */
-export function joinDocument(lines: string[], doc: Pick<Document, "bom" | "eol">): string {
-  const body = lines.join("\n");
-  const out = doc.eol === "\n" ? body : body.replaceAll("\n", "\r\n");
-  return (doc.bom ? "﻿" : "") + out;
-}
-
-/**
- * Write `content` to `path` atomically, keeping its permission bits.
- *
- * `expected`, when supplied, is the stat captured when the file was read. If
- * the file changed in the meantime the write is refused and `stale` is
- * returned, so a concurrent edit is never silently overwritten.
- */
-export function writeAtomically(
-  path: string,
-  content: string,
-  expected?: ExpectedStat,
-): { ok: true } | { ok: false; stale: true } {
-  if (expected) {
-    const now = statSync(path);
-    if (now.size !== expected.size || now.mtimeMs !== expected.mtimeMs) {
-      return { ok: false, stale: true };
-    }
-  }
-
-  const mode = statSync(path).mode & 0o777;
-  const temp = join(dirname(path), `.${process.pid}.${Date.now()}.issuemd.tmp`);
-  const fd = openSync(temp, "w", mode);
+  const fd = openSync(path, "r");
+  let text: string;
+  let stat: Stats;
   try {
-    const bytes = Buffer.from(content, "utf8");
-    let written = 0;
-    while (written < bytes.length) written += writeSync(fd, bytes, written);
-    fsyncSync(fd);
+    stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error("expected a regular file");
+    text = readFileSync(fd, "utf8");
+    if (!sameSnapshot(stat, fstatSync(fd))) throw new Error("E130 file changed while being read");
   } finally {
     closeSync(fd);
   }
-  renameSync(temp, path);
-  return { ok: true };
+  const bom = text.charCodeAt(0) === 0xfeff;
+  if (bom) text = text.slice(1);
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  if (eol === "\r\n") text = text.replaceAll("\r\n", "\n");
+  return { text, bom, eol, finalNewline: text.endsWith("\n"), stat };
+}
+
+/** The line array holds physical lines without a split sentinel at EOF. */
+export function joinDocument(lines: string[], doc: Document): string {
+  const text = lines.join("\n");
+  const body = doc.finalNewline && lines.length > 0 ? text + "\n" : text;
+  return (doc.bom ? "﻿" : "") + (doc.eol === "\r\n" ? body.replaceAll("\n", "\r\n") : body);
+}
+
+function currentFile(path: string): Stats | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+export function writeAtomically(
+  path: string,
+  content: string,
+  expected: ExpectedStat,
+): { ok: true } | { ok: false; stale: true } {
+  const before = currentFile(path);
+  if (before && !before.isFile()) throw new Error("expected a regular file (symbolic links are unsupported)");
+  if (!before || !sameSnapshot(expected, before)) return { ok: false, stale: true };
+
+  const temp = join(dirname(path), `.issuemd-${randomUUID()}.tmp`);
+  const fd = openSync(temp, "wx", 0o600);
+  let renamed = false;
+  try {
+    try {
+      writeFileSync(fd, content, "utf8");
+      fchmodSync(fd, before.mode & 0o7777);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    // An external writer can still run between lstat and rename. Check the
+    // path immediately before replacing it to keep that window as small as possible.
+    const now = currentFile(path);
+    if (!now?.isFile() || !sameSnapshot(expected, now)) return { ok: false, stale: true };
+    renameSync(temp, path);
+    renamed = true;
+    return { ok: true };
+  } finally {
+    if (!renamed) unlinkSync(temp);
+  }
 }

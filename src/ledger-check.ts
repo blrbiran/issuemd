@@ -1,0 +1,285 @@
+import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
+import { parseLedger, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
+
+export const STATUS_CLASSES = {
+  未决: "open",
+  部分解决: "open",
+  观察: "open",
+  已修: "closed",
+  延后: "closed",
+  决定不改: "closed",
+  不是缺陷: "closed",
+  范围外: "closed",
+  撤回: "closed",
+  并入: "closed",
+  未分类: "closed",
+} as const satisfies Record<string, TableKind>;
+const STATUS_LINES = [
+  "| 状态 | 分类 |", "|---|---|",
+  ...Object.entries(STATUS_CLASSES).map(([status, kind]) => `| ${status} | ${kind} |`),
+];
+
+type Ledger = ReturnType<typeof parseLedger>;
+type Options = { strict?: boolean; verifyCommits?: boolean };
+type RowId = { span: IdSpan; row: LedgerRow };
+const flatten = (rows: LedgerRow[]): RowId[] => rows.flatMap((row) => row.ids.map((span) => ({ span, row })));
+
+function checkDuplicateIds(entries: RowId[], kind: TableKind, errors: Diagnostic[]) {
+  const rightmost = new Map<string, number>();
+  for (const { span, row } of [...entries].sort((a, b) => compareIds(a.span, b.span) || a.row.line - b.row.line)) {
+    const end = rightmost.get(span.suffix) ?? 0;
+    if (span.start <= end) {
+      errors.push({ code: "E103", line: row.line, id: idText(span), message: `Duplicate ID in ${kind} table` });
+    }
+    rightmost.set(span.suffix, Math.max(end, span.end));
+  }
+}
+
+function checkHeadings(ledger: Ledger) {
+  const { sections, errors } = ledger;
+  const body = sections.find((section) => section.level === 2 && section.title === "正文")!;
+  const bodies: { id: IdSpan; title: string; line: number; end: number }[] = [];
+  for (const section of sections) {
+    const { level, title, line_start: line } = section;
+    if (/[（(]\d+[）)]\s*$/.test(title)) {
+      errors.push({ code: "E121", line, message: "Heading contains a count; use a stable title" });
+    }
+    const inBody = line > body.line_start && line <= body.line_end;
+    const issue = level === 3 ? /^Issue\s+([^:\s]+)\s*:\s*(.*)$/.exec(title) : null;
+    if (!inBody) {
+      if (level === 3 && /^Issue(?:\s|$)/.test(title)) {
+        errors.push({ code: "E123", line, message: "Issue headings belong in 正文" });
+      }
+      continue;
+    }
+    if (!issue) {
+      errors.push({ code: "E110", line, message: "Only Issue headings are allowed in 正文; use bold labels for sections" });
+      continue;
+    }
+    const id = parseId(issue[1]);
+    if (!id) {
+      errors.push({ code: "E109", line, message: `Invalid issue ID: ${issue[1]}` });
+      continue;
+    }
+    bodies.push({ id, title: issue[2], line, end: section.line_end });
+  }
+  const headingLines = new Set(sections.map(({ line_start }) => line_start));
+  for (let line = body.line_start + 2; line <= body.line_end; line++) {
+    if (!ledger.visible.has(line) || !ledger.visible.has(line - 1) || headingLines.has(line - 1)) continue;
+    const text = ledger.lines[line - 2];
+    // A Setext underline follows a paragraph on the immediately preceding
+    // line. A blank line, an ATX heading, or another block starter ends it.
+    const paragraph = /^(?: {0,3}\S)/.test(text) &&
+      !/^ {0,3}(?:[>|<]|[-*+]\s|\d+[.)]\s|(?:-+|=+|\*{3,}|_{3,})\s*$)/.test(text);
+    if (paragraph && /^ {0,3}(?:-+|=+)[ \t]*$/.test(ledger.lines[line - 1])) {
+      errors.push({ code: "E110", line: line - 1, message: "Setext headings are not allowed in 正文" });
+    }
+  }
+  return { body, bodies };
+}
+
+function checkStatusBlock(ledger: Ledger) {
+  const { lines, sections, visible, errors } = ledger;
+  const status = sections.find((section) => section.level === 2 && section.title === "状态口径");
+  if (!status) return;
+  const begin: number[] = [];
+  const end: number[] = [];
+  for (let line = status.line_start + 1; line <= status.line_end; line++) {
+    if (!visible.has(line)) continue;
+    const text = lines[line - 1];
+    if (text === "<!-- issuemd:statuses:begin -->") begin.push(line);
+    if (text === "<!-- issuemd:statuses:end -->") end.push(line);
+  }
+  if (begin.length !== 1 || end.length !== 1 || end[0] <= begin[0] ||
+      lines.slice(begin[0], end[0] - 1).join("\n") !== STATUS_LINES.join("\n")) {
+    errors.push({ code: "E112", line: begin[0] ?? status.line_start, message: "状态口径 block must match the canonical status table" });
+  }
+}
+
+function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind, IdSet>) {
+  const { lines, visible, errors, warnings } = ledger;
+  const { body, bodies } = checkHeadings(ledger);
+  const byId = new Map<string, LedgerRow>();
+  const ranges: RowId[] = [];
+  for (const entry of openEntries) {
+    if (entry.span.start === entry.span.end) byId.set(idText(entry.span), entry.row);
+    else ranges.push(entry);
+  }
+  const bodyIds = new Set<string>();
+  let previous: IdSpan | undefined;
+  for (const entry of bodies) {
+    const { id: span, line, title, end } = entry;
+    const id = idText(span);
+    if (bodyIds.has(id) || (previous && compareIds(previous, span) >= 0)) {
+      errors.push({ code: "E105", line, id, message: "Body issue IDs must be unique and strictly increasing" });
+    }
+    previous = span;
+    bodyIds.add(id);
+    if (ids.closed.has(span)) {
+      errors.push({ code: "E111", line, id, message: "Closed issue still has a body" });
+    } else if (!ids.open.has(span)) {
+      errors.push({ code: "E101", line, id, message: "Body has no index row" });
+    }
+    const row = byId.get(id) ?? (!span.suffix ? ranges.find(({ span: range }) => range.start <= span.start && span.start <= range.end)?.row : undefined);
+    if (row && foldWhitespace(row.summary) !== foldWhitespace(title)) {
+      errors.push({ code: "E106", line, id, message: "Body title and index summary differ", expected: row.summary, actual: title });
+    }
+    const labels = new Set<string>();
+    for (let current = line + 1; current <= end; current++) {
+      if (!visible.has(current)) continue;
+      const label = /^ {0,3}\*\*([^*]+)\*\*(?:\s*[:：]|\s*$)/.exec(lines[current - 1]);
+      if (!label) continue;
+      if (labels.has(label[1])) warnings.push({ code: "W206", line: current, id, message: `Duplicate body label: ${label[1]}` });
+      labels.add(label[1]);
+    }
+    if (end - line > 300 || Buffer.byteLength(lines.slice(line, end).join("\n")) > 20 * 1024) {
+      warnings.push({ code: "W201", line, id, message: "Issue body exceeds 300 lines or 20 KiB" });
+    }
+  }
+  for (let line = body.line_start + 1; line <= body.line_end; line++) {
+    if (visible.has(line) && /^ {0,3}\*\*状态\*\*/.test(lines[line - 1])) {
+      errors.push({ code: "E107", line, message: "Status belongs in the table" });
+    }
+  }
+  const inOrder = [...bodies].sort((a, b) => compareIds(a.id, b.id));
+  const firstMissing = (span: IdSpan): number | undefined => {
+    if (span.start === span.end) return bodyIds.has(idText(span)) ? undefined : span.start;
+    // A range covers integers only. Skip a contiguous run of body IDs even
+    // when the input range contains billions of missing IDs.
+    let low = 0;
+    let high = inOrder.length;
+    while (low < high) {
+      const mid = low + Math.floor((high - low) / 2);
+      if (inOrder[mid].id.start < span.start) low = mid + 1;
+      else high = mid;
+    }
+    let next = span.start;
+    for (let i = low; i < inOrder.length && next <= span.end; i++) {
+      const id = inOrder[i].id;
+      if (id.start > next) break;
+      if (!id.suffix && id.start === next) next++;
+    }
+    return next <= span.end ? next : undefined;
+  };
+  for (const { span, row } of openEntries) {
+    const missing = firstMissing(span);
+    if (missing !== undefined) {
+      errors.push({ code: "E102", line: row.line, id: idText({ ...span, start: missing }), message: "Index ID has no body" });
+    }
+  }
+}
+
+const foldWhitespace = (text: string) => text.trim().replace(/\s+/g, " ");
+const PROGRESS = /已落地|仍缺|仍无|仍逐|仍走/;
+
+function checkRows(ledger: Ledger, ids: Record<TableKind, IdSet>) {
+  const { rows, errors, warnings } = ledger;
+  for (const kind of ["open", "closed"] as const) {
+    for (const row of rows[kind]) {
+      const id = idText(row.ids[0]);
+      const info = { line: row.line, id };
+      const category = Object.hasOwn(STATUS_CLASSES, row.status) ? STATUS_CLASSES[row.status as keyof typeof STATUS_CLASSES] : undefined;
+      if (!category) warnings.push({ ...info, code: "W220", message: `Undeclared status: ${row.status}` });
+      else if (category !== kind) errors.push({ ...info, code: "E112", message: `Status ${row.status} belongs in the ${category} table` });
+      if (kind === "open" && PROGRESS.test(row.summary)) {
+        warnings.push({ ...info, code: "W260", message: "Move progress text from the summary into the body" });
+      }
+      if (kind === "closed" && row.status === "并入") {
+        const target = parseId(/#(\d+[a-z]?)\b/.exec(row.criteria)?.[1] ?? "");
+        if (!target || (!ids.open.has(target) && !ids.closed.has(target))) {
+          warnings.push({ ...info, code: "W210", message: "Merge target is missing from the ledger" });
+        }
+      }
+    }
+  }
+}
+
+function checkGuide(ledger: Ledger) {
+  const { lines, visible, sections, warnings } = ledger;
+  const guide = sections.find((section) => section.level === 2 && section.title === "怎么用");
+  if (!guide) return;
+  const headings = new Set(sections.map(({ level, title }) => `${"#".repeat(level)} ${title}`));
+  for (let line = guide.line_start + 1; line <= guide.line_end; line++) {
+    if (!visible.has(line)) continue;
+    for (const match of lines[line - 1].matchAll(/`(#{1,6} [^`]+)`/g)) {
+      if (!headings.has(match[1])) warnings.push({ code: "W203", line, message: `Guide refers to missing heading: ${match[1]}` });
+    }
+  }
+}
+
+function checkHashes(ledger: Ledger, file: string, verify: boolean) {
+  const hashes = new Map<string, number>();
+  ledger.lines.forEach((line, index) => {
+    if (!ledger.visible.has(index + 1)) return;
+    for (const match of line.matchAll(/\b[0-9a-f]{7,40}\b/g)) {
+      if (!hashes.has(match[0])) hashes.set(match[0], index + 1);
+    }
+  });
+  if (hashes.size === 0) return;
+  for (const [hash, line] of hashes) {
+    ledger.warnings.push({ code: "W202", line, message: `Possible pinned commit hash: ${hash}` });
+  }
+  if (!verify) return;
+  const hashesToCheck = [...hashes.keys()];
+  const result = spawnSync("git", ["cat-file", "--batch-check=%(objecttype)"], {
+    cwd: file === "-" ? process.cwd() : dirname(resolve(file)),
+    input: hashesToCheck.map((hash) => `${hash}^{commit}\n`).join(""),
+    encoding: "utf8", env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0" },
+  });
+  if (result.status !== 0) throw new Error("git cat-file could not verify commits in the ledger directory");
+  const objects = result.stdout.split(/\r?\n/);
+  for (const [index, hash] of hashesToCheck.entries()) {
+    if (objects[index] !== "commit") {
+      ledger.warnings.push({ code: "W240", line: hashes.get(hash)!, message: `Commit not found: ${hash}` });
+    }
+  }
+}
+
+export function checkLedger(src: string, file: string, options: Options = {}) {
+  const ledger = parseLedger(src);
+  const { rows, errors, warnings } = ledger;
+  const open = flatten(rows.open);
+  const closed = flatten(rows.closed);
+  const ids = {
+    open: new IdSet(open.map(({ span }) => span)),
+    closed: new IdSet(closed.map(({ span }) => span)),
+  };
+  const byStatus = new Map<string, IdSpan[]>();
+  for (const { span, row } of [...open, ...closed]) {
+    const group = byStatus.get(row.status) ?? [];
+    group.push(span);
+    byStatus.set(row.status, group);
+  }
+  const safeCount = (count: bigint, label: string): number | null => {
+    if (count <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(count);
+    errors.push({ code: "E109", line: 1, message: `${label} count exceeds the supported integer range` });
+    return null;
+  };
+  const counts = {
+    open: safeCount(ids.open.count, "Open"),
+    closed: safeCount(ids.closed.count, "Closed"),
+    byStatus: Object.fromEntries([...byStatus].map(([status, spans]) => [status, safeCount(new IdSet(spans).count, status)])),
+  };
+
+  if (!errors.some(({ code }) => code === "E120")) {
+    checkStatusBlock(ledger);
+    checkDuplicateIds(open, "open", errors);
+    checkDuplicateIds(closed, "closed", errors);
+    for (const { span, row } of closed) {
+      const overlap = ids.open.firstOverlap(span);
+      if (overlap !== undefined) {
+        errors.push({ code: "E104", line: row.line, id: idText({ ...span, start: overlap }), message: "ID appears in both tables" });
+      }
+    }
+    checkBodies(ledger, open, ids);
+    checkRows(ledger, ids);
+    checkGuide(ledger);
+    checkHashes(ledger, file, options.verifyCommits ?? false);
+  }
+  const compare = (a: Diagnostic, b: Diagnostic) => a.line - b.line || a.code.localeCompare(b.code);
+  errors.sort(compare);
+  warnings.sort(compare);
+  return { file, counts, errors, warnings, ok: errors.length === 0 && (!options.strict || warnings.length === 0) };
+}

@@ -21,6 +21,7 @@
  *   1  ran successfully but found no matches (grep-style, so `&&` chaining
  *      works the way agents expect)
  *   2  usage error (bad flag, missing file, invalid regex, file not found)
+ *   3  ledger validation failed
  */
 
 import { parseArgs, type ParseArgsConfig } from "node:util";
@@ -30,8 +31,9 @@ import { scan } from "./scan.js";
 import { buildSections, countLines, pathOf, type Section } from "./sections.js";
 import { match, parseSelector } from "./select.js";
 import { renderSection, renderToc, truncateBody } from "./render.js";
-import { readDocument, writeAtomically, type Document, type ExpectedStat } from "./io.js";
+import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
 import { isLedger } from "./ledger.js";
+import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
 import {
   setSection,
   appendToSection,
@@ -55,6 +57,8 @@ Usage:
   issuemd grep   <file> <pattern>      regex-search section bodies
   issuemd links  <file> [selector]     extract markdown links from sections
   issuemd code   <file> [selector]     extract fenced code blocks
+
+  issuemd check  <file> [--json]      validate a canonical issue ledger
 
   [write — atomic, keeps BOM/line endings/mode; --dry-run prints diff instead]:
   issuemd set    <file> <sel> [--body <text>]          replace section body
@@ -89,6 +93,8 @@ Options:
   --raw                     read: drop delimiter lines
   --json                    machine-readable JSON output
   --lang <lang>             code: filter code blocks by language
+  --strict                  check: fail on warnings
+  --verify-commits          check: verify commit references in the ledger directory
   --body <text>             write: inline body content
   --body-file <path|->      write: body from a file, or '-' for stdin (explicit)
   --after <selector>        insert: selector of section to insert after
@@ -122,6 +128,8 @@ const OPTIONS = {
   raw: { type: "boolean" },
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },
+  strict: { type: "boolean" },
+  "verify-commits": { type: "boolean" },
   // write commands
   "dry-run": { type: "boolean" },
   body: { type: "string" },
@@ -153,7 +161,7 @@ export async function run(argv: string[]): Promise<CliResult> {
   const head = positionals[0];
   const CMDS = new Set([
     "read", "ls", "grep", "toc",
-    "links", "code",
+    "links", "code", "check",
     "set", "append", "insert", "rm", "rename", "promote", "demote", "mv",
   ]);
   if (head && CMDS.has(head)) {
@@ -187,6 +195,8 @@ async function dispatch(
       return cmdLinks(rest, values);
     case "code":
       return cmdCode(rest, values);
+    case "check":
+      return cmdCheck(rest, values);
     case "set":
       return cmdSet(rest, values);
     case "append":
@@ -251,6 +261,46 @@ function readFlag(
 }
 
 // ---- commands ----------------------------------------------------------
+
+function cmdCheck(rest: string[], v: Values): CliResult {
+  const file = rest[0];
+  if (file == null || rest.length !== 1) return err("usage: issuemd check FILE [--json] [--strict] [--verify-commits]\n", 2);
+  const loaded = loadFile(file);
+  if ("code" in loaded) return loaded;
+  try {
+    const report = checkLedger(loaded.src, file, { strict: v.strict, verifyCommits: v["verify-commits"] });
+    if (v.json) return { code: report.ok ? 0 : 3, stdout: JSON.stringify(report, null, 2) + "\n", stderr: "" };
+    const openByStatus = Object.entries(STATUS_CLASSES)
+      .filter(([status, kind]) => kind === "open" && Object.hasOwn(report.counts.byStatus, status))
+      .map(([status]) => `${status} ${report.counts.byStatus[status] ?? "?"}`);
+    const openBreakdown = openByStatus.length ? ` (${openByStatus.join(", ")})` : "";
+    const lines = [
+      `file: ${file}`,
+      `open ${report.counts.open ?? "?"}${openBreakdown}   closed ${report.counts.closed ?? "?"}`,
+    ];
+    for (const [severity, diagnostics] of [["error", report.errors], ["warning", report.warnings]] as const) {
+      const groups = new Map<string, typeof diagnostics>();
+      for (const diagnostic of diagnostics) {
+        const group = groups.get(diagnostic.code) ?? [];
+        group.push(diagnostic);
+        groups.set(diagnostic.code, group);
+      }
+      for (const [code, group] of groups) {
+        lines.push(`${severity} ${code} x${group.length}`);
+        for (const { line, id, message, expected, actual } of group.slice(0, 3)) {
+          const details = expected === undefined ? "" : ` (expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)})`;
+          lines.push(`  L${line}${id ? ` #${id}` : ""}: ${message}${details}`);
+        }
+        if (group.length > 3) lines.push(`  … (${group.length - 3} more, use --json for all)`);
+      }
+    }
+    lines.push(`${report.errors.length} errors, ${report.warnings.length} warnings`);
+    const stdout = lines.join("\n");
+    return { code: report.ok ? 0 : 3, stdout: stdout + "\n", stderr: "" };
+  } catch (error) {
+    return err(`issuemd check: ${(error as Error).message}\n`, 2);
+  }
+}
 
 function cmdToc(rest: string[], v: Values): CliResult {
   const file = rest[0];
@@ -707,8 +757,6 @@ type Loaded = {
   headings: ReturnType<typeof scan>;
   sections: Section[];
   srcLines: string[];
-  /** Stat captured at read time; the write refuses if the file moved. */
-  expected: ExpectedStat;
 };
 
 /** loadFile variant that rejects stdin ('-') for commands that write back. */
@@ -723,8 +771,7 @@ function loadWritableFile(file: string): Loaded | CliResult {
       sections: buildSections(headings, countLines(doc.text)),
       // Split without the trailing sentinel so a file that ends with a
       // newline does not gain a blank line at EOF on every rewrite.
-      srcLines: (doc.text.endsWith("\n") ? doc.text.slice(0, -1) : doc.text).split("\n"),
-      expected: doc.stat,
+      srcLines: doc.text === "" ? [] : (doc.finalNewline ? doc.text.slice(0, -1) : doc.text).split("\n"),
     };
   } catch (e) {
     return err(`issuemd: cannot open '${file}': ${(e as Error).message}\n`, 2);
@@ -741,26 +788,27 @@ function applyWrite(
   newLines: string[],
   v: Values,
 ): CliResult {
+  // Removing the last section can expose its preceding blank separator at
+  // EOF. A file that was unterminated must still end in a nonempty line.
+  if (!loaded.doc.finalNewline) {
+    let end = newLines.length;
+    while (end > 0 && newLines[end - 1] === "") end--;
+    if (end !== newLines.length) newLines = newLines.slice(0, end);
+  }
   if (v["dry-run"]) {
     const diff = unifiedDiff(loaded.srcLines, newLines, file);
     return ok(diff || "(no changes)\n");
   }
-  const b = loaded.doc.bom ? "\ufeff" : "";
-  const eol = loaded.doc.eol;
-  let text = newLines.join("\n");
-  // `srcLines` splits without the EOF sentinel, so a body written with a
-  // trailing blank line carries one line too many: drop it before restoring
-  // the file's own ending.
-  if (text.endsWith("\n")) text = text.slice(0, -1);
-  if (loaded.doc.finalNewline && text !== "") text += "\n";
-  const bytes = b + (eol === "\n" ? text : text.replaceAll("\n", "\r\n"));
-  const written = writeAtomically(file, bytes, loaded.expected);
-  if (!written.ok) {
-    // E130 — someone else wrote the file after we read it.
-    return err(
-      `issuemd: E130 '${file}' changed after it was read; re-read and retry\n`,
-      2,
-    );
+  const unchanged = newLines.length === loaded.srcLines.length &&
+    newLines.every((line, index) => line === loaded.srcLines[index]);
+  if (unchanged) return ok("");
+  try {
+    const written = writeAtomically(file, joinDocument(newLines, loaded.doc), loaded.doc.stat);
+    if (!written.ok) {
+      return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 2);
+    }
+  } catch (error) {
+    return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
   }
   return ok("");
 }
@@ -815,7 +863,7 @@ function stdinIsRedirected(): boolean {
 function requireBody(v: Values, cmd: string): { lines: string[] } | CliResult {
   // Body text is used verbatim: callers pad it with their own blank lines,
   // exactly as lilmd did, so existing agent habits keep working.
-  const split = (s: string) => s.split("\n");
+  const split = (s: string) => s.replaceAll("\r\n", "\n").split("\n");
   if (v.body != null) return { lines: split(v.body) };
   if (v["body-file"] != null) {
     try {
@@ -835,6 +883,12 @@ function requireBody(v: Values, cmd: string): { lines: string[] } | CliResult {
   );
 }
 
+// A final line break in body input terminates the last line at EOF. Inside
+// a document it also pads the insertion before the following Markdown.
+function bodyLinesAt(lines: string[], atEof: boolean): string[] {
+  return atEof && lines.at(-1) === "" ? lines.slice(0, -1) : lines;
+}
+
 // ---- write commands ---------------------------------------------------------
 
 function cmdSet(rest: string[], v: Values): CliResult {
@@ -852,7 +906,9 @@ function cmdSet(rest: string[], v: Values): CliResult {
   const sec = oneMatch(match(sections, parseSelector(selectorStr)), "set");
   if ("code" in sec) return sec;
 
-  return applyWrite(file, loaded, setSection(srcLines, sec, sections, bodyResult.lines), v);
+  const atEof = sec.line_end === srcLines.length && !sections.some((section) => section.parent === sec);
+  const lines = bodyLinesAt(bodyResult.lines, atEof);
+  return applyWrite(file, loaded, setSection(srcLines, sec, sections, lines), v);
 }
 
 function cmdAppend(rest: string[], v: Values): CliResult {
@@ -870,7 +926,9 @@ function cmdAppend(rest: string[], v: Values): CliResult {
   const sec = oneMatch(match(sections, parseSelector(selectorStr)), "append");
   if ("code" in sec) return sec;
 
-  return applyWrite(file, loaded, appendToSection(srcLines, sec, sections, bodyResult.lines), v);
+  const atEof = sec.line_end === srcLines.length && !sections.some((section) => section.parent === sec);
+  const lines = bodyLinesAt(bodyResult.lines, atEof);
+  return applyWrite(file, loaded, appendToSection(srcLines, sec, sections, lines), v);
 }
 
 function cmdInsert(rest: string[], v: Values): CliResult {
@@ -888,7 +946,9 @@ function cmdInsert(rest: string[], v: Values): CliResult {
   const sec = oneMatch(match(sections, parseSelector(v.after)), "insert");
   if ("code" in sec) return sec;
 
-  return applyWrite(file, loaded, insertAfter(srcLines, sec, bodyResult.lines), v);
+  const atEof = sec.line_end === srcLines.length;
+  const lines = bodyLinesAt(bodyResult.lines, atEof);
+  return applyWrite(file, loaded, insertAfter(srcLines, sec, lines), v);
 }
 
 function cmdRm(rest: string[], v: Values): CliResult {

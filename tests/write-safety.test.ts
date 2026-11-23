@@ -155,6 +155,73 @@ describe("D7 — ledgers are not edited with generic tools", () => {
 });
 
 describe("write safety", () => {
+  test("renaming an earlier heading preserves physical blank lines at EOF", async () => {
+    const source = "﻿# T\r\n\r\n## A\r\nbody\r\n\r\n\r\n";
+    const path = file("blank-tail.md", source);
+    expect((await run(["rename", path, "=A", "B"])).code).toBe(0);
+    expect(read(path)).toEqual(Buffer.from(source.replace("## A", "## B")));
+  });
+
+  test("removing the final section keeps a file without a final newline unterminated", async () => {
+    const source = "# Keep\n\n# Drop";
+    const path = file("remove-tail.md", source);
+    const preview = await run(["rm", path, "=Drop", "--dry-run"]);
+    expect(preview.code).toBe(0);
+    expect(preview.stdout).toContain("@@ -1,3 +1,1 @@");
+    expect(read(path).toString()).toBe(source);
+    expect((await run(["rm", path, "=Drop"])).code).toBe(0);
+    expect(read(path).toString()).toBe("# Keep");
+  });
+
+  test("a valid no-op leaves the original inode and trailing blank lines in place", async () => {
+    const path = file("no-op.md", "# T\n\ntext\n\n");
+    const before = statSync(path);
+    expect((await run(["rename", path, "=T", "T"])).code).toBe(0);
+    expect(read(path).toString()).toBe("# T\n\ntext\n\n");
+    expect(statSync(path).ino).toBe(before.ino);
+  });
+
+  test("a replacement with the same size and mtime still invalidates the snapshot", async () => {
+    const path = file("replaced.md", "# Old\n");
+    const { readDocument, writeAtomically } = await import("../src/io.js");
+    utimesSync(path, 10000, 10000);
+    const snapshot = readDocument(path);
+    const replacement = file("replacement.md", "# New\n");
+    utimesSync(replacement, 10000, 10000);
+    const { renameSync, readdirSync } = await import("node:fs");
+    renameSync(replacement, path);
+    const entries = readdirSync(dir).sort();
+    expect(writeAtomically(path, "# Lost\n", snapshot.stat)).toEqual({ ok: false, stale: true });
+    expect(read(path).toString()).toBe("# New\n");
+    expect(readdirSync(dir).sort()).toEqual(entries);
+  });
+  test("a change during temp-file fsync aborts the replacement and cleans up", () => {
+    const path = file("publish-race.md", "# Original\n");
+    const io = new URL("../dist/src/io.js", import.meta.url).href;
+    const child = spawnSync("node", ["--input-type=module", "-e", `
+      import fs from "node:fs";
+      import { syncBuiltinESMExports } from "node:module";
+      import { dirname } from "node:path";
+      const [path, io] = process.argv.slice(1);
+      const originalFsync = fs.fsyncSync;
+      fs.fsyncSync = (fd) => {
+        originalFsync(fd);
+        fs.writeFileSync(path, "# Other writer\\n");
+      };
+      syncBuiltinESMExports();
+      const { readDocument, writeAtomically } = await import(io);
+      const before = fs.readdirSync(dirname(path)).sort();
+      const result = writeAtomically(path, "# Replacement\\n", readDocument(path).stat);
+      const after = fs.readdirSync(dirname(path)).sort();
+      console.log(JSON.stringify({ result, before, after }));
+    `, path, io], { encoding: "utf8", timeout: 5000 });
+    expect(child.status).toBe(0);
+    const { result, before, after } = JSON.parse(child.stdout);
+    expect(result).toEqual({ ok: false, stale: true });
+    expect(after).toEqual(before);
+    expect(read(path).toString()).toBe("# Other writer\n");
+  });
+
   test("file mode bits survive a write", async () => {
     const path = file("mode.md", "# T\n\n## A\n\nold\n");
     chmodSync(path, 0o600);
@@ -164,21 +231,15 @@ describe("write safety", () => {
 
   test("a stale read is rejected before writing", async () => {
     const path = file("race.md", "# T\n\n## A\n\nold\n");
-    const before = read(path);
-    const stale = statSync(path);
-    // Change size and restore the timestamp: only a (size, mtime) check that
-    // looks at both catches this.
-    writeFileSync(path, "# T\n\n## A\n\nchanged elsewhere\n");
-    utimesSync(path, stale.atime, stale.mtime);
-
     const { readDocument, writeAtomically } = await import("../src/io.js");
-    const doc = readDocument(path);
-    const result = writeAtomically(path, "# T\n\n## A\n\nafter\n", {
-      size: before.length, // the size the caller saw when it read
-      mtimeMs: stale.mtimeMs,
-    });
-    expect(doc.text).toContain("changed elsewhere");
+    const stale = readDocument(path).stat;
+    // Change the contents and restore mtime to exercise the full snapshot.
+    const modified = "# T\n\n## A\n\nchanged elsewhere\n";
+    writeFileSync(path, modified);
+    utimesSync(path, new Date(stale.mtimeMs), new Date(stale.mtimeMs));
+
+    const result = writeAtomically(path, "# T\n\n## A\n\nafter\n", stale);
     expect(result).toEqual({ ok: false, stale: true });
-    expect(read(path)).not.toEqual(Buffer.from("# T\n\n## A\n\nafter\n"));
+    expect(read(path).toString()).toBe(modified);
   });
 });

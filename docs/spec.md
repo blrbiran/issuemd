@@ -292,7 +292,7 @@ Ledger
 | E106 | 正文 H3 标题 ≠ 索引摘要 | cafe 15/15 |
 | E107 | 正文出现 `**状态**` 行 | 两份台账均 0 |
 | E108 | 行格数 ≠ 表头格数 | 新增 |
-| E109 | 编号不匹配 idPattern | `393b` |
+| E109 | 编号格式无效、编号或计数超出 JSON 的安全整数范围 | `393b`、大区间 |
 | E110 | 正文块内出现 Markdown 标题 | S6 |
 | E111 | 已关闭项的编号仍出现在正文区 | cafe 13 条孤儿 |
 | E112 | 缺骨架节或表头不符 | 新增 |
@@ -300,7 +300,7 @@ Ledger
 | E121 | 标题含 `（N）` 计数 | 2.2 |
 | E122 | 管道块缺分隔行 | 2.4 |
 | E123 | 附录区出现 `### Issue` | 新增 |
-| E130 | 写入前并发检测：mtime+size 与读入时不一致 | 新增 |
+| E130 | 原子替换前复核文件标识、大小和时间戳，发现变更时拒绝写入 | 新增 |
 
 ### 6.2 warnings
 
@@ -558,7 +558,7 @@ issuemd adopt old.md --dry-run --report decisions.md
 |---|---|---|
 | **P0 脚手架** | 拷贝 lilmd `src/` + `bin/`，改包名为 `@blrbiran/issuemd`，MIT LICENSE，裁掉 vector/embed/banner/pretty | `npm test` 全绿；`issuemd FILE` 与 `lilmd FILE` 对同一输入逐字节相同 |
 | **P1 修 7 缺陷** ✅ | D1–D7，每条先写 RED（直接取附录 A.1 探针），再实现原子写与行级拼接 | 13 个用例红→绿；真实 shell 下复验七个缺陷；模式位/E130 覆盖 |
-| **P2 台账模型** | 管道块解析（含无分隔行）、多编号与区间、骨架识别、E1xx/W2xx、`--json` | 对 mock fixture 的已知答案全中，含 13 条孤儿正文的 E111 |
+| **P2 台账模型** | 管道块、多编号与区间、规范骨架和 `issuemd check FILE --json` | 合规样本 3 条开放、17 个关闭编号、0 个错误。坏例逐条报告 13 个 `E111`，带原文件行号 |
 | **P3 台账写** | `new`/`close`/`status`/`rename`/`reopen`/`sync`/`counts`；原子写 + `--dry-run` | 每个命令的 diff 与预期行数逐字相符 |
 | **P4 `adopt`** | 机械改动 + 待决清单 + `--report` | 对 cafe 形状的 mock 输出清单条目数与预期一致 |
 | **P5 skill + 文档 + 清理** | SKILL.md、README、`--help`、TEMPLATE.md；删 `check-issues.mjs` 与 `verify-facts.mjs` | 无上下文 subagent 只读 SKILL.md 能完成三件事 |

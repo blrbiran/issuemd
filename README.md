@@ -2,15 +2,14 @@
 
 A CLI for **single-file issue ledgers** — the kind of Markdown where a table holds status, one `### Issue N:` block per open issue holds the root cause, and a closed section holds only the acceptance criteria.
 
-The P0 build provides the Markdown commands from [`lilmd`](https://github.com/molefrog/lilmd) with plain-text and JSON reads. The examples below describe the planned ledger commands, which will update the table, body, and criteria together.
+`issuemd check` validates a canonical ledger and reports errors and warnings with line numbers.
 
 ```bash
-issuemd check issue-20261119.md          # exit 3 = structural errors
-issuemd list issue-20261119.md           # open issues only
-issuemd show issue-20261119.md 65        # one issue: table row + body
-issuemd close issue-20261119.md 57 --criteria-from-body
-issuemd sync issue-20261119.md --titles --prefer=body --dry-run
+issuemd check fixtures/canonical-clean.md
+issuemd check fixtures/canonical-clean.md --json
 ```
+
+The exit code is `0` on success, `2` for usage or I/O errors, and `3` for validation failures. Add `--strict` to fail on warnings or `--verify-commits` to look up referenced commits in the ledger's Git repository.
 
 ## Why
 
@@ -56,13 +55,11 @@ Three principles run through all of them:
 
 ## One format, no compatibility layer
 
-Existing ledgers are **not** adopted at runtime. `issuemd adopt FILE --dry-run --report decisions.md` performs the mechanical rewrites and prints everything it will not decide on its own — title conflicts, progress text that would otherwise be lost, closed issues that still have bodies. An agent plus a human finish the job once; after that there is a single format.
+Earlier editions of the ledgers need conversion before running `check`. The planned `issuemd adopt FILE --dry-run --report decisions.md` will preview mechanical changes and flag decisions about conflicting titles, progress text, and closed issues that still have bodies.
 
 ## Status
 
-P1 adds atomic, byte-faithful writes: BOM, line endings, final newline and permission bits are preserved, ambiguous selectors refuse instead of editing the first match, fenced code is never rewritten, and `rm` refuses on a ledger.
-
-P0 shipped the Markdown CLI baseline. Use the generic write commands on test copies during this phase. P1 covers the known write-safety defects, and P2 onward adds the ledger-specific commands described in [the implementation plan](docs/spec.md#12-实施计划).
+P2 provides the canonical parser and `check`. The generic Markdown write commands preserve trailing blank lines and skip writes when the contents are unchanged. They recheck the file immediately before replacing it. Ledger-specific mutation and conversion are later milestones in [the implementation plan](docs/spec.md#12-实施计划).
 
 ## License
 

@@ -37,7 +37,7 @@ export type Heading = {
  * Return every ATX heading in `src`, in document order.
  * Runs in a single pass; O(n) in source length, O(headings) in space.
  */
-export function scan(src: string): Heading[] {
+export function scan(src: string, outsideFence?: (line: number) => void): Heading[] {
   // A UTF-8 BOM is an encoding marker, not content; without this the first
   // heading is invisible and the file appears to have none.
   if (src.charCodeAt(0) === 0xfeff) src = src.slice(1);
@@ -67,14 +67,15 @@ export function scan(src: string): Heading[] {
 
     const fence = matchFence(line);
     if (fence) {
-      if (!inFence) {
+      if (!inFence && !(fence.char === 96 && fence.rest.includes("`"))) {
         inFence = true;
         fenceChar = fence.char;
         fenceLen = fence.len;
-      } else if (fence.char === fenceChar && fence.len >= fenceLen) {
+      } else if (inFence && fence.char === fenceChar && fence.len >= fenceLen && /^[ \t]*$/.test(fence.rest)) {
         inFence = false;
       }
     } else if (!inFence) {
+      outsideFence?.(lineNo);
       const h = matchHeading(line, lineNo);
       if (h) out.push(h);
     }
@@ -91,10 +92,10 @@ export function scan(src: string): Heading[] {
  * (` or ~) and the number of fence characters. Otherwise null.
  *
  * A fence is 0–3 spaces, then 3+ of a single fence char, then optional info
- * string. We only care about the opening run length; the info string is
- * ignored.
+ * string. The caller uses the remaining text to distinguish a closer from
+ * a fence-like line inside the block.
  */
-function matchFence(line: string): { char: number; len: number } | null {
+function matchFence(line: string): { char: number; len: number; rest: string } | null {
   // Skip up to 3 leading spaces.
   let p = 0;
   while (p < 3 && line.charCodeAt(p) === 32) p++;
@@ -103,9 +104,7 @@ function matchFence(line: string): { char: number; len: number } | null {
   let run = 0;
   while (line.charCodeAt(p + run) === ch) run++;
   if (run < 3) return null;
-  // For backtick fences, CommonMark forbids backticks in the info string,
-  // but we don't parse info; we only need to know this line is a fence.
-  return { char: ch, len: run };
+  return { char: ch, len: run, rest: line.slice(p + run) };
 }
 
 /**
