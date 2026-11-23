@@ -1,0 +1,707 @@
+# issuemd 规格（v2）
+
+> **一句话**：`lilmd` 让 agent 便宜地读一节；`issuemd` 让「状态表、正文、判据」三处在**结构上不可能对不上**。
+> **形态**：CLI（lilmd 的超集）+ skill。单文件、纯 Markdown、零运行时依赖。
+> **参考现场**：`orca_archived_files/issue-20261023.md`（2108 行）与 `cafe_dogfooding/issue-20261119.md`（2701 行），均为真实台账，仅作设计参考，**不进入测试夹具**。
+> 本文所有数字均为本机实测，命令见附录 A。
+
+## 1. 结论
+
+### 1.1 五句话
+
+1. **格式已经收敛到三个结构缺陷上。** 两份台账自发长成「表定状态 + 按编号放正文 + 已关闭只留判据」，但都靠人肉纪律守，而其中一份已经守不住。
+2. **漂移不是手误，是结构必然。** cafe 实测 **15/15** 条开放项的正文标题与索引摘要不相等、**60/61** 条已关闭项的摘要在两表之间不相等。它们源于「同一事实存了多份」。
+3. **只有一种格式。** 不做兼容层，不做运行时 `migrate`。旧台账由 agent 一次性转写，此后只认 canonical；转写工具 `adopt` 只做机械改动并输出待决清单。
+4. **cafe 已经用 2701 行证明「关闭不删正文」会烂掉。** 其「怎么用」写的是「只改状态总览那一行；正文不动」，于是 13 条已关闭 issue 的正文永久堆积。orca 的「怎么用」写的是「closed？删掉那一块」。两份台账在关闭语义上互为反例，规范格式取 orca 的方向。
+5. **写路径不能照抄 lilmd。** lilmd 0.5.0 实测有 7 个会**静默改错**的行为（BOM 吞标题、fence 内 `#` 被改写、重复标题只改第一个、CRLF 混写、stdin 文案说谎、`promote` 造两个 H1、无表感知）。issuemd 拷贝其代码后逐个修掉。
+
+### 1.2 一句话记忆
+
+> **表是索引，正文是记录，判据只存一份，计数从不落盘。**
+
+### 1.3 不做什么
+
+- **不做兼容层。** 不识别 L1/L2，不支持双语义，不保留 `--layout`。`check` 只认 canonical。
+- **不做 SQL 写入层。** mdsql 的 `rewrite_table()` 改一行会重写整张表（列宽重排、行内代码退化、CRLF 归一）——反面教材。
+- **不引入新文件格式。** 台账仍是一个 `.md`，仍能被 `lilmd` 和 `cat` 读。
+- **不做多文件台账、GitHub 同步、服务端。**
+- **不接管 handoff。** handoff 是自由文本。
+
+---
+
+## 2. 实测：缺陷与协议矛盾
+
+### 2.1 同一标题存两份或三份，必然分叉
+
+cafe 实测（当前文件）：
+
+| 比较 | 不一致 | 总数 |
+|---|---|---|
+| 开放项：正文 H3 ↔ 索引摘要 | **15** | 15 |
+| 已关闭项：已关闭表摘要 ↔ 索引摘要 | **60** | 61 |
+
+```text
+#65  索引摘要: loopback 免 token 且不校验 Origin/Host
+     正文 H3 : P0 安全：loopback 免 token 且不校验 Origin/Host，任意网页可 POST /api/orders、/api/baristas、/api/shutdown（CSRF + DNS rebinding）
+```
+
+**根因是列语义被写坏**：索引第 4 列在写「短标签」，正文 H3 在写「完整描述」。两者职责不同，于是永远不相等。规范格式的解法不是放弃等式，而是**让两处存同一个字符串，显示时截断**（见 S2）。
+
+对照：orca 的 16 条开放项正文标题与索引摘要 **0/16 不一致**——因为它两处存的是同一份。差别不在纪律，在结构。
+
+### 2.2 计数写进标题，选择器跟着漂
+
+orca 有 **12** 个标题含 `（N）`：`## 待处理（16）`、`### 已修（212）`、`### 决定不改（7）`…
+
+代价有两层。**第一层，计数会错**：按编号数（不是行数）重算，`已修` 声明 212，实际 **211**。作者纪律很好，只错这一处——但只要计数写在标题里，就永远有这一处。
+
+**第二层，标题变成不稳定选择器**：
+
+```bash
+lilmd issue-20261023.md "/^待处理（13）$/"   # 当时 13
+lilmd issue-20261023.md "/^待处理（31）$/"   # 后来 31
+lilmd issue-20261023.md "/^待处理（50）$/"   # 后来 50
+```
+
+每次计数变化，所有引用它的文档都得改；不改不报错，只是悄悄读不到。
+
+### 2.3 冗余的第二张全量表 = 48 个额外漂移点
+
+cafe 的「状态总览」是全量 76 行，而「已关闭」表另有 61 行。61 条已关闭项在两处各存一份摘要，实测 **60/61 已不一致**。已验证：索引中 `已修` 的编号集合与已关闭表**完全相等**——第二张表不携带任何新信息，只是一个手工维护的重复视图。
+
+orca 恰好相反：`## 待处理` 只放 16 条开放项，与已关闭表**零交集**，因此 0 不一致。
+
+### 2.4 无分隔行的管道块，渲染层直接坏掉
+
+orca 有 **11** 个管道块（**90 行**）缺 `|---|` 分隔行，**包括整个「待处理」区和 `已修` 的前五个续块**：
+
+```bash
+pandoc -f gfm orca/issue-20261023.md -t html | grep -c '<table'   # 17
+pandoc -f gfm orca/issue-20261023.md -t html | grep -c '^<p>|'    # 11
+```
+
+渲染结果是它们被合并成一段 `<p>`，内容夹着字面 `|`。cafe 的 44 个管道块全部合法。
+
+### 2.5 两份台账的成文协议互相矛盾
+
+| 台账 | 「怎么用」原文 | 后果 |
+|---|---|---|
+| cafe 第 25 行 | `改某条状态 → 只改「状态总览」那一行；正文不动` | 已关闭项正文永不删除，已堆积 **13** 条 |
+| orca 第 25 行 | `改某条状态 → lilmd set / lilmd insert，然后 node check-issues.mjs` | 关闭时删正文（`check-issues.mjs` 报错文案即 `closed? delete the block`） |
+
+cafe 的 13 条孤儿正文（#56–#60、#65–#70、#75、#76）不是手误，是照协议执行的结果。**规范格式取 orca 方向，并把「已关闭项不得有正文块」提升为 error（E111）。**
+
+### 2.6 三个必须记住的口径
+
+| 口径 | 事实 | 写错的后果 |
+|---|---|---|
+| **按编号计数，不按行计数** | 一格可写多号：`\| 20, 24, 29, 38, 40, 55 \|` 是 6 个编号 | 按行算会把 5 个合法小节全部误报 |
+| **解析单位是「管道块」，不是「GFM 表格」** | 无分隔行的块没有表头——把首行当表头，会把 16 条待处理读成 12 条 | 直接漏掉 4 条 |
+| **索引与已关闭表编号集合必须不相交** | 唯一格式，唯一规则 | 套错会把冗余当合法 |
+
+### 2.7 一条勘误
+
+本规格 v1 曾写「orca 手写了 46 行 `check-issues.mjs` 去守它」。实测：该脚本在本仓库根目录（`check-issues.mjs`，60 行，未纳入 git），只认 orca 一种布局，覆盖 5 条规则。它作为实现期参照，P5 后删除，由 `issuemd check` 取代。v1 附录 A.8 的覆盖率对照表随之作废。
+
+---
+
+## 3. 规范格式（canonical）
+
+设计目标：**让 2.1–2.4 的四类缺陷在结构上无法表达**。
+
+### 3.1 六条结构决定
+
+| # | 决定 | 消灭了哪个缺陷 |
+|---|---|---|
+| **S1** | 索引表**只放开放项**；已关闭项只存在于「已关闭」表 | 2.3 |
+| **S2** | **摘要与正文 H3 存同一字符串**（trim + 压缩空白后逐字相等），显示时截断；`rename` 一次事务同改 | 2.1 |
+| **S3** | **计数不出现在任何标题里**；`## 索引`、`## 已关闭` 是固定标题 | 2.2 |
+| **S4** | 表摘要写**稳定标签**（是什么），进展写正文；判据只存一处 | 2.1 |
+| **S5** | 所有表格必须有 `\|---\|`；`sync --fix-tables` 可修 | 2.4 |
+| **S6** | 正文块内**不得出现任何 Markdown 标题**，一律用 `**标签**`；只读取段用 `show --label` | 层级唯一，`mv/promote` 不再腐化正文 |
+
+### 3.2 骨架
+
+```markdown
+# <Project> Issue 台账
+
+> 唯一台账 + 唯一正文。状态只在下表；正文不写状态。编号不回收。
+> 读法：`issuemd list <file>` / `issuemd show <file> <id>` / `issuemd check <file>`
+
+## 怎么用
+
+<!-- issuemd:guide:begin -->
+（工具生成的命令表；`issuemd sync --guide` 重写此块，块外文字不动）
+<!-- issuemd:guide:end -->
+
+## 状态口径
+
+<!-- issuemd:statuses:begin -->
+| 状态 | 分类 |
+|---|---|
+| 未决 | open |
+| 部分解决 | open |
+| 观察 | open |
+| 已修 | closed |
+| 延后 | closed |
+| 决定不改 | closed |
+| 不是缺陷 | closed |
+| 范围外 | closed |
+| 撤回 | closed |
+| 并入 | closed |
+| 未分类 | closed |
+<!-- issuemd:statuses:end -->
+
+## 索引
+
+| # | 状态 | P | 摘要 |
+|---|---|---|---|
+| 65 | 未决 | P0 | loopback 免 token 且不校验 Origin/Host |
+| 31 | 部分解决 | P1 | Thread 事件热路径逐条同步落盘 |
+
+## 已关闭
+
+| # | 状态 | P | 摘要 | 判据 |
+|---|---|---|---|---|
+| 6 | 已修 | P3 | 心跳测试钩子 + fake Codex interrupt-before-waiter | `70e0b26`：全量连续多轮 276/276 |
+| 1–199 | 决定不改 | | 无记录 | 早期关闭，编号已退休 |
+
+## 正文
+
+### Issue 65: loopback 免 token 且不校验 Origin/Host
+
+**现象**：…
+**根因**：…
+**期望**：…
+**验收判据**：…
+
+## 附录
+
+（自由格式：复核记录、证据转录。不得出现 `### Issue N`。）
+```
+
+### 3.3 不变量
+
+| 编号 | 不变量 | 级别 |
+|---|---|---|
+| I1 | 每条正文块在「索引」里有且仅有一行；每行有且仅有一条正文块 | error |
+| I2 | 正文块按编号严格升序、编号唯一 | error |
+| I3 | 正文 H3 标题 == 索引摘要（trim + 压缩空白后逐字相等） | error |
+| I4 | 「索引」与「已关闭」编号集合**不相交** | error |
+| I5 | 正文区不出现 `**状态**` 行 | error |
+| I6 | 任何标题不含 `（N）` 计数 | error |
+| I7 | 所有管道块必须有分隔行 | error |
+| I8 | 正文块内不出现 Markdown 标题 | error |
+| I9 | 已关闭项的编号不出现在正文区 | error |
+| I10 | 状态词必须在「状态口径」块内声明过 | error |
+| I11 | 「状态口径」块与工具内置词表逐字一致 | error |
+| I12 | 附录区不出现 `### Issue` | error |
+| I13 | 所有状态词在词表内 | warn（词表是工具的，覆盖须改工具） |
+
+> 规范格式下 I6/I7/I8/I9/I11 均为 error，不降级——因为不再有兼容层。
+
+### 3.4 为什么比 orca 更合理
+
+orca 用「一个状态一个 H3 小节」表达分组，代价是**换状态要跨小节移动行**，而跨小节移动是最难做对的行级操作（重算计数、保持升序、处理合并）。canonical 用**一张表 + 状态列**：
+
+- 换状态 = 改一个单元格（1 行 diff，无搬移）；
+- 分组读 = `issuemd list --status 未决`（视图，不落盘）；
+- 计数 = `issuemd counts --json`（计算，不落盘）。
+
+**把「分组」和「计数」从文档结构搬进查询。** 这是本设计最大的简化。代价是单表变长（开放项通常 10–50 行，可接受）；已关闭表很长，但它只是判据仓库，用 `list --closed` 或 `grep` 查。
+
+---
+
+## 4. 语义模型与解析规则
+
+### 4.1 逻辑模型
+
+```text
+Ledger
+├── head:      H1 + 引用块（自由文本）
+├── guide:     ## 怎么用（受控块，工具重写）
+├── statuses:  ## 状态口径（受控块，工具重写）
+├── index:     ## 索引  → 开放项
+├── closed:    ## 已关闭 → {id | id区间, status, priority?, summary, criteria}
+├── body:      ## 正文  → [{id, title, lines}]
+├── appendix:  ## 附录  （自由格式，不解析）
+└── issues:    [{id, status, priority, summary, criteria?, bodyRange?, rowRange}]
+```
+
+### 4.2 管道块 vs GFM 表格
+
+- 解析单位是**管道块**：连续以 `|` 开头的行（fence 外）。
+- 分隔行（`|---|`）**必须存在**（canonical）。缺失 → `E122`，但仍尝试解析：无分隔行则**全部是数据行**，不把首行当表头。
+
+### 4.3 单元格
+
+1. 只在**未转义**的 `|` 处切分（`\|` 属内容）。
+2. 每格 `trim()`。
+3. 格数 != 表头格数 → `E108`，报行号与两边格数。
+4. **不做内联 markdown 解析**：反引号、链接原样保留。
+5. **编号单元格支持多号与区间**：提取 `\d+[a-z]?`；`1–199` / `1-199` / `1~199` 展开为区间。
+
+### 4.4 编号
+
+`^[0-9]+[a-z]?$`（实测有 `393b`）。为正，不回收；`new` 取 `max+1`（区间端点参与 max 计算）。
+
+### 4.5 列映射
+
+| 区 | 表头 | 语义 |
+|---|---|---|
+| 索引 | `# \| 状态 \| P \| 摘要` | 直接映射，列序固定 |
+| 已关闭 | `# \| 状态 \| P \| 摘要 \| 判据` | 直接映射，`P` 可空 |
+
+列序固定，可按表头名做一次自校验；表头不符 → `E112`。
+
+---
+
+## 5. 状态词表
+
+| 状态 | 分类 |
+|---|---|
+| `未决` | open |
+| `部分解决` | open |
+| `观察` | open |
+| `已修` | closed |
+| `延后` | closed |
+| `决定不改` | closed |
+| `不是缺陷` | closed |
+| `范围外` | closed |
+| `撤回` | closed |
+| `并入` | closed |
+| `未分类` | closed |
+
+词表**写死在工具里**并由 `sync --guide` 渲染进 `## 状态口径` 受控块；`check` 校验两者逐字一致（I11）。v1 **不提供配置文件**——想改词表就改工具，避免文档里存在第二份真相。
+
+`并入` 的目标编号写在判据列（`并入 #263`），`check` 校验该编号在台账内存在（W210）。
+
+---
+
+## 6. check 规则
+
+### 6.1 errors（退出码 3）
+
+| 码 | 规则 | 依据 |
+|---|---|---|
+| E101 | 正文块有、索引无对应行 | 2.3 的 `lilmd rm` 现场 |
+| E102 | 索引行有、正文块无 | 反向 |
+| E103 | 同一表内编号重复 | `check-issues.mjs` |
+| E104 | 索引与已关闭表编号集合相交 | S1 |
+| E105 | 正文块未按编号升序 | `check-issues.mjs` |
+| E106 | 正文 H3 标题 ≠ 索引摘要 | cafe 15/15 |
+| E107 | 正文出现 `**状态**` 行 | 两份台账均 0 |
+| E108 | 行格数 ≠ 表头格数 | 新增 |
+| E109 | 编号不匹配 idPattern | `393b` |
+| E110 | 正文块内出现 Markdown 标题 | S6 |
+| E111 | 已关闭项的编号仍出现在正文区 | cafe 13 条孤儿 |
+| E112 | 缺骨架节或表头不符 | 新增 |
+| E120 | 不是合法台账（无 `## 索引` / `## 已关闭` / `## 正文`） | 新增 |
+| E121 | 标题含 `（N）` 计数 | 2.2 |
+| E122 | 管道块缺分隔行 | 2.4 |
+| E123 | 附录区出现 `### Issue` | 新增 |
+| E130 | 写入前并发检测：mtime+size 与读入时不一致 | 新增 |
+
+### 6.2 warnings
+
+| 码 | 规则 |
+|---|---|
+| W201 | 单条正文超 `limits`（默认 20KB / 300 行） |
+| W202 | 出现疑似写死的短哈希（`\b[0-9a-f]{7,40}\b`） |
+| W203 | guide 里点名的标题在文档中不存在（**只查存在性**） |
+| W205 | 单元格含未转义 `\|` 或换行 |
+| W206 | 同一条正文内标签重复 |
+| W210 | 已关闭表的 `并入` 目标编号不存在 |
+| W211 | 新编号 ≤ 历史最大编号（疑似复用） |
+| W220 | 状态词未在状态口径块声明 |
+| W240 | `--verify-commits` 时 commit 不存在 |
+| W250 | `close --keep-body` 把正文搬进附录 |
+| W260 | 索引摘要含进展词（`已落地/仍缺/仍无/仍逐/仍走`），应移入正文 |
+
+### 6.3 `--verify-commits`（默认关）
+
+扫描短哈希 → `git cat-file -e <sha>^{commit}`；缺失报 `W240`。
+
+### 6.4 输出契约
+
+```text
+$ issuemd check issue-20261119.md
+file: issue-20261119.md
+open 15 (未决 8, 部分解决 7)   closed 61
+error E106 x15
+  L1819 #65  body: P0 安全：loopback 免 token 且不校验 Origin/Host，任意网页可 POST /api/orders…
+             row : loopback 免 token 且不校验 Origin/Host
+  … (14 more, use --json for all)
+error E111 x13
+  L1053 #56  已关闭，但正文区仍有 `### Issue 56:` 块
+  … (12 more)
+warning W206 x2
+  …
+error 28, warning 2。exit 3。
+`issuemd sync FILE --titles --prefer=body --dry-run` 可预览标题对齐
+```
+
+`--json` 时 stdout 只有 JSON：
+
+```json
+{
+  "file": "issue-20261119.md",
+  "counts": { "open": 15, "closed": 61, "byStatus": { "未决": 8, "部分解决": 7, "已修": 61 } },
+  "errors": [{ "code": "E106", "id": "65", "line": 1819, "expected": "…", "actual": "…" }],
+  "warnings": [{ "code": "W206", "id": "65", "line": 1830, "message": "重复标签 现象" }],
+  "ok": false
+}
+```
+
+---
+
+## 7. 台账写操作
+
+三条共同约束：
+
+1. **原子**：算新内容 → 写同目录临时文件 → `fsync` → `rename`。任一校验失败不落盘。
+2. **行级**：未涉及的物理行按原字节照抄（CRLF / BOM / 无尾换行 / 模式位）。diff 只含预期行。
+3. **可预演**：`--dry-run` 输出 unified diff 并 exit 0。
+
+### 7.1 `new`
+
+```bash
+issuemd new FILE --title "Web 侧栏宽度不可调" --status 未决 --priority P2 --dry-run
+issuemd new FILE --id 77 --title "…"        # 显式给号（撞号报错）
+```
+
+事务：取号（默认 `max+1`，区间端点参与）→ 插入索引行（升序）→ 插入正文骨架 → 内存重跑 check → 落盘。
+
+正文骨架默认 `**现象** / **根因** / **期望** / **验收判据**` 四个加粗标签；`--body-file PATH|-` 可整体替换。
+
+### 7.2 `close`
+
+```bash
+issuemd close FILE 57 --criteria-from-body   # 或 --criteria "…"
+```
+
+事务：从索引删行 → 从正文删块（`--keep-body` 时把该块移入 `## 附录` 并 warn W250）→ 已关闭表按编号插入 → `--criteria-from-body` 时把正文 `**验收判据**` 段提升为判据列（**判据去重的关键**：开放时在正文，关闭后在表，任何时刻只有一份）。
+
+### 7.3 `status`
+
+只在 open↔open 或 closed↔closed 内改单元格；跨分类必须 `close`/`reopen`：
+
+```text
+$ issuemd status FILE 56 已修
+error: #56 当前 观察（open），目标 已修（closed）跨分类，请用 issuemd close
+```
+
+### 7.4 `rename`
+
+同时改索引摘要与正文 H3，一次事务、要么都不改。新标题含 `|` 时自动转义并 warn W205。
+
+### 7.5 `reopen`
+
+从已关闭表删行 → 索引插入行 → 正文插入骨架（判据回填进 `**验收判据**`）。原文不可恢复，只保留判据——这是「关闭即删正文」的已知代价，`--keep-body` 是逃生口。
+
+### 7.6 `counts`
+
+```bash
+issuemd counts FILE [--json]
+```
+
+输出每个状态与整表的**编号数**。不写盘（canonical 里没有计数可修）。
+
+### 7.7 `sync`
+
+只做机械修复：
+
+| 开关 | 行为 |
+|---|---|
+| `--titles` | 对齐正文标题与索引摘要；方向必须显式：`--prefer=body`（默认）把正文标题写回表格，`--prefer=table` 反过来；命中 W260 时必须配 `--move-progress` 或 `--drop-progress` |
+| `--fix-tables` | 补 `\|---\|`（修 E122），列数按表头补齐或报 E108 |
+| `--guide` | 重写 `## 怎么用` 与 `## 状态口径` 受控块 |
+| `--move-progress` / `--drop-progress` | W260 护栏：搬运进展进正文 / 明确丢弃 |
+| `--dry-run` | 输出 diff；须能验证「只改了 N 行」 |
+
+`sync` 不删正文、不移行、不改状态。这条边界让 agent 敢无人值守跑 `sync --dry-run`。
+
+**为什么默认 `--prefer=body`**：正文标题是干净的问题描述；表摘要里可能有进度汇报。默认 body→table 符合 S4。
+
+**护栏**：`sync --titles` 一旦命中 W260，**默认拒绝执行**并 exit 3，要求显式二选一。这样「只改 N 行」的承诺不会被悄悄违反。
+
+---
+
+## 8. 写入安全
+
+| 要求 | 判据 | 对应 |
+|---|---|---|
+| BOM 保留且首个标题可见 | 带 BOM 台账的 TOC 必须列出 H1 | D1 |
+| 层级只改真标题 | fence 内 `#` 行在 `promote/demote/mv` 后逐字节不变 | D2 |
+| 重复选择器报错 | 匹配 >1 时 exit 2，列出所有 `L行号 标题`，不写文件 | D3 |
+| 行尾保持 | CRLF 输入写后仍 `CRLF`，无混合行 | D4 |
+| body 输入 | `--body` 与 `--body-file -` 都可用，文案一致 | D5 |
+| 结构校验 | `promote` 若使某节与祖先同级则拒绝并提示 `mv` | D6 |
+| 表感知 | 台账命令删正文时同步删行；通用 `rm` 在台账上拒绝 | D7 |
+| 尾换行 | 原文件无尾换行时写后仍无 | 新增 |
+| 模式位 | 写后权限不变 | 新增 |
+| 并发保护 | 写前 `stat` 的 mtime+size 与读入时一致，否则 exit 2（E130） | 新增 |
+
+lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 直接覆盖 + 正则扫全文**；issuemd 改为「先按 fence 感知切块，再行级拼接，最后原子写」。
+
+---
+
+## 9. 命令参考
+
+```text
+读取（与 lilmd 兼容）
+  issuemd FILE                             TOC + 行号
+  issuemd toc|read|ls|grep|code|links …    同 lilmd，选择器语法不变
+
+通用写（修复 D1–D7，台账上受约束）
+  issuemd set|append|insert|rm|rename|promote|demote|mv … --body '…' [--dry-run]
+
+台账读
+  issuemd check   FILE [--json] [--strict] [--verify-commits]
+  issuemd list    FILE [--status S] [--priority P] [--closed] [--json]
+  issuemd show    FILE ID [--json] [--label NAME] [--max-lines N]
+  issuemd counts  FILE [--json]
+
+台账写（全部 --dry-run）
+  issuemd new     FILE --title "T" [--id N] [--status S] [--priority P] [--body-file PATH|-]
+  issuemd close   FILE ID [--criteria "…" | --criteria-from-body] [--keep-body]
+  issuemd reopen  FILE ID
+  issuemd status  FILE ID NEW_STATUS
+  issuemd rename  FILE ID "T"
+  issuemd sync    FILE [--titles] [--fix-tables] [--guide] [--prefer body|table] [--move-progress|--drop-progress]
+
+迁移（一次性，不进运行时）
+  issuemd adopt   FILE [--dry-run] [--report PATH]
+
+全局
+  --no-color      CI 默认
+```
+
+退出码：0 成功 / 1 没匹配到 / 2 用法错误 / **3 check 发现 error**。
+
+### 9.1 台账上的通用写命令约束
+
+| 命令 | 台账上的行为 |
+|---|---|
+| `set` / `append` / `insert` | 只在 `## 正文` 区内允许（改一条的文字是合法操作）；命中索引/已关闭/受控块 → exit 2 并提示用 `rename` / `close` / `sync` |
+| `rm` | 拒绝并提示：正文块要删请用 `close`（保留判据）或显式 `--force` |
+| `mv` / `promote` / `demote` | 在台账上拒绝（会破坏层级唯一） |
+| `rename` | 通用版本只改 H3，不改表；台账版本（`issuemd rename FILE ID "T"`）两处同改 |
+
+---
+
+## 10. `adopt`：一次性转写
+
+不做兼容层，旧台账由 agent 转写。`adopt` 只承担**机械且可验证**的部分，其余进待决清单。
+
+```bash
+issuemd adopt old.md --dry-run --report decisions.md
+```
+
+机械改动（会出现在 diff 里）：
+
+1. 补全骨架节（`## 索引` / `## 已关闭` / `## 正文` / `## 附录`）。
+2. 删掉索引中 `closed` 分类的行（信息已在已关闭表）。
+3. 去掉所有标题里的 `（N）`。
+4. 给所有管道块补分隔行。
+5. 把正文块内的 `####` 小标题降级为 `**加粗标签**`。
+6. 索引加 `状态` 列；已关闭表加 `状态` 列（由原 H3 分组名映射到词表）。
+7. 把 `## 怎么用` 里的手写编辑协议替换为工具生成块（原文进 `-` 行）。
+
+写入待决清单（**不自动决定**）：
+
+| 待决项 | 判据 | 建议默认 |
+|---|---|---|
+| 摘要与正文标题冲突 | 逐条列出两边文本 | `--prefer=body` |
+| 表摘要含进展词 | W260 判据 | 搬进正文，附 `> **进展（来自旧表）**：…` |
+| 已关闭但仍有正文 | E111 判据（cafe 13 条） | 判据提升进表；正文搬 `## 附录` |
+| 状态词不在词表 | I13 判据 | 列出现有词与最接近的映射 |
+| 一格多号 | 解析出多个 id | 拆成多行 / 保留合并行 |
+| 编号区间 | 解析出 `1–199` | 保留区间行 |
+| 语义分组名 | H3 分组不属于任何状态 | 列出，供人决定丢弃或映射 |
+| 附录性内容 | `复核记录`、证据转录 | 原样搬 `## 附录` |
+
+`adopt` 的承诺只有一条：**不做你没批准的事**。它不保证语义正确，也不追求一步到位；输出必须能被 `check` 判为 0 error（附录内容除外）。
+
+---
+
+## 11. Skill 设计
+
+目录：`skills/issuemd/SKILL.md`。
+
+触发：issue 台账 / 台账 / 状态总览 / 待处理 / 关一条 issue / 新增 issue / 核对台账 / `issuemd`。
+
+骨架（沿用 lilmd 的节奏：探测 → loop → 写作规则 → 陷阱）：
+
+1. **探测**：`command -v issuemd`。
+2. **survey**：`issuemd FILE` → `issuemd list FILE`。
+3. **读一条**：`issuemd show FILE 65`（要单段用 `--label 验收判据`）。
+4. **改状态的唯一姿势**：`new` / `close` / `status` / `rename` / `reopen`。**禁止**用 `set` 手改状态表。
+5. **改完必跑** `issuemd check FILE`；exit 3 就是没拉齐。
+6. **陷阱**（可 grep）：
+   - 表格必须有 `|---|`（`E122`）。
+   - 一格可写多个编号与区间；**计数按编号算，不按行算**。
+   - 计数不要写进标题（`E121`）。
+   - 正文块内不许有标题（`E110`），用 `**标签**`。
+   - 已关闭项不能留正文（`E111`）。
+   - 单元格里的 `|` 写 `\|`（`E108`/`W205`）。
+   - 编号 `\d+[a-z]?`，不回收旧号。
+   - `--body` 首尾各留一个空行。
+   - 状态只在表里（`E107`）。
+7. **交给 owner 的写法**：结论必须带 `file:line` + 可复制命令 + 原始输出；不写死 HEAD，给查法（`git log --oneline -3`）。
+
+---
+
+## 12. 实施计划
+
+| 阶段 | 内容 | 验收 |
+|---|---|---|
+| **P0 脚手架** | 拷贝 lilmd `src/` + `bin/`，改包名为 `@blrbiran/issuemd`，MIT LICENSE，裁掉 vector/embed/banner/pretty | `npm test` 全绿；`issuemd FILE` 与 `lilmd FILE` 对同一输入逐字节相同 |
+| **P1 修 7 缺陷** | D1–D7，每条先写 RED（直接取附录 A.1 探针），再实现原子写与行级拼接 | 7 个用例红→绿；`file` 验证 CRLF/BOM/模式位/尾换行保持 |
+| **P2 台账模型** | 管道块解析（含无分隔行）、多编号与区间、骨架识别、E1xx/W2xx、`--json` | 对 mock fixture 的已知答案全中，含 13 条孤儿正文的 E111 |
+| **P3 台账写** | `new`/`close`/`status`/`rename`/`reopen`/`sync`/`counts`；原子写 + `--dry-run` | 每个命令的 diff 与预期行数逐字相符 |
+| **P4 `adopt`** | 机械改动 + 待决清单 + `--report` | 对 cafe 形状的 mock 输出清单条目数与预期一致 |
+| **P5 skill + 文档 + 清理** | SKILL.md、README、`--help`、TEMPLATE.md；删 `check-issues.mjs` 与 `verify-facts.mjs` | 无上下文 subagent 只读 SKILL.md 能完成三件事 |
+
+依赖：P0 → P1 → P2 → {P3, P4} → P5。
+
+---
+
+## 13. 验收（mock fixtures）
+
+不使用真实台账。`fixtures/` 下构造三份文档，每个已知答案先写成断言：
+
+| 编号 | fixture | 用途 | 关键断言 |
+|---|---|---|---|
+| F1 | `fixtures/canonical-clean.md` | 完全合规 | `check` exit 0；`list` 数量正确；`counts` 数字正确 |
+| F2 | `fixtures/cafe-shaped.md` | L1 形状，含 13 条孤儿正文、60/61 摘要漂移、标题计数 0 | E106×N、E111×13、E104×0；`sync --titles --move-progress` 的 diff 恰为 N 行表 + M 处正文追加 |
+| F3 | `fixtures/orca-shaped.md` | L2 形状，含 11 个无分隔行块、12 个计数标题、1 处计数与编号数不符 | E122×11、E121×12；`sync --fix-tables` diff 恰为 11 处插入 |
+| F4 | `fixtures/crlf-bom.md` | 编码边界 | CRLF/BOM/无尾换行在 `new`/`close`/`sync` 后逐字节保持 |
+
+每个 fixture 配一个 `fixtures/*.expected.json`，内容是 `check --json` 的期望输出。测试直接对拍——**不是「跑通」，而是「与人工核对过的已知答案吻合」**。
+
+---
+
+## 14. 风险与开放问题
+
+| # | 问题 | 现状 | 建议 |
+|---|---|---|---|
+| Q1 | 关闭即删正文后，`reopen` 只能从判据反推，原描述不可逆 | 已接受 | `--keep-body` 把正文搬 `## 附录`，信息可找回 |
+| Q2 | `adopt --prefer` 在两边标题都「还行」时会丢信息 | 存在 | 默认 `--prefer=body`；`--dry-run` 必看 |
+| Q3 | 单元格含换行/代码块 | 不支持 | `E108` 并提示拆行 |
+| Q4 | >10k 行解析耗时 | 未测（2701 行 < 10ms） | P2 补 10k 基准 |
+| Q5 | 若团队需要第二套状态词 | v1 不支持 | 改工具或等 config |
+| Q6 | 给旧台账补分隔行属于「改文档」 | 由 `adopt` 承担 | 默认 `--dry-run`；真应用需显式确认 |
+
+---
+
+## 15. 自查记录：被数据推翻的结论
+
+| 曾以为 | 实测 | 教训 |
+|---|---|---|
+| `check-issues.mjs` 已丢失 | 在本仓库根目录，60 行、未入 git、只认 orca | 别信二手报告，先 `find` 两次 |
+| 两份台账都「关闭即删正文」 | cafe 有 13 条孤儿正文；其协议明写「正文不动」 | 协议本身可能互相矛盾，先读协议再看数据 |
+| cafe 的 27/28 是漂移 | 现在 15/15，且差异来自「短标签 vs 完整描述」 | 先分清列语义，再定不变量 |
+| 已关闭表按编号升序 | cafe 按修复批次排序 | 升序只约束正文区，不约束已关闭表 |
+| orca 的待处理只有 12 条 | 无分隔行的管道块没有表头，朴素实现把首行当表头 | 解析单位是管道块 |
+
+---
+
+## 附录 A：实测原始输出
+
+> 环境：macOS，`node v22.23.4`，`npm 10.9.9`，`bun 1.3.14`，lilmd 0.5.0，pandoc。
+
+### A.1 lilmd 7 个缺陷探针（已复现）
+
+```bash
+printf '\xef\xbb\xbf# T\n\n## A\n\na\n' > bom.md && lilmd bom.md
+# bom.md  L1-5  1 heading
+#   ## A  L3-5                     ← H1 消失（D1）
+
+printf '# T\n\n## A\n\nbody\n\n```md\n## not a heading\n```\n\n## B\n\nb\n' > f.md
+lilmd demote f.md "=A"; grep -n 'not a heading' f.md
+# 8:### not a heading              ← fence 内被改写（D2）
+
+printf '# T\n\n## Dup\n\none\n\n## Dup\n\ntwo\n' > d.md
+lilmd set d.md "=Dup" --body 'X'
+# 静默改第一个 Dup（D3）
+
+printf '# T\r\n\r\n## A\r\n\r\nold\r\n' > crlf.md
+lilmd set crlf.md "=A" --body 'new'; od -c crlf.md | head -2
+# 0000000   # T \r \n \r \n # #    A \r \n  \n   n e w
+#                                          ^^ 混入 LF（D4）
+
+printf 'new-from-stdin\n' | lilmd set p.md "=A"
+# lilmd set: --body <text> is required (or pipe content via stdin)   exit=2  ← 文案说谎（D5）
+
+printf '# T\n\n## A\n\n#### deep\n\nx\n' > lv.md
+lilmd promote lv.md "=A"
+# # T
+# # A                             ← 两个 H1（D6）
+
+lilmd rm led.md "/Issue 1:/"
+# 状态表 `| 1 | 未决 |` 仍在（D7）
+```
+
+### A.2 结构规模（当前文件）
+
+| 文件 | 行数 | H2 | H3 | 管道块（合法 / 非表） | 索引 | 正文 | 已关闭 |
+|---|---|---|---|---|---|---|---|
+| cafe `issue-20261119.md` | 2701 | 5 | 36 | 44 / 0 | 76 行 | 28（13 条已关闭仍在） | 61 编号 |
+| orca `issue-20261023.md` | 2108 | 5 | 42 | 17 / **11** | 16 行 | 16 | 273 编号 / 261 行 |
+
+### A.3 orca 按编号计数（实测）
+
+```text
+未决 13 / 部分解决 3 / 已修 211（标题声明 212）
+owner 裁决不跟踪 23 / 早期已关闭 5 / 决定不改 7（2 行）
+延后 6 / 不是缺陷·产品裁决 7（3 行）/ 未分类 5（1 行）
+范围外 3 / 撤回 3 / 并入 3
+合计 289 个唯一编号；含（N）的标题 12 个
+```
+
+### A.4 cafe 漂移（实测）
+
+```text
+索引 76 行 = 已修 61 + 部分解决 7 + 未决 8
+已关闭表 61 行 = 索引中已修集合（完全相等）
+正文块 28 = 开放 15 + 孤儿 13（#56–60, #65–70, #75, #76）
+开放项正文标题 vs 索引摘要：15/15 不同
+已关闭项摘要 vs 索引摘要：60/61 不同
+```
+
+### A.5 渲染验证（pandoc GFM）
+
+```bash
+pandoc -f gfm orca/issue-20261023.md -t html | grep -c '<table'   # 17
+pandoc -f gfm orca/issue-20261023.md -t html | grep -c '^<p>|'    # 11
+pandoc -f gfm cafe/issue-20261119.md  -t html | grep -c '<table'  # 44
+```
+
+### A.6 正文风格差异（解释为什么骨架是 lint 而非硬约束）
+
+| 台账 | H4 数量 | `**加粗标签**` | 判据位置 |
+|---|---|---|---|
+| cafe | 174 | 0 | 正文 `#### 验收判据`（28/28） |
+| orca | 0 | 125 | 正文 7 / 表格判据列 9 |
+
+canonical 只允许加粗标签（S6）；cafe 的 174 个 H4 由 `adopt` 降级。
+
+### A.7 lilmd 代码规模（拷贝基线）
+
+| 文件 | 行数 | 处置 |
+|---|---|---|
+| `src/cli.ts` | 1155 | 拆分为 `cli/` 下按命令分组 |
+| `src/write.ts` | 231 | 重写（行级 + 原子） |
+| `src/select.ts` | 179 | 保留，修分词器 |
+| `src/scan.ts` | 173 | 保留，加 fence 状态输出 |
+| `src/banner.ts` | 153 | 删除 |
+| `src/vector.ts` | 135 | 删除 |
+| `src/render.ts` | 115 | 保留 |
+| `src/sections.ts` | 89 | 保留 |
+| `src/pretty.ts` | 58 | 删除 |
+| `src/embed.ts` | 52 | 删除 |
+
+测试基线：7 个文件（cli 80 / render 16 / scan 17 / sections 12 / select 27 / write 27 / integration 8）。可平移，但 `write` 的 27 个断言需按新写入语义重写。
+
+**裁掉的依赖**：`@huggingface/transformers`、`@libsql/client`、`terminal-image`、`chalk`、`marked`、`marked-terminal` → **零运行时依赖**。
