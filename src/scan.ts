@@ -38,6 +38,10 @@ export type Heading = {
  * Runs in a single pass; O(n) in source length, O(headings) in space.
  */
 export function scan(src: string): Heading[] {
+  // A UTF-8 BOM is an encoding marker, not content; without this the first
+  // heading is invisible and the file appears to have none.
+  if (src.charCodeAt(0) === 0xfeff) src = src.slice(1);
+
   const out: Heading[] = [];
   const len = src.length;
 

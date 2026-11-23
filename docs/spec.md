@@ -557,7 +557,7 @@ issuemd adopt old.md --dry-run --report decisions.md
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | **P0 脚手架** | 拷贝 lilmd `src/` + `bin/`，改包名为 `@blrbiran/issuemd`，MIT LICENSE，裁掉 vector/embed/banner/pretty | `npm test` 全绿；`issuemd FILE` 与 `lilmd FILE` 对同一输入逐字节相同 |
-| **P1 修 7 缺陷** | D1–D7，每条先写 RED（直接取附录 A.1 探针），再实现原子写与行级拼接 | 7 个用例红→绿；`file` 验证 CRLF/BOM/模式位/尾换行保持 |
+| **P1 修 7 缺陷** ✅ | D1–D7，每条先写 RED（直接取附录 A.1 探针），再实现原子写与行级拼接 | 13 个用例红→绿；真实 shell 下复验七个缺陷；模式位/E130 覆盖 |
 | **P2 台账模型** | 管道块解析（含无分隔行）、多编号与区间、骨架识别、E1xx/W2xx、`--json` | 对 mock fixture 的已知答案全中，含 13 条孤儿正文的 E111 |
 | **P3 台账写** | `new`/`close`/`status`/`rename`/`reopen`/`sync`/`counts`；原子写 + `--dry-run` | 每个命令的 diff 与预期行数逐字相符 |
 | **P4 `adopt`** | 机械改动 + 待决清单 + `--report` | 对 cafe 形状的 mock 输出清单条目数与预期一致 |

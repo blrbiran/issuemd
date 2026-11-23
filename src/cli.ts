@@ -24,12 +24,14 @@
  */
 
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { readFileSync, writeFileSync } from "node:fs";
+import { fstatSync, readFileSync } from "node:fs";
 
 import { scan } from "./scan.js";
 import { buildSections, countLines, pathOf, type Section } from "./sections.js";
 import { match, parseSelector } from "./select.js";
 import { renderSection, renderToc, truncateBody } from "./render.js";
+import { readDocument, writeAtomically, type Document, type ExpectedStat } from "./io.js";
+import { isLedger } from "./ledger.js";
 import {
   setSection,
   appendToSection,
@@ -54,15 +56,20 @@ Usage:
   issuemd links  <file> [selector]     extract markdown links from sections
   issuemd code   <file> [selector]     extract fenced code blocks
 
-  [write — modify files in place; --dry-run prints diff instead]:
-  issuemd set    <file> <sel> --body <text>            replace section body
-  issuemd append <file> <sel> --body <text>            append to section body
-  issuemd insert <file> --after <sel> --body <text>    insert after section
+  [write — atomic, keeps BOM/line endings/mode; --dry-run prints diff instead]:
+  issuemd set    <file> <sel> [--body <text>]          replace section body
+  issuemd append <file> <sel> [--body <text>]          append to section body
+  issuemd insert <file> --after <sel> [--body <text>]  insert after section
   issuemd rm     <file> <sel>                          remove section
   issuemd rename <file> <sel> <new-name>               rename heading
   issuemd promote <file> <sel>                         decrease heading level
   issuemd demote  <file> <sel>                         increase heading level
   issuemd mv <file> <from> <to>                        re-parent section under <to>
+
+  Body text comes from --body, --body-file, or a pipe/file on stdin.
+  A selector matching more than one section is an error (exit 2): nothing
+  is written. Promoting onto an ancestor's level is refused too - use 'mv'.
+  'rm' refuses on an issue ledger; close the issue instead.
 
 Selector grammar:
   Install                   fuzzy, case-insensitive substring
@@ -83,6 +90,7 @@ Options:
   --json                    machine-readable JSON output
   --lang <lang>             code: filter code blocks by language
   --body <text>             write: inline body content
+  --body-file <path|->      write: body from a file, or '-' for stdin (explicit)
   --after <selector>        insert: selector of section to insert after
   --dry-run                 write: print unified diff, don't modify file
 
@@ -117,6 +125,7 @@ const OPTIONS = {
   // write commands
   "dry-run": { type: "boolean" },
   body: { type: "string" },
+  "body-file": { type: "string" },
   after: { type: "string" },
   // code command
   lang: { type: "string" },
@@ -693,45 +702,137 @@ function cmdCode(rest: string[], v: Values): CliResult {
 
 // ---- shared write helpers ---------------------------------------------------
 
-/**
- * Apply a mutation: if --dry-run, print a unified diff; otherwise write the
- * new content back to `file`. Returns a CliResult.
- */
+type Loaded = {
+  doc: Document;
+  headings: ReturnType<typeof scan>;
+  sections: Section[];
+  srcLines: string[];
+  /** Stat captured at read time; the write refuses if the file moved. */
+  expected: ExpectedStat;
+};
+
 /** loadFile variant that rejects stdin ('-') for commands that write back. */
-function loadWritableFile(file: string): { src: string } | CliResult {
+function loadWritableFile(file: string): Loaded | CliResult {
   if (file === "-") return err("issuemd: write commands do not support stdin ('-')\n", 2);
-  return loadFile(file);
+  try {
+    const doc = readDocument(file);
+    const headings = scan(doc.text);
+    return {
+      doc,
+      headings,
+      sections: buildSections(headings, countLines(doc.text)),
+      // Split without the trailing sentinel so a file that ends with a
+      // newline does not gain a blank line at EOF on every rewrite.
+      srcLines: (doc.text.endsWith("\n") ? doc.text.slice(0, -1) : doc.text).split("\n"),
+      expected: doc.stat,
+    };
+  } catch (e) {
+    return err(`issuemd: cannot open '${file}': ${(e as Error).message}\n`, 2);
+  }
 }
 
+/**
+ * Apply a mutation: if --dry-run, print a unified diff; otherwise write the
+ * new content back to `file` atomically, restoring BOM/line endings/mode.
+ */
 function applyWrite(
   file: string,
-  oldLines: string[],
+  loaded: Loaded,
   newLines: string[],
   v: Values,
 ): CliResult {
   if (v["dry-run"]) {
-    const diff = unifiedDiff(oldLines, newLines, file);
+    const diff = unifiedDiff(loaded.srcLines, newLines, file);
     return ok(diff || "(no changes)\n");
   }
-  writeFileSync(file, newLines.join("\n"));
+  const b = loaded.doc.bom ? "\ufeff" : "";
+  const eol = loaded.doc.eol;
+  let text = newLines.join("\n");
+  // `srcLines` splits without the EOF sentinel, so a body written with a
+  // trailing blank line carries one line too many: drop it before restoring
+  // the file's own ending.
+  if (text.endsWith("\n")) text = text.slice(0, -1);
+  if (loaded.doc.finalNewline && text !== "") text += "\n";
+  const bytes = b + (eol === "\n" ? text : text.replaceAll("\n", "\r\n"));
+  const written = writeAtomically(file, bytes, loaded.expected);
+  if (!written.ok) {
+    // E130 — someone else wrote the file after we read it.
+    return err(
+      `issuemd: E130 '${file}' changed after it was read; re-read and retry\n`,
+      2,
+    );
+  }
   return ok("");
 }
 
 /**
+ * Write commands act on exactly one section. A selector that matches several
+ * used to silently edit the first; that is a wrong-file bug waiting to happen,
+ * so it now refuses and shows the candidates.
+ */
+function oneMatch(
+  matches: Section[],
+  cmd: string,
+): Section | CliResult {
+  if (matches.length === 0) return noMatch("(no match)\n");
+  if (matches.length > 1) {
+    const lines = matches
+      .map((s) => `  L${s.line_start}  ${"#".repeat(s.level)} ${s.title}`)
+      .join("\n");
+    return err(
+      `issuemd ${cmd}: selector is ambiguous (${matches.length} matches); nothing written\n${lines}\n` +
+        `narrow it, e.g. '=Exact title' or 'Parent > Child'\n`,
+      2,
+    );
+  }
+  return matches[0]!;
+}
+
+/**
+ * True when fd 0 carries real content (a pipe or a redirected file) rather
+ * than an interactive terminal. `isTTY` alone is unreliable: it is undefined
+ * both for pipes and inside test runners, where reading fd 0 would hang.
+ */
+function stdinIsRedirected(): boolean {
+  if (process.stdin.isTTY === true) return false;
+  try {
+    // A shell pipe is a FIFO and a redirect is a regular file; both mean the
+    // caller really piped content. A socket is what test runners and some
+    // wrappers hand over — reading it can block forever, so it is not
+    // treated as implicit input; use `--body-file -` there.
+    const stat = fstatSync(0);
+    return stat.isFIFO() || stat.isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Resolve body content for write commands.
- * Prefers --body flag; falls back to stdin when explicitly redirected (not a TTY
- * and not already consumed). In interactive use, --body is required.
+ * Prefers --body, then --body-file (PATH or '-' for stdin), then piped stdin.
+ * In interactive use one of them is required.
  */
 function requireBody(v: Values, cmd: string): { lines: string[] } | CliResult {
-  if (v.body != null) return { lines: v.body.split("\n") };
-  // Stdin redirect: only read when we're confident the caller piped content.
-  // process.stdin.isTTY is undefined (not false) in bun's test runner, so the
-  // explicit `=== false` check avoids accidentally consuming stdin in tests.
-  if (process.stdin.isTTY === false) {
-    const src = readFileSync(0, "utf8");
-    return { lines: src.split("\n") };
+  // Body text is used verbatim: callers pad it with their own blank lines,
+  // exactly as lilmd did, so existing agent habits keep working.
+  const split = (s: string) => s.split("\n");
+  if (v.body != null) return { lines: split(v.body) };
+  if (v["body-file"] != null) {
+    try {
+      const src =
+        v["body-file"] === "-"
+          ? readFileSync(0, "utf8")
+          : readFileSync(v["body-file"], "utf8");
+      return { lines: split(src) };
+    } catch (e) {
+      return err(`issuemd ${cmd}: cannot read --body-file: ${(e as Error).message}\n`, 2);
+    }
   }
-  return err(`issuemd ${cmd}: --body <text> is required (or pipe content via stdin)\n`, 2);
+  if (stdinIsRedirected()) return { lines: split(readFileSync(0, "utf8")) };
+  return err(
+    `issuemd ${cmd}: provide --body <text>, --body-file <path>|-, or pipe content on stdin\n`,
+    2,
+  );
 }
 
 // ---- write commands ---------------------------------------------------------
@@ -746,15 +847,12 @@ function cmdSet(rest: string[], v: Values): CliResult {
 
   const loaded = loadWritableFile(file);
   if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-  const srcLines = src.split("\n");
+  const { sections, srcLines } = loaded;
 
-  const matches = match(sections, parseSelector(selectorStr));
-  if (matches.length === 0) return noMatch("(no match)\n");
+  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "set");
+  if ("code" in sec) return sec;
 
-  const newLines = setSection(srcLines, matches[0]!, sections, bodyResult.lines);
-  return applyWrite(file, srcLines, newLines, v);
+  return applyWrite(file, loaded, setSection(srcLines, sec, sections, bodyResult.lines), v);
 }
 
 function cmdAppend(rest: string[], v: Values): CliResult {
@@ -767,15 +865,12 @@ function cmdAppend(rest: string[], v: Values): CliResult {
 
   const loaded = loadWritableFile(file);
   if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-  const srcLines = src.split("\n");
+  const { sections, srcLines } = loaded;
 
-  const matches = match(sections, parseSelector(selectorStr));
-  if (matches.length === 0) return noMatch("(no match)\n");
+  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "append");
+  if ("code" in sec) return sec;
 
-  const newLines = appendToSection(srcLines, matches[0]!, sections, bodyResult.lines);
-  return applyWrite(file, srcLines, newLines, v);
+  return applyWrite(file, loaded, appendToSection(srcLines, sec, sections, bodyResult.lines), v);
 }
 
 function cmdInsert(rest: string[], v: Values): CliResult {
@@ -788,15 +883,12 @@ function cmdInsert(rest: string[], v: Values): CliResult {
 
   const loaded = loadWritableFile(file);
   if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-  const srcLines = src.split("\n");
+  const { sections, srcLines } = loaded;
 
-  const matches = match(sections, parseSelector(v.after));
-  if (matches.length === 0) return noMatch("(no match)\n");
+  const sec = oneMatch(match(sections, parseSelector(v.after)), "insert");
+  if ("code" in sec) return sec;
 
-  const newLines = insertAfter(srcLines, matches[0]!, bodyResult.lines);
-  return applyWrite(file, srcLines, newLines, v);
+  return applyWrite(file, loaded, insertAfter(srcLines, sec, bodyResult.lines), v);
 }
 
 function cmdRm(rest: string[], v: Values): CliResult {
@@ -806,15 +898,22 @@ function cmdRm(rest: string[], v: Values): CliResult {
 
   const loaded = loadWritableFile(file);
   if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-  const srcLines = src.split("\n");
+  const { sections, srcLines } = loaded;
 
-  const matches = match(sections, parseSelector(selectorStr));
-  if (matches.length === 0) return noMatch("(no match)\n");
+  // A ledger's body block and its index row must move together. Generic `rm`
+  // can only do the first half, so it refuses and points at the ledger verb.
+  if (isLedger(loaded.doc.text)) {
+    return err(
+      "issuemd rm: this file is an issue ledger; removing a body block alone would orphan its index row.\n" +
+        "Use 'issuemd close FILE ID' (keeps the criteria) instead.\n",
+      2,
+    );
+  }
 
-  const newLines = removeSection(srcLines, matches[0]!);
-  return applyWrite(file, srcLines, newLines, v);
+  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "rm");
+  if ("code" in sec) return sec;
+
+  return applyWrite(file, loaded, removeSection(srcLines, sec), v);
 }
 
 function cmdRename(rest: string[], v: Values): CliResult {
@@ -826,15 +925,12 @@ function cmdRename(rest: string[], v: Values): CliResult {
 
   const loaded = loadWritableFile(file);
   if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-  const srcLines = src.split("\n");
+  const { sections, srcLines } = loaded;
 
-  const matches = match(sections, parseSelector(selectorStr));
-  if (matches.length === 0) return noMatch("(no match)\n");
+  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "rename");
+  if ("code" in sec) return sec;
 
-  const newLines = renameSection(srcLines, matches[0]!, newTitle);
-  return applyWrite(file, srcLines, newLines, v);
+  return applyWrite(file, loaded, renameSection(srcLines, sec, newTitle), v);
 }
 
 function cmdPromote(rest: string[], v: Values): CliResult {
@@ -844,15 +940,22 @@ function cmdPromote(rest: string[], v: Values): CliResult {
 
   const loaded = loadWritableFile(file);
   if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-  const srcLines = src.split("\n");
+  const { sections, srcLines, headings } = loaded;
 
-  const matches = match(sections, parseSelector(selectorStr));
-  if (matches.length === 0) return noMatch("(no match)\n");
+  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "promote");
+  if ("code" in sec) return sec;
 
-  const newLines = shiftLevel(srcLines, matches[0]!, -1);
-  return applyWrite(file, srcLines, newLines, v);
+  // Promoting to the parent's level turns a parent/child pair into siblings:
+  // that is a re-parent (`mv`), not a level change. A top-level H1 is already
+  // at level 1, so it stays a no-op clamp like lilmd's.
+  if (sec.parent && sec.level - 1 === sec.parent.level) {
+    return err(
+      `issuemd promote: '${sec.title}' would land on the same level as its parent '${sec.parent.title}'; use 'mv' to re-parent\n`,
+      2,
+    );
+  }
+
+  return applyWrite(file, loaded, shiftLevel(srcLines, sec, -1, headings), v);
 }
 
 function cmdDemote(rest: string[], v: Values): CliResult {
@@ -862,15 +965,12 @@ function cmdDemote(rest: string[], v: Values): CliResult {
 
   const loaded = loadWritableFile(file);
   if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-  const srcLines = src.split("\n");
+  const { sections, srcLines, headings } = loaded;
 
-  const matches = match(sections, parseSelector(selectorStr));
-  if (matches.length === 0) return noMatch("(no match)\n");
+  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "demote");
+  if ("code" in sec) return sec;
 
-  const newLines = shiftLevel(srcLines, matches[0]!, +1);
-  return applyWrite(file, srcLines, newLines, v);
+  return applyWrite(file, loaded, shiftLevel(srcLines, sec, +1, headings), v);
 }
 
 function cmdMv(rest: string[], v: Values): CliResult {
@@ -882,18 +982,13 @@ function cmdMv(rest: string[], v: Values): CliResult {
 
   const loaded = loadWritableFile(file);
   if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-  const srcLines = src.split("\n");
+  const { sections, srcLines, headings } = loaded;
 
-  const fromMatches = match(sections, parseSelector(fromStr));
-  if (fromMatches.length === 0) return noMatch("(no match)\n");
+  const fromSec = oneMatch(match(sections, parseSelector(fromStr)), "mv");
+  if ("code" in fromSec) return fromSec;
 
-  const toMatches = match(sections, parseSelector(toStr));
-  if (toMatches.length === 0) return noMatch("(no match for destination)\n");
-
-  const fromSec = fromMatches[0]!;
-  const toSec = toMatches[0]!;
+  const toSec = oneMatch(match(sections, parseSelector(toStr)), "mv --to");
+  if ("code" in toSec) return toSec;
 
   // Guard against circular moves (toSec is a descendant of fromSec).
   let cur: Section | null = toSec;
@@ -902,8 +997,7 @@ function cmdMv(rest: string[], v: Values): CliResult {
     cur = cur.parent;
   }
 
-  const newLines = moveSection(srcLines, fromSec, toSec);
-  return applyWrite(file, srcLines, newLines, v);
+  return applyWrite(file, loaded, moveSection(srcLines, fromSec, toSec, headings), v);
 }
 
 // ---- shared helpers ----------------------------------------------------

@@ -619,24 +619,36 @@ describe("cli: rename", () => {
 // ---- cli: promote / demote --------------------------------------------------
 
 describe("cli: promote", () => {
-  test("decreases heading level of section and descendants", async () => {
+  test("decreases heading level of a section nested two or more levels deep", async () => {
     const wfile = join(dir, "promote.md");
-    writeFileSync(wfile, SRC);
-    const r = await run(["promote", wfile, "Getting Started"]);
+    // Promoting into an ancestor's level is refused (D6), so a successful
+    // promote needs a section at least two levels below its parent.
+    // A normal child cannot be promoted without landing on its parent's level,
+    // which D6 refuses. A skipped level (H1 -> H3) is the legal case.
+    const src = "# lilmd\n\n### Skipped\n\ntext\n\n#### Child\n\nmore\n";
+    writeFileSync(wfile, src);
+    const r = await run(["promote", wfile, "Skipped"]);
     expect(r.code).toBe(0);
     const content = readFileSync(wfile, "utf8");
-    expect(content).toMatch(/^# Getting Started$/m);
-    expect(content).toMatch(/^## Install$/m);
-    expect(content).toMatch(/^## Setup$/m);
+    expect(content).toMatch(/^## Skipped$/m);
+    expect(content).toMatch(/^### Child$/m);
+  });
+
+  test("refuses to promote a section onto its parent's level", async () => {
+    const wfile = join(dir, "promote-collide.md");
+    writeFileSync(wfile, SRC);
+    const r = await run(["promote", wfile, "Install"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toMatch(/same level|mv/);
+    expect(readFileSync(wfile, "utf8")).toBe(SRC);
   });
 
   test("--dry-run shows diff without modifying file", async () => {
     const wfile = join(dir, "promote-dry.md");
     writeFileSync(wfile, SRC);
-    const r = await run(["promote", wfile, "Install", "--dry-run"]);
-    expect(r.code).toBe(0);
-    expect(r.stdout).toContain("-### Install");
-    expect(r.stdout).toContain("+## Install");
+    const r = await run(["promote", wfile, "Setup", "--dry-run"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toMatch(/same level|mv/);
     const content = readFileSync(wfile, "utf8");
     expect(content).toContain("### Install");
   });
@@ -721,16 +733,16 @@ describe("cli: write edge cases", () => {
     expect(r.stderr).toMatch(/cannot open/);
   });
 
-  test("set with multiple matches operates on the first match only", async () => {
-    // Selector '/.+/' matches every section; only the first (# lilmd) should change.
+  test("set refuses a selector that matches several sections", async () => {
+    // Silently editing the first of many matches is how the wrong section gets
+    // rewritten; the command must refuse and name the candidates instead.
     const wfile = join(dir, "set-multi.md");
     writeFileSync(wfile, SRC);
-    const r = await run(["set", wfile, "/.+/", "--body", "replaced", "--dry-run"]);
-    expect(r.code).toBe(0);
-    // The diff should contain "+replaced" (the new body) exactly once.
-    const addedLines = r.stdout.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
-    expect(addedLines).toHaveLength(1);
-    expect(addedLines[0]).toBe("+replaced");
+    const before = readFileSync(wfile, "utf8");
+    const r = await run(["set", wfile, "/.+/", "--body", "replaced"]);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toMatch(/ambiguous|matches/i);
+    expect(readFileSync(wfile, "utf8")).toBe(before);
   });
 
   test("promote at level 1 clamps (no-op on heading level)", async () => {

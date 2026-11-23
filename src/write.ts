@@ -10,6 +10,7 @@
  *   srcLines indices are 0-indexed (= line_number - 1).
  */
 
+import type { Heading } from "./scan.js";
 import type { Section } from "./sections.js";
 
 // ---- internal helpers -------------------------------------------------------
@@ -35,6 +36,15 @@ function shiftHeadingLine(line: string, delta: number): string {
   if (!m) return line;
   const newLevel = Math.max(1, Math.min(6, m[1]!.length + delta));
   return "#".repeat(newLevel) + m[2]!;
+}
+
+/**
+ * Indexes (0-based) of heading lines that are real headings, not lines that
+ * merely look like one inside a fenced code block. Callers pass the scanner's
+ * result so the same fence-aware rule governs reading and writing.
+ */
+export function headingIndexes(headings: Heading[]): Set<number> {
+  return new Set(headings.map((h) => h.line - 1));
 }
 
 // ---- public mutations -------------------------------------------------------
@@ -117,18 +127,19 @@ export function renameSection(
  * Shift the heading level of `sec` and every descendant by `delta`.
  * +1 = demote (deeper), -1 = promote (shallower). Clamps to 1..6.
  *
- * Only lines that look like ATX headings are touched; plain body text is
- * unchanged. Known limitation: heading-like lines *inside fenced code blocks*
- * are also shifted — acceptable for agent-authored markdown where `# ` inside
- * a code fence is uncommon, but callers should be aware.
+ * Only lines that are real headings are touched: pass `headings` (the
+ * scanner's output) and lines inside fenced code blocks are left alone.
  */
 export function shiftLevel(
   srcLines: string[],
   sec: Section,
   delta: number,
+  headings?: Heading[],
 ): string[] {
   const result = [...srcLines];
+  const real = headings ? headingIndexes(headings) : null;
   for (let i = sec.line_start - 1; i <= sec.line_end - 1; i++) {
+    if (real && !real.has(i)) continue;
     result[i] = shiftHeadingLine(result[i]!, delta);
   }
   return result;
@@ -147,11 +158,17 @@ export function moveSection(
   srcLines: string[],
   fromSec: Section,
   toSec: Section,
+  headings?: Heading[],
 ): string[] {
   // 1. Extract and adjust the block.
   const block = srcLines.slice(fromSec.line_start - 1, fromSec.line_end);
   const delta = toSec.level + 1 - fromSec.level;
-  const adjusted = block.map((l) => shiftHeadingLine(l, delta));
+  const real = headings ? headingIndexes(headings) : null;
+  const adjusted = block.map((l, k) => {
+    const index = fromSec.line_start - 1 + k;
+    if (real && !real.has(index)) return l;
+    return shiftHeadingLine(l, delta);
+  });
 
   // 2. Remove fromSec.
   const afterRemoval = [

@@ -60,7 +60,9 @@ Existing ledgers are **not** adopted at runtime. `issuemd adopt FILE --dry-run -
 
 ## Status
 
-P0 ships the Markdown CLI baseline. Use the generic write commands on test copies during this phase. P1 covers the known write-safety defects, and P2 onward adds the ledger-specific commands described in [the implementation plan](docs/spec.md#12-实施计划).
+P1 adds atomic, byte-faithful writes: BOM, line endings, final newline and permission bits are preserved, ambiguous selectors refuse instead of editing the first match, fenced code is never rewritten, and `rm` refuses on a ledger.
+
+P0 shipped the Markdown CLI baseline. Use the generic write commands on test copies during this phase. P1 covers the known write-safety defects, and P2 onward adds the ledger-specific commands described in [the implementation plan](docs/spec.md#12-实施计划).
 
 ## License
 
