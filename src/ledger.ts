@@ -37,7 +37,7 @@ export function isLedger(src: string): boolean {
 }
 
 /** Split a pipe row, decoding GFM's escape for literal pipes. */
-function splitCells(line: string): string[] {
+export function splitCells(line: string): string[] {
   const cells: string[] = [];
   let cell = "";
   let slashes = 0;

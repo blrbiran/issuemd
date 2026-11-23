@@ -20,7 +20,7 @@
  */
 
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 import { scan } from "./scan.js";
 import { buildSections, countLines } from "./sections.js";
@@ -51,6 +51,7 @@ import {
   viewIssue,
 } from "./ledger-read.js";
 import { unifiedDiff } from "./write.js";
+import { adopt, type Decision } from "./adopt.js";
 
 const HELP = `issuemd — read and maintain a single-file Markdown issue ledger
 
@@ -69,6 +70,7 @@ Usage:
   issuemd rename  FILE ID "NEW TITLE"
   issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
                         [--move-progress | --drop-progress]]
+  issuemd adopt   FILE [--dry-run] [--report PATH]
 
 Options:
   --json                    machine-readable JSON output
@@ -90,6 +92,7 @@ Options:
   --prefer <body|table>     sync --titles: which side wins (default body)
   --move-progress           sync --titles: move progress text into the body
   --drop-progress           sync --titles: discard progress text
+  --report <path>           adopt: write the decision list to a file
   --dry-run                 write: print a unified diff, don't modify the file
 
 Exit codes: 0 ok, 1 no such issue, 2 usage error, 3 ledger validation error.
@@ -135,6 +138,8 @@ const OPTIONS = {
   prefer: { type: "string" },
   "move-progress": { type: "boolean" },
   "drop-progress": { type: "boolean" },
+  // adopt
+  report: { type: "string" },
 } satisfies NonNullable<ParseArgsConfig["options"]>;
 
 export async function run(argv: string[]): Promise<CliResult> {
@@ -179,6 +184,8 @@ export async function run(argv: string[]): Promise<CliResult> {
       return cmdRename(positionals.slice(1), values);
     case "sync":
       return cmdSync(positionals.slice(1), values);
+    case "adopt":
+      return cmdAdopt(positionals.slice(1), values);
     default:
       return err(
         `issuemd: unknown command '${head}'. Try 'issuemd list FILE' or 'issuemd --help'\n`,
@@ -761,6 +768,78 @@ function cmdRename(rest: string[], v: Values): CliResult {
   const block = bodyBlocks(ledger).find((candidate) => candidate.id.start === found.span.start);
   if (block) lines[block.line - 1] = `### Issue ${spanText(found.span)}: ${next}`;
   return commit(file, loaded, errors, lines, !!v["dry-run"]);
+}
+
+function cmdAdopt(rest: string[], v: Values): CliResult {
+  const file = rest[0];
+  if (file == null || rest.length !== 1) {
+    return err("usage: issuemd adopt FILE [--dry-run] [--report PATH]\n", 2);
+  }
+  const loaded = loadWritable(file);
+  if ("code" in loaded) return loaded;
+
+  let result;
+  try {
+    result = adopt(loaded.doc.text);
+  } catch (error) {
+    if ((error as { code?: string }).code === "no-rows") {
+      return err(`issuemd adopt: ${(error as Error).message}\n`, 3);
+    }
+    throw error;
+  }
+  const report = renderAdoptReport(file, result.changes, result.decisions);
+  const target = joinDocument(result.lines, loaded.doc);
+  const after = checkLedger(target, file).errors;
+  if (after.length > 0) {
+    return err(
+      `issuemd adopt: the converted ledger still has ${after.length} error(s); nothing written\n` +
+        formatDiagnostics(after) + "\n" + report,
+      3,
+    );
+  }
+  if (v.report) {
+    try {
+      writeFileSync(v.report, report);
+    } catch (error) {
+      return err(`issuemd adopt: cannot write --report: ${(error as Error).message}\n`, 2);
+    }
+  }
+  if (v["dry-run"]) {
+    const diff = unifiedDiff(loaded.lines, result.lines, file);
+    return ok((diff || "(no changes)\n") + "\n" + report);
+  }
+  try {
+    const written = writeAtomically(file, target, loaded.doc.stat);
+    if (!written.ok) return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 2);
+  } catch (error) {
+    return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
+  }
+  return ok(report);
+}
+
+function renderAdoptReport(file: string, changes: string[], decisions: Decision[]): string {
+  const out = [`adopt: ${file}`, ""];
+  out.push("机械改动：");
+  out.push(...(changes.length ? changes.map((change) => `  - ${change}`) : ["  （无）"]));
+  out.push("", `待决事项（${decisions.length}）：`);
+  if (decisions.length === 0) out.push("  （无）");
+  const group = new Map<string, Decision[]>();
+  for (const decision of decisions) {
+    const list = group.get(decision.kind) ?? [];
+    list.push(decision);
+    group.set(decision.kind, list);
+  }
+  for (const [kind, list] of group) {
+    out.push(`  ${kind} x${list.length}`);
+    for (const decision of list) {
+      const id = decision.id ? ` #${decision.id}` : "";
+      const pair = decision.table != null
+        ? `\n      表: ${decision.table}\n      文: ${decision.body ?? ""}`
+        : "";
+      out.push(`    L${decision.line}${id} ${decision.message}${pair}`);
+    }
+  }
+  return out.join("\n") + "\n";
 }
 
 function cmdSync(rest: string[], v: Values): CliResult {
