@@ -1,106 +1,98 @@
 /**
- * issuemd CLI — composes scan + sections + select + render into commands.
+ * issuemd CLI — a single-file issue ledger tool.
  *
- * Uses node:util.parseArgs only: zero runtime dependencies. Subcommand
- * dispatch is a tiny switch on argv[0]; that's about 20 lines of glue we'd
- * reinvent on top of any framework anyway, and the cold-start benchmark
- * (see BENCHMARK.md) showed cac and parseArgs tied at ~16ms.
+ * One entry point, one spelling per action:
+ *   issuemd check   FILE [--json] [--strict] [--verify-commits]
+ *   issuemd list    FILE [--status S] [--priority P] [--closed] [--json]
+ *   issuemd show    FILE ID [--json] [--label NAME]
+ *   issuemd counts  FILE [--json]
+ *   issuemd read    FILE <H2 标题>
  *
- * Public commands (MVP):
- *   issuemd [file]                   toc
- *   issuemd <file> <selector>        alias for: issuemd read
- *   issuemd read <file> <selector>   read section(s) matching selector
- *   issuemd ls <file> <selector>     direct children of matching section
- *   issuemd grep <file> <pattern>    regex search inside section bodies
- *   issuemd --help | -h              help
- *
- * File argument accepts `-` to read stdin.
+ * The write verbs (new/close/reopen/status/rename/sync) live below the read
+ * verbs and all end in the same gate: build lines → re-check in memory →
+ * print a diff or replace the file atomically.
  *
  * Exit codes:
- *   0  found something / toc printed / help
- *   1  ran successfully but found no matches (grep-style, so `&&` chaining
- *      works the way agents expect)
- *   2  usage error (bad flag, missing file, invalid regex, file not found)
+ *   0  success
+ *   1  no such issue / empty result
+ *   2  usage or I/O error
  *   3  ledger validation failed
  */
 
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { fstatSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 
 import { scan } from "./scan.js";
-import { buildSections, countLines, pathOf, type Section } from "./sections.js";
-import { match, parseSelector } from "./select.js";
-import { renderSection, renderToc, truncateBody } from "./render.js";
+import { buildSections, countLines } from "./sections.js";
 import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
-import { isLedger } from "./ledger.js";
+import { bodyBlocks, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
 import {
-  setSection,
-  appendToSection,
-  insertAfter,
-  removeSection,
-  renameSection,
-  shiftLevel,
-  moveSection,
-  unifiedDiff,
-} from "./write.js";
+  bodySkeleton,
+  extractCriteria,
+  formatRow,
+  guideBlockLines,
+  insertLines,
+  removeLines,
+  replaceCell,
+  rewriteBlock,
+  statusBlockLines,
+  tableRange,
+} from "./ledger-edit.js";
+import {
+  filterRows,
+  findLabel,
+  findRow,
+  formatIssueRow,
+  labelsIn,
+  spanText,
+  summaryLine,
+  toListedIssue,
+  viewIssue,
+} from "./ledger-read.js";
+import { unifiedDiff } from "./write.js";
 
-const HELP = `issuemd — CLI for working with large Markdown files
+const HELP = `issuemd — read and maintain a single-file Markdown issue ledger
 
 Usage:
-  issuemd                              show this help
-  issuemd <file>                       print table of contents
-  issuemd <file> <selector>            alias for 'issuemd read'
-  issuemd toc    <file>                print table of contents (explicit)
-  issuemd read   <file> <selector>     print sections matching selector
-  issuemd ls     <file> <selector>     list direct child headings
-  issuemd grep   <file> <pattern>      regex-search section bodies
-  issuemd links  <file> [selector]     extract markdown links from sections
-  issuemd code   <file> [selector]     extract fenced code blocks
+  issuemd check   FILE [--json] [--strict] [--verify-commits]
+  issuemd list    FILE [--status S] [--priority P] [--closed] [--json]
+  issuemd show    FILE ID [--json] [--label NAME]
+  issuemd counts  FILE [--json]
+  issuemd read    FILE <H2 heading>
 
-  issuemd check  <file> [--json]      validate a canonical issue ledger
-
-  [write — atomic, keeps BOM/line endings/mode; --dry-run prints diff instead]:
-  issuemd set    <file> <sel> [--body <text>]          replace section body
-  issuemd append <file> <sel> [--body <text>]          append to section body
-  issuemd insert <file> --after <sel> [--body <text>]  insert after section
-  issuemd rm     <file> <sel>                          remove section
-  issuemd rename <file> <sel> <new-name>               rename heading
-  issuemd promote <file> <sel>                         decrease heading level
-  issuemd demote  <file> <sel>                         increase heading level
-  issuemd mv <file> <from> <to>                        re-parent section under <to>
-
-  Body text comes from --body, --body-file, or a pipe/file on stdin.
-  A selector matching more than one section is an error (exit 2): nothing
-  is written. Promoting onto an ancestor's level is refused too - use 'mv'.
-  'rm' refuses on an issue ledger; close the issue instead.
-
-Selector grammar:
-  Install                   fuzzy, case-insensitive substring
-  =Install                  exact, case-insensitive equality
-  /^inst/i                  regex (JS syntax); flags default to 'i'
-  ##Install                 level filter (1..6 '#'s)
-  Guide > Install           descendant, any depth under 'Guide'
-  Guide >> Install          direct child of 'Guide'
+  [write — atomic, keeps BOM/line endings/mode; --dry-run prints a diff]:
+  issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]
+  issuemd close   FILE ID [--criteria TEXT | --criteria-from-body] [--keep-body]
+  issuemd reopen  FILE ID
+  issuemd status  FILE ID NEW_STATUS
+  issuemd rename  FILE ID "NEW TITLE"
+  issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
+                        [--move-progress | --drop-progress]]
 
 Options:
-  --depth <n>               TOC: max heading depth to show (0 = none)
-  --flat                    TOC: flat list, no indentation
-  --max-results <n>         cap matches for read/ls (default 25)
-  --max-lines <n>           truncate long bodies (0 = unlimited)
-  --body-only               read: skip subsections
-  --no-body                 read: print headings only
-  --raw                     read: drop delimiter lines
   --json                    machine-readable JSON output
-  --lang <lang>             code: filter code blocks by language
   --strict                  check: fail on warnings
   --verify-commits          check: verify commit references in the ledger directory
-  --body <text>             write: inline body content
-  --body-file <path|->      write: body from a file, or '-' for stdin (explicit)
-  --after <selector>        insert: selector of section to insert after
-  --dry-run                 write: print unified diff, don't modify file
+  --status <S>              list: filter by status
+  --priority <P>            list: filter by priority
+  --closed                  list: show the closed table instead of the index
+  --label <NAME>            show: print only the **NAME** paragraph
+  --title <T>               new: summary/body title
+  --id <N>                  new: explicit issue id
+  --body-file <path|->      new: body from a file, or '-' for stdin
+  --criteria <TEXT>         close: criteria column text
+  --criteria-from-body      close: lift the **验收判据** paragraph into the column
+  --keep-body               close: move the body into 附录 instead of deleting it
+  --guide                   sync: rewrite the controlled guide and status blocks
+  --fix-tables              sync: add missing table separator rows
+  --titles                  sync: align body headings with index summaries
+  --prefer <body|table>     sync --titles: which side wins (default body)
+  --move-progress           sync --titles: move progress text into the body
+  --drop-progress           sync --titles: discard progress text
+  --dry-run                 write: print a unified diff, don't modify the file
 
-Use '-' as <file> to read from stdin. Exit code is 1 when no matches.
+Exit codes: 0 ok, 1 no such issue, 2 usage error, 3 ledger validation error.
 `;
 
 export type CliResult = { code: number; stdout: string; stderr: string };
@@ -109,9 +101,6 @@ function ok(s: string): CliResult {
   return { code: 0, stdout: s, stderr: "" };
 }
 function noMatch(s: string): CliResult {
-  // Successful run that found nothing: exit 1 so `issuemd ... && foo` works the
-  // way agents expect, but keep the friendly message on stdout so humans see
-  // it too.
   return { code: 1, stdout: s, stderr: "" };
 }
 function err(s: string, code = 1): CliResult {
@@ -119,24 +108,33 @@ function err(s: string, code = 1): CliResult {
 }
 
 const OPTIONS = {
-  depth: { type: "string" },
-  flat: { type: "boolean" },
-  "max-results": { type: "string" },
-  "max-lines": { type: "string" },
-  "body-only": { type: "boolean" },
-  "no-body": { type: "boolean" },
-  raw: { type: "boolean" },
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },
   strict: { type: "boolean" },
   "verify-commits": { type: "boolean" },
-  // write commands
+  // list
+  status: { type: "string" },
+  priority: { type: "string" },
+  closed: { type: "boolean" },
+  // show
+  label: { type: "string" },
+  // shared write options
   "dry-run": { type: "boolean" },
-  body: { type: "string" },
+  // new
+  title: { type: "string" },
+  id: { type: "string" },
   "body-file": { type: "string" },
-  after: { type: "string" },
-  // code command
-  lang: { type: "string" },
+  // close
+  criteria: { type: "string" },
+  "criteria-from-body": { type: "boolean" },
+  "keep-body": { type: "boolean" },
+  // sync
+  guide: { type: "boolean" },
+  "fix-tables": { type: "boolean" },
+  titles: { type: "boolean" },
+  prefer: { type: "string" },
+  "move-progress": { type: "boolean" },
+  "drop-progress": { type: "boolean" },
 } satisfies NonNullable<ParseArgsConfig["options"]>;
 
 export async function run(argv: string[]): Promise<CliResult> {
@@ -153,75 +151,49 @@ export async function run(argv: string[]): Promise<CliResult> {
   }
 
   const { values, positionals } = parsed;
-  if (values.help || positionals.length === 0) {
-    return ok(HELP);
-  }
-
-  // Detect explicit subcommand by the first positional.
   const head = positionals[0];
-  const CMDS = new Set([
-    "read", "ls", "grep", "toc",
-    "links", "code", "check",
-    "set", "append", "insert", "rm", "rename", "promote", "demote", "mv",
-  ]);
-  if (head && CMDS.has(head)) {
-    return dispatch(head, positionals.slice(1), values);
+  if (values.help || head == null) {
+    return values.help ? ok(HELP) : err("issuemd: missing command. Try 'issuemd list FILE' or 'issuemd --help'\n", 2);
   }
 
-  // Positional form:
-  //   issuemd <file>              -> toc
-  //   issuemd <file> <selector>   -> read
-  if (positionals.length === 1) return dispatch("toc", positionals, values);
-  return dispatch("read", positionals, values);
+  switch (head) {
+    case "check":
+      return cmdCheck(positionals.slice(1), values);
+    case "list":
+      return cmdList(positionals.slice(1), values);
+    case "show":
+      return cmdShow(positionals.slice(1), values);
+    case "counts":
+      return cmdCounts(positionals.slice(1), values);
+    case "read":
+      return cmdRead(positionals.slice(1));
+    case "new":
+      return cmdNew(positionals.slice(1), values);
+    case "close":
+      return cmdClose(positionals.slice(1), values);
+    case "reopen":
+      return cmdReopen(positionals.slice(1), values);
+    case "status":
+      return cmdStatus(positionals.slice(1), values);
+    case "rename":
+      return cmdRename(positionals.slice(1), values);
+    case "sync":
+      return cmdSync(positionals.slice(1), values);
+    default:
+      return err(
+        `issuemd: unknown command '${head}'. Try 'issuemd list FILE' or 'issuemd --help'\n`,
+        2,
+      );
+  }
 }
 
 type Values = ReturnType<typeof parseArgs<{ options: typeof OPTIONS }>>["values"];
 
-async function dispatch(
-  cmd: string,
-  rest: string[],
-  values: Values,
-): Promise<CliResult> {
-  switch (cmd) {
-    case "toc":
-      return cmdToc(rest, values);
-    case "read":
-      return cmdRead(rest, values);
-    case "ls":
-      return cmdLs(rest, values);
-    case "grep":
-      return cmdGrep(rest, values);
-    case "links":
-      return cmdLinks(rest, values);
-    case "code":
-      return cmdCode(rest, values);
-    case "check":
-      return cmdCheck(rest, values);
-    case "set":
-      return cmdSet(rest, values);
-    case "append":
-      return cmdAppend(rest, values);
-    case "insert":
-      return cmdInsert(rest, values);
-    case "rm":
-      return cmdRm(rest, values);
-    case "rename":
-      return cmdRename(rest, values);
-    case "promote":
-      return cmdPromote(rest, values);
-    case "demote":
-      return cmdDemote(rest, values);
-    case "mv":
-      return cmdMv(rest, values);
-    default:
-      return err(`issuemd: unknown command '${cmd}'\n${HELP}`, 2);
-  }
-}
+// ---- shared helpers ----------------------------------------------------
 
 /**
  * Read `file` from disk or stdin. Returns a CliResult on failure so callers
- * can just forward it — we swallow raw ENOENT stack traces here and emit a
- * friendly "issuemd: cannot open 'foo.md'" message instead.
+ * can just forward it — no raw ENOENT stack traces reach the user.
  */
 function loadFile(file: string): { src: string } | CliResult {
   try {
@@ -235,575 +207,224 @@ function loadFile(file: string): { src: string } | CliResult {
   }
 }
 
-/**
- * Parse `v` as a base-10 integer. Returns null (not fallback) on invalid
- * input so callers can distinguish "not provided" from "bad value".
- */
-function parseIntOrNull(v: string | undefined): number | null {
-  if (v == null) return null;
-  const n = Number.parseInt(v, 10);
-  if (Number.isNaN(n) || String(n) !== v.trim()) return null;
-  return n;
+/** `parseLedger` returns diagnostics instead of throwing; views need them up front. */
+function unusableLedger(ledger: ReturnType<typeof parseLedger>): CliResult | null {
+  const missing = ledger.errors.filter(({ code }) => code === "E120");
+  if (missing.length === 0) return null;
+  return err(missing.map(({ code, message }) => `${code}: ${message}`).join("\n") + "\n", 3);
 }
 
-function readFlag(
-  v: Values,
-  name: "depth" | "max-results" | "max-lines",
-  fallback: number | null,
-): { value: number | null } | CliResult {
-  const raw = v[name];
-  if (raw == null) return { value: fallback };
-  const n = parseIntOrNull(raw);
-  if (n == null || n < 0) {
-    return err(`issuemd: --${name} expects a non-negative integer, got '${raw}'\n`, 2);
-  }
-  return { value: n };
+function formatDiagnostics(diagnostics: Diagnostic[]): string {
+  return diagnostics
+    .map(({ code, line, id, message }) => `  L${line}${id ? ` #${id}` : ""} ${code}: ${message}`)
+    .join("\n");
 }
 
-// ---- commands ----------------------------------------------------------
+// ---- read commands -----------------------------------------------------
 
 function cmdCheck(rest: string[], v: Values): CliResult {
   const file = rest[0];
-  if (file == null || rest.length !== 1) return err("usage: issuemd check FILE [--json] [--strict] [--verify-commits]\n", 2);
+  if (file == null || rest.length !== 1) {
+    return err("usage: issuemd check FILE [--json] [--strict] [--verify-commits]\n", 2);
+  }
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
   try {
-    const report = checkLedger(loaded.src, file, { strict: v.strict, verifyCommits: v["verify-commits"] });
-    if (v.json) return { code: report.ok ? 0 : 3, stdout: JSON.stringify(report, null, 2) + "\n", stderr: "" };
-    const openByStatus = Object.entries(STATUS_CLASSES)
-      .filter(([status, kind]) => kind === "open" && Object.hasOwn(report.counts.byStatus, status))
-      .map(([status]) => `${status} ${report.counts.byStatus[status] ?? "?"}`);
-    const openBreakdown = openByStatus.length ? ` (${openByStatus.join(", ")})` : "";
-    const lines = [
-      `file: ${file}`,
-      `open ${report.counts.open ?? "?"}${openBreakdown}   closed ${report.counts.closed ?? "?"}`,
-    ];
+    const report = checkLedger(loaded.src, file, {
+      strict: v.strict,
+      verifyCommits: v["verify-commits"],
+    });
+    const code = report.ok ? 0 : 3;
+    if (v.json) return { code, stdout: JSON.stringify(report, null, 2) + "\n", stderr: "" };
+    const lines = [`file: ${file}`, summaryLine(report.counts)];
     for (const [severity, diagnostics] of [["error", report.errors], ["warning", report.warnings]] as const) {
-      const groups = new Map<string, typeof diagnostics>();
+      const groups = new Map<string, Diagnostic[]>();
       for (const diagnostic of diagnostics) {
         const group = groups.get(diagnostic.code) ?? [];
         group.push(diagnostic);
         groups.set(diagnostic.code, group);
       }
-      for (const [code, group] of groups) {
-        lines.push(`${severity} ${code} x${group.length}`);
+      for (const [groupCode, group] of groups) {
+        lines.push(`${severity} ${groupCode} x${group.length}`);
         for (const { line, id, message, expected, actual } of group.slice(0, 3)) {
-          const details = expected === undefined ? "" : ` (expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)})`;
+          const details = expected === undefined
+            ? ""
+            : ` (expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)})`;
           lines.push(`  L${line}${id ? ` #${id}` : ""}: ${message}${details}`);
         }
         if (group.length > 3) lines.push(`  … (${group.length - 3} more, use --json for all)`);
       }
     }
     lines.push(`${report.errors.length} errors, ${report.warnings.length} warnings`);
-    const stdout = lines.join("\n");
-    return { code: report.ok ? 0 : 3, stdout: stdout + "\n", stderr: "" };
+    return { code, stdout: lines.join("\n") + "\n", stderr: "" };
   } catch (error) {
     return err(`issuemd check: ${(error as Error).message}\n`, 2);
   }
 }
 
-function cmdToc(rest: string[], v: Values): CliResult {
+function cmdList(rest: string[], v: Values): CliResult {
   const file = rest[0];
-  if (file == null) return err("issuemd toc: missing <file>\n", 2);
-  const loaded = loadFile(file);
-  if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-
-  if (v.json) {
-    return ok(
-      JSON.stringify(
-        {
-          file,
-          total_lines: countLines(src),
-          headings: sections.map(sectionToJSON),
-        },
-        null,
-        2,
-      ),
-    );
-  }
-
-  const depth = readFlag(v, "depth", null);
-  if ("code" in depth) return depth;
-  return ok(
-    renderToc(file, src, sections, {
-      depth: depth.value ?? undefined,
-      flat: !!v.flat,
-    }),
-  );
-}
-
-async function cmdRead(rest: string[], v: Values): Promise<CliResult> {
-  const file = rest[0];
-  const selectorStr = rest[1];
-  if (file == null || selectorStr == null) {
-    return err("issuemd read: missing <file> or <selector>\n", 2);
+  if (file == null || rest.length !== 1) {
+    return err("usage: issuemd list FILE [--status S] [--priority P] [--closed] [--json]\n", 2);
   }
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
+  const ledger = parseLedger(loaded.src);
+  const unusable = unusableLedger(ledger);
+  if (unusable) return unusable;
 
-  const maxResults = readFlag(v, "max-results", 25);
-  if ("code" in maxResults) return maxResults;
-  const maxLines = readFlag(v, "max-lines", 0);
-  if ("code" in maxLines) return maxLines;
-
-  const selector = parseSelector(selectorStr);
-  const matches = match(sections, selector);
-
-  // Split source once and pass srcLines through to render. Previously
-  // renderSection/sliceBody each re-split for every match, turning
-  // `issuemd read file.md sel` into O(matches × file_size).
-  const srcLines = src.split("\n");
-
-  if (v.json) {
-    return emitReadJson(
-      file,
-      srcLines,
-      sections,
-      matches,
-      maxResults.value ?? 25,
-      maxLines.value ?? 0,
-      v,
-    );
-  }
-
-  if (matches.length === 0) return noMatch("(no match)\n");
-
-  const cap = maxResults.value ?? 25;
-  const toPrint = matches.slice(0, cap);
-  const out: string[] = [];
-  if (matches.length > cap) {
-    out.push(
-      `${matches.length} matches, showing first ${cap}. Use --max-results=N to raise the cap.`,
-    );
-  }
-  for (const sec of toPrint) {
-    out.push(
-      renderSection(file, srcLines, sec, {
-        bodyOnly: !!v["body-only"],
-        noBody: !!v["no-body"],
-        raw: !!v.raw,
-        maxLines: maxLines.value ?? 0,
-        allSections: sections,
-      }),
-    );
-  }
-  return ok(out.join("\n"));
-}
-
-function emitReadJson(
-  file: string,
-  srcLines: string[],
-  all: Section[],
-  matches: Section[],
-  maxResults: number,
-  maxLines: number,
-  v: Values,
-): CliResult {
-  const body = JSON.stringify(
-    {
-      file,
-      matches: matches.slice(0, maxResults).map((s) => ({
-        ...sectionToJSON(s),
-        body: v["no-body"]
-          ? ""
-          : maybeTruncate(sliceBody(srcLines, s, all, !!v["body-only"]), maxLines),
-      })),
-      truncated: matches.length > maxResults,
-    },
-    null,
-    2,
-  );
-  // JSON path keeps exit 0 regardless — the shape itself signals no matches.
-  return matches.length === 0 ? { code: 1, stdout: body, stderr: "" } : ok(body);
-}
-
-function cmdLs(rest: string[], v: Values): CliResult {
-  const file = rest[0];
-  const selectorStr = rest[1];
-  if (file == null || selectorStr == null) {
-    return err("issuemd ls: missing <file> or <selector>\n", 2);
-  }
-  const loaded = loadFile(file);
-  if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-
-  const maxResults = readFlag(v, "max-results", 25);
-  if ("code" in maxResults) return maxResults;
-  const cap = maxResults.value ?? 25;
-
-  const selector = parseSelector(selectorStr);
-  const matches = match(sections, selector).slice(0, cap);
-
-  // Index children by parent once so we don't repeat an O(n) filter per
-  // match — inexpensive in practice but easy to do right.
-  const childrenOf = new Map<Section, Section[]>();
-  for (const sec of sections) {
-    if (sec.parent) {
-      const list = childrenOf.get(sec.parent);
-      if (list) list.push(sec);
-      else childrenOf.set(sec.parent, [sec]);
-    }
-  }
-
-  if (v.json) {
-    const results = matches.map((parent) => ({
-      parent: sectionToJSON(parent),
-      children: (childrenOf.get(parent) ?? []).map(sectionToJSON),
-    }));
-    const body = JSON.stringify({ file, results }, null, 2);
-    return matches.length === 0 ? { code: 1, stdout: body, stderr: "" } : ok(body);
-  }
-
-  if (matches.length === 0) return noMatch("(no match)\n");
-
-  const out: string[] = [];
-  for (const parent of matches) {
-    const children = childrenOf.get(parent) ?? [];
-    out.push(
-      `${"#".repeat(parent.level)} ${parent.title}  L${parent.line_start}-${parent.line_end}`,
-    );
-    if (children.length === 0) {
-      out.push("  (no children)");
-    } else {
-      for (const c of children) {
-        out.push(
-          `  ${"#".repeat(c.level)} ${c.title}  L${c.line_start}-${c.line_end}`,
-        );
-      }
-    }
-  }
-  return ok(out.join("\n"));
-}
-
-function cmdGrep(rest: string[], v: Values): CliResult {
-  const file = rest[0];
-  const pattern = rest[1];
-  if (file == null || pattern == null) {
-    return err("issuemd grep: missing <file> or <pattern>\n", 2);
-  }
-  const loaded = loadFile(file);
-  if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-
-  let re: RegExp;
-  try {
-    re = new RegExp(pattern);
-  } catch (e) {
-    return err(`issuemd grep: invalid regex: ${(e as Error).message}\n`, 2);
-  }
-
-  const srcLines = src.split("\n");
-  type Hit = { section: Section | null; line: number; text: string };
-  const hits: Hit[] = [];
-
-  // Walk all lines once and attribute each match to the innermost enclosing
-  // section. Sections are in document order, so a monotonic cursor is enough.
-  // Matches before the first heading get `section: null`.
-  let secIdx = -1;
-  for (let lineNo = 1; lineNo <= srcLines.length; lineNo++) {
-    while (
-      secIdx + 1 < sections.length &&
-      sections[secIdx + 1]!.line_start <= lineNo
-    ) {
-      secIdx++;
-    }
-    const line = srcLines[lineNo - 1]!;
-    if (re.test(line)) {
-      const section = secIdx >= 0 ? sections[secIdx] ?? null : null;
-      hits.push({ section, line: lineNo, text: line });
-    }
-  }
-
+  const table = v.closed ? "closed" : "open";
+  const rows = filterRows(ledger.rows[table], { status: v.status, priority: v.priority });
   if (v.json) {
     const body = JSON.stringify(
-      hits.map((h) => ({
-        file,
-        line: h.line,
-        text: h.text,
-        section: h.section ? sectionToJSON(h.section) : null,
-      })),
+      { file, table, issues: rows.map((row) => toListedIssue(row, table)) },
       null,
       2,
     );
-    return hits.length === 0 ? { code: 1, stdout: body, stderr: "" } : ok(body);
+    return rows.length === 0 ? { code: 1, stdout: body + "\n", stderr: "" } : ok(body);
   }
-
-  if (hits.length === 0) return noMatch("(no match)\n");
-
-  // Group consecutive hits by section for readable output.
-  const out: string[] = [];
-  let lastSection: Section | null | undefined = undefined;
-  for (const hit of hits) {
-    if (hit.section !== lastSection) {
-      if (hit.section) {
-        const path = pathOf(hit.section).concat(hit.section.title).join(" > ");
-        out.push(
-          `── ${path}  L${hit.section.line_start}-${hit.section.line_end}`,
-        );
-      } else {
-        out.push(`── ${file}  (no enclosing heading)`);
-      }
-      lastSection = hit.section;
-    }
-    out.push(`  L${hit.line}:  ${hit.text}`);
-  }
-  return ok(out.join("\n"));
+  if (rows.length === 0) return noMatch("(no issues)\n");
+  return ok(rows.map(formatIssueRow).join("\n"));
 }
 
-// ---- links ------------------------------------------------------------------
-
-function cmdLinks(rest: string[], v: Values): CliResult {
+function cmdCounts(rest: string[], v: Values): CliResult {
   const file = rest[0];
-  const selectorStr = rest[1]; // optional
-  if (file == null) return err("issuemd links: missing <file>\n", 2);
+  if (file == null || rest.length !== 1) return err("usage: issuemd counts FILE [--json]\n", 2);
+  const loaded = loadFile(file);
+  if ("code" in loaded) return loaded;
+  const report = checkLedger(loaded.src, file);
+  const unusable = unusableLedger(parseLedger(loaded.src));
+  if (unusable) return unusable;
+  if (v.json) return ok(JSON.stringify({ file, counts: report.counts }, null, 2));
+  return ok(summaryLine(report.counts) + "\n");
+}
 
+function cmdShow(rest: string[], v: Values): CliResult {
+  const file = rest[0];
+  const id = rest[1];
+  if (file == null || id == null || rest.length !== 2) {
+    return err("usage: issuemd show FILE ID [--json] [--label NAME]\n", 2);
+  }
+  const loaded = loadFile(file);
+  if ("code" in loaded) return loaded;
+  const ledger = parseLedger(loaded.src);
+  const unusable = unusableLedger(ledger);
+  if (unusable) return unusable;
+  const view = viewIssue(ledger, id);
+  if (!view) return noMatch(`(no such issue: ${id})\n`);
+
+  if (v.label != null) {
+    const range = view.body ?? { line: view.line, end: view.line };
+    const found = findLabel(ledger.lines, range.line, range.end, v.label);
+    if (!found) {
+      const known = labelsIn(ledger.lines, range.line, range.end);
+      return {
+        code: 1,
+        stdout: `(no label: ${v.label})\n`,
+        stderr: known.length ? `labels in #${view.id}: ${known.join(", ")}\n` : "",
+      };
+    }
+    if (v.json) return ok(JSON.stringify({ ...view, paragraph: found.text }, null, 2));
+    return ok(`**${found.label}**：${found.text}`);
+  }
+
+  if (v.json) return ok(JSON.stringify(view, null, 2));
+
+  const lines = [`#${view.id}  ${view.status}  ${view.priority || "-"}  ${view.summary}`];
+  lines.push(`L${view.body?.line ?? view.line}-${view.body?.end ?? view.end}`);
+  if (view.criteria) lines.push(`判据: ${view.criteria}`);
+  lines.push("");
+  lines.push(view.body ? view.body.text : "(已关闭，只保留判据)");
+  return ok(lines.join("\n"));
+}
+
+/**
+ * Read one top-level section by its exact H2 title. No selectors: the ledger
+ * only ever needs "give me `## 附录`" or "give me this named section".
+ */
+function cmdRead(rest: string[]): CliResult {
+  const file = rest[0];
+  const title = rest[1];
+  if (file == null || title == null || rest.length !== 2) {
+    return err("usage: issuemd read FILE <H2 heading>\n", 2);
+  }
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
   const { src } = loaded;
   const sections = buildSections(scan(src), countLines(src));
-  const srcLines = src.split("\n");
-
-  // Extract all inline markdown links [text](url), attributed to sections.
-  const LINK_RE = /\[([^\]]*)\]\(([^)]*)\)/g;
-  type Hit = { section: Section | null; line: number; text: string; url: string };
-  const hits: Hit[] = [];
-
-  let secIdx = -1;
-  for (let lineNo = 1; lineNo <= srcLines.length; lineNo++) {
-    while (secIdx + 1 < sections.length && sections[secIdx + 1]!.line_start <= lineNo) secIdx++;
-    const sec = secIdx >= 0 ? sections[secIdx] ?? null : null;
-    const line = srcLines[lineNo - 1]!;
-    LINK_RE.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = LINK_RE.exec(line)) !== null) {
-      hits.push({ section: sec, line: lineNo, text: m[1]!, url: m[2]! });
-    }
+  const h2s = sections.filter((section) => section.level === 2);
+  const matches = h2s.filter((section) => section.title === title);
+  const candidates = h2s.map(({ line_start, title: name }) => `  L${line_start}  ## ${name}`).join("\n");
+  if (matches.length === 0) {
+    return err(`issuemd read: no H2 heading '${title}' in '${file}'\n${candidates}\n`, 2);
   }
-
-  // Filter by selector if provided.
-  let filtered = hits;
-  if (selectorStr) {
-    const selector = parseSelector(selectorStr);
-    const matched = match(sections, selector);
-    if (matched.length === 0) return noMatch("(no match)\n");
-    filtered = hits.filter((h) =>
-      matched.some((s) => h.line >= s.line_start && h.line <= s.line_end),
-    );
+  if (matches.length > 1) {
+    const listed = matches.map(({ line_start }) => `  L${line_start}  ## ${title}`).join("\n");
+    return err(`issuemd read: '${title}' matches ${matches.length} headings; nothing printed\n${listed}\n`, 2);
   }
-
-  if (filtered.length === 0) return noMatch("(no match)\n");
-
-  if (v.json) {
-    return ok(
-      JSON.stringify(
-        filtered.map((h) => ({
-          file,
-          line: h.line,
-          text: h.text,
-          url: h.url,
-          section: h.section ? sectionToJSON(h.section) : null,
-        })),
-        null,
-        2,
-      ),
-    );
-  }
-
-  const out: string[] = [];
-  let lastSec: Section | null | undefined = undefined;
-  for (const hit of filtered) {
-    if (hit.section !== lastSec) {
-      if (hit.section) {
-        const path = pathOf(hit.section).concat(hit.section.title).join(" > ");
-        out.push(`── ${path}  L${hit.section.line_start}-${hit.section.line_end} ${"─".repeat(8)}`);
-      } else {
-        out.push(`── ${file}  (no enclosing heading)`);
-      }
-      lastSec = hit.section;
-    }
-    out.push(`  ${hit.text} → ${hit.url}`);
-  }
-  return ok(out.join("\n"));
+  const section = matches[0]!;
+  const lines = src.replace(/^﻿/, "").split(/\r?\n/);
+  if (lines.at(-1) === "") lines.pop();
+  return ok(lines.slice(section.line_start - 1, section.line_end).join("\n"));
 }
 
-// ---- code -------------------------------------------------------------------
+// ---- shared write plumbing --------------------------------------------
 
-type CodeBlock = {
-  section: Section | null;
-  line_start: number;
-  line_end: number;
-  lang: string;
-  body: string;
-};
+type Loaded = { doc: Document; lines: string[] };
 
-function extractCodeBlocks(srcLines: string[], sections: Section[]): CodeBlock[] {
-  const blocks: CodeBlock[] = [];
-  let inFence = false;
-  let fenceChar = 0;
-  let fenceMinLen = 0;
-  let fenceLang = "";
-  let fenceStart = 0;
-  let bodyLines: string[] = [];
-  let fenceSection: Section | null = null;
-  let secIdx = -1;
-
-  for (let lineNo = 1; lineNo <= srcLines.length; lineNo++) {
-    while (secIdx + 1 < sections.length && sections[secIdx + 1]!.line_start <= lineNo) secIdx++;
-    const sec = secIdx >= 0 ? sections[secIdx] ?? null : null;
-    const line = srcLines[lineNo - 1]!;
-
-    if (!inFence) {
-      const m = line.match(/^( {0,3})(```+|~~~+)(.*)/);
-      if (m) {
-        inFence = true;
-        fenceChar = m[2]!.charCodeAt(0);
-        fenceMinLen = m[2]!.length;
-        fenceLang = (m[3]!.trim().split(/\s/)[0] ?? "");
-        fenceStart = lineNo;
-        bodyLines = [];
-        fenceSection = sec;
-      }
-    } else {
-      const m = line.match(/^( {0,3})(```+|~~~+)\s*$/);
-      if (m && m[2]!.charCodeAt(0) === fenceChar && m[2]!.length >= fenceMinLen) {
-        blocks.push({ section: fenceSection, line_start: fenceStart, line_end: lineNo, lang: fenceLang, body: bodyLines.join("\n") });
-        inFence = false;
-      } else {
-        bodyLines.push(line);
-      }
-    }
-  }
-
-  return blocks;
-}
-
-function cmdCode(rest: string[], v: Values): CliResult {
-  const file = rest[0];
-  const selectorStr = rest[1]; // optional
-  if (file == null) return err("issuemd code: missing <file>\n", 2);
-
-  const loaded = loadFile(file);
-  if ("code" in loaded) return loaded;
-  const { src } = loaded;
-  const sections = buildSections(scan(src), countLines(src));
-  const srcLines = src.split("\n");
-
-  let blocks = extractCodeBlocks(srcLines, sections);
-
-  // Filter by selector.
-  if (selectorStr) {
-    const selector = parseSelector(selectorStr);
-    const matched = match(sections, selector);
-    if (matched.length === 0) return noMatch("(no match)\n");
-    blocks = blocks.filter((b) =>
-      matched.some((s) => b.line_start >= s.line_start && b.line_end <= s.line_end),
-    );
-  }
-
-  // Filter by --lang.
-  if (v.lang) {
-    blocks = blocks.filter((b) => b.lang === v.lang);
-  }
-
-  if (blocks.length === 0) return noMatch("(no match)\n");
-
-  if (v.json) {
-    return ok(
-      JSON.stringify(
-        blocks.map((b) => ({
-          file,
-          line_start: b.line_start,
-          line_end: b.line_end,
-          lang: b.lang,
-          body: b.body,
-          section: b.section ? sectionToJSON(b.section) : null,
-        })),
-        null,
-        2,
-      ),
-    );
-  }
-
-  const out: string[] = [];
-  let lastSec: Section | null | undefined = undefined;
-  for (const b of blocks) {
-    if (b.section !== lastSec) {
-      if (b.section) {
-        const path = pathOf(b.section).concat(b.section.title).join(" > ");
-        out.push(`── ${path}  L${b.section.line_start}-${b.section.line_end} ${"─".repeat(8)}`);
-      } else {
-        out.push(`── ${file}  (no enclosing heading)`);
-      }
-      lastSec = b.section;
-    }
-    const fence = b.lang ? `\`\`\`${b.lang}` : "```";
-    out.push(fence);
-    out.push(b.body);
-    out.push("```");
-  }
-  return ok(out.join("\n"));
-}
-
-// ---- shared write helpers ---------------------------------------------------
-
-type Loaded = {
-  doc: Document;
-  headings: ReturnType<typeof scan>;
-  sections: Section[];
-  srcLines: string[];
-};
-
-/** loadFile variant that rejects stdin ('-') for commands that write back. */
-function loadWritableFile(file: string): Loaded | CliResult {
+/** Load a file for writing. Stdin is refused: there is nothing to write back. */
+function loadWritable(file: string): Loaded | CliResult {
   if (file === "-") return err("issuemd: write commands do not support stdin ('-')\n", 2);
   try {
     const doc = readDocument(file);
-    const headings = scan(doc.text);
-    return {
-      doc,
-      headings,
-      sections: buildSections(headings, countLines(doc.text)),
-      // Split without the trailing sentinel so a file that ends with a
-      // newline does not gain a blank line at EOF on every rewrite.
-      srcLines: doc.text === "" ? [] : (doc.finalNewline ? doc.text.slice(0, -1) : doc.text).split("\n"),
-    };
+    // Split without the trailing sentinel: `joinDocument` adds the final
+    // newline back, so keeping the "" would double it on every rewrite.
+    const lines = doc.text === ""
+      ? []
+      : (doc.finalNewline ? doc.text.slice(0, -1) : doc.text).split("\n");
+    return { doc, lines };
   } catch (e) {
     return err(`issuemd: cannot open '${file}': ${(e as Error).message}\n`, 2);
   }
 }
 
+/** `code|id|message` — the identity used to decide whether a diagnostic is new. */
+const diagnosticKey = (d: Diagnostic) => `${d.code}|${d.id ?? ""}|${d.message}`;
+
 /**
- * Apply a mutation: if --dry-run, print a unified diff; otherwise write the
- * new content back to `file` atomically, restoring BOM/line endings/mode.
+ * The single write gate shared by every ledger verb.
+ *
+ * 1. Join the candidate lines with the document's BOM/EOL/trailing-newline.
+ * 2. Validate in memory and refuse if any error is *new* (exit 3).
+ * 3. `--dry-run` prints a diff; otherwise replace atomically (E130 on a race).
  */
-function applyWrite(
+function commit(
   file: string,
   loaded: Loaded,
+  before: Diagnostic[],
   newLines: string[],
-  v: Values,
+  dryRun: boolean,
 ): CliResult {
-  // Removing the last section can expose its preceding blank separator at
-  // EOF. A file that was unterminated must still end in a nonempty line.
-  if (!loaded.doc.finalNewline) {
-    let end = newLines.length;
-    while (end > 0 && newLines[end - 1] === "") end--;
-    if (end !== newLines.length) newLines = newLines.slice(0, end);
+  const content = joinDocument(newLines, loaded.doc);
+  const after = checkLedger(content, file).errors;
+  const known = new Set(before.map(diagnosticKey));
+  const introduced = after.filter((diagnostic) => !known.has(diagnosticKey(diagnostic)));
+  if (introduced.length > 0) {
+    return err(
+      `issuemd: refusing to write; the change would introduce ${introduced.length} error(s):\n` +
+        formatDiagnostics(introduced) + "\n",
+      3,
+    );
   }
-  if (v["dry-run"]) {
-    const diff = unifiedDiff(loaded.srcLines, newLines, file);
+  if (dryRun) {
+    const diff = unifiedDiff(loaded.lines, newLines, file);
     return ok(diff || "(no changes)\n");
   }
-  const unchanged = newLines.length === loaded.srcLines.length &&
-    newLines.every((line, index) => line === loaded.srcLines[index]);
+  const unchanged = newLines.length === loaded.lines.length &&
+    newLines.every((line, index) => line === loaded.lines[index]);
   if (unchanged) return ok("");
   try {
-    const written = writeAtomically(file, joinDocument(newLines, loaded.doc), loaded.doc.stat);
+    const written = writeAtomically(file, content, loaded.doc.stat);
     if (!written.ok) {
       return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 2);
     }
@@ -813,281 +434,393 @@ function applyWrite(
   return ok("");
 }
 
-/**
- * Write commands act on exactly one section. A selector that matches several
- * used to silently edit the first; that is a wrong-file bug waiting to happen,
- * so it now refuses and shows the candidates.
- */
-function oneMatch(
-  matches: Section[],
-  cmd: string,
-): Section | CliResult {
-  if (matches.length === 0) return noMatch("(no match)\n");
-  if (matches.length > 1) {
-    const lines = matches
-      .map((s) => `  L${s.line_start}  ${"#".repeat(s.level)} ${s.title}`)
-      .join("\n");
-    return err(
-      `issuemd ${cmd}: selector is ambiguous (${matches.length} matches); nothing written\n${lines}\n` +
-        `narrow it, e.g. '=Exact title' or 'Parent > Child'\n`,
-      2,
-    );
-  }
-  return matches[0]!;
+/** Ledger view plus the exact bytes it came from, for write verbs. */
+function openLedger(file: string): { loaded: Loaded; ledger: ReturnType<typeof parseLedger>; errors: Diagnostic[] } | CliResult {
+  const loaded = loadWritable(file);
+  if ("code" in loaded) return loaded;
+  const ledger = parseLedger(loaded.lines.join("\n"));
+  const unusable = unusableLedger(ledger);
+  if (unusable) return unusable;
+  return { loaded, ledger, errors: ledger.errors };
 }
 
-/**
- * True when fd 0 carries real content (a pipe or a redirected file) rather
- * than an interactive terminal. `isTTY` alone is unreliable: it is undefined
- * both for pipes and inside test runners, where reading fd 0 would hang.
- */
-function stdinIsRedirected(): boolean {
-  if (process.stdin.isTTY === true) return false;
+function parseIntArg(v: string | undefined, flag: string): { value: number } | CliResult {
+  if (v == null) return err(`issuemd: ${flag} expects a value\n`, 2);
+  const n = Number.parseInt(v, 10);
+  if (Number.isNaN(n) || String(n) !== v.trim()) {
+    return err(`issuemd: ${flag} expects an integer, got '${v}'\n`, 2);
+  }
+  return { value: n };
+}
+
+// ---- write commands ---------------------------------------------------
+
+/** Rows in `status`'s category, used by close/reopen/status decisions. */
+function statusCategory(status: string): "open" | "closed" | undefined {
+  return Object.hasOwn(STATUS_CLASSES, status)
+    ? STATUS_CLASSES[status as keyof typeof STATUS_CLASSES]
+    : undefined;
+}
+
+/** `--body-file PATH|-` wins over the default skeleton; a bare `-` is stdin. */
+function readBodyFile(spec: string): { lines: string[] } | CliResult {
   try {
-    // A shell pipe is a FIFO and a redirect is a regular file; both mean the
-    // caller really piped content. A socket is what test runners and some
-    // wrappers hand over — reading it can block forever, so it is not
-    // treated as implicit input; use `--body-file -` there.
-    const stat = fstatSync(0);
-    return stat.isFIFO() || stat.isFile();
-  } catch {
-    return false;
+    const src = spec === "-" ? readFileSync(0, "utf8") : readFileSync(spec, "utf8");
+    return { lines: src.replaceAll("\r\n", "\n").split("\n").filter((line, index, all) => index < all.length - 1 || line !== "") };
+  } catch (e) {
+    return err(`issuemd: cannot read --body-file: ${(e as Error).message}\n`, 2);
   }
 }
 
-/**
- * Resolve body content for write commands.
- * Prefers --body, then --body-file (PATH or '-' for stdin), then piped stdin.
- * In interactive use one of them is required.
- */
-function requireBody(v: Values, cmd: string): { lines: string[] } | CliResult {
-  // Body text is used verbatim: callers pad it with their own blank lines,
-  // exactly as lilmd did, so existing agent habits keep working.
-  const split = (s: string) => s.replaceAll("\r\n", "\n").split("\n");
-  if (v.body != null) return { lines: split(v.body) };
+function cmdNew(rest: string[], v: Values): CliResult {
+  const file = rest[0];
+  if (file == null || rest.length !== 1) {
+    return err("usage: issuemd new FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]\n", 2);
+  }
+  if (v.title == null || v.title.trim() === "") return err("issuemd new: --title is required\n", 2);
+  const title = v.title.trim().replace(/\s+/g, " ");
+  const status = v.status ?? "未决";
+  const priority = v.priority ?? "P2";
+  const category = statusCategory(status);
+  if (!category) return err(`issuemd new: unknown status '${status}'\n`, 2);
+  if (category === "closed") return err(`issuemd new: '${status}' is a closed status; use '\''issuemd close'\''\n`, 2);
+
+  const opened = openLedger(file);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
+
+  const max = maxIssueId(ledger.rows);
+  let id = max + 1;
+  if (v.id != null) {
+    const parsed = parseIntArg(v.id, "--id");
+    if ("code" in parsed) return parsed;
+    id = parsed.value;
+    if (id < 1) return err("issuemd new: --id must be a positive integer\n", 2);
+    const clash = findRow(ledger, String(id));
+    if (clash) return err(`issuemd new: id ${id} already exists\n`, 2);
+  }
+
+  let body: string[];
   if (v["body-file"] != null) {
-    try {
-      const src =
-        v["body-file"] === "-"
-          ? readFileSync(0, "utf8")
-          : readFileSync(v["body-file"], "utf8");
-      return { lines: split(src) };
-    } catch (e) {
-      return err(`issuemd ${cmd}: cannot read --body-file: ${(e as Error).message}\n`, 2);
-    }
+    const read = readBodyFile(v["body-file"]);
+    if ("code" in read) return read;
+    body = [`### Issue ${id}: ${title}`, "", ...read.lines, ""];
+  } else {
+    body = bodySkeleton(String(id), title);
   }
-  if (stdinIsRedirected()) return { lines: split(readFileSync(0, "utf8")) };
-  return err(
-    `issuemd ${cmd}: provide --body <text>, --body-file <path>|-, or pipe content on stdin\n`,
-    2,
-  );
+
+  const index = tableRange(ledger, "open");
+  if (!index) return err("issuemd new: the 索引 table is missing\n", 3);
+
+  // Keep the index ascending: insert before the first row with a larger id.
+  const insertAt = (() => {
+    for (const row of ledger.rows.open) {
+      if (row.ids[0]!.start > id) return row.line;
+    }
+    return index.end + 1;
+  })();
+
+  const bodySection = ledger.sections.find((section) => section.level === 2 && section.title === "正文");
+  if (!bodySection) return err("issuemd new: the 正文 section is missing\n", 3);
+
+  let lines = insertLines(loaded.lines, insertAt, [formatRow([String(id), status, priority, title])]);
+  lines = insertLines(lines, bodySection.line_end === bodySection.line_start ? bodySection.line_start + 2 : bodySection.line_end + 1, body);
+
+  return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
 
-// A final line break in body input terminates the last line at EOF. Inside
-// a document it also pads the insertion before the following Markdown.
-function bodyLinesAt(lines: string[], atEof: boolean): string[] {
-  return atEof && lines.at(-1) === "" ? lines.slice(0, -1) : lines;
-}
-
-// ---- write commands ---------------------------------------------------------
-
-function cmdSet(rest: string[], v: Values): CliResult {
+function cmdClose(rest: string[], v: Values): CliResult {
   const file = rest[0];
-  const selectorStr = rest[1];
-  if (file == null || selectorStr == null) return err("issuemd set: missing <file> or <selector>\n", 2);
+  const idText = rest[1];
+  if (file == null || idText == null || rest.length !== 2) {
+    return err("usage: issuemd close FILE ID [--criteria TEXT | --criteria-from-body] [--keep-body]\n", 2);
+  }
+  if (v.criteria != null && v["criteria-from-body"]) {
+    return err("issuemd close: choose --criteria or --criteria-from-body, not both\n", 2);
+  }
+  const opened = openLedger(file);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
 
-  const bodyResult = requireBody(v, "set");
-  if ("code" in bodyResult) return bodyResult;
-
-  const loaded = loadWritableFile(file);
-  if ("code" in loaded) return loaded;
-  const { sections, srcLines } = loaded;
-
-  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "set");
-  if ("code" in sec) return sec;
-
-  const atEof = sec.line_end === srcLines.length && !sections.some((section) => section.parent === sec);
-  const lines = bodyLinesAt(bodyResult.lines, atEof);
-  return applyWrite(file, loaded, setSection(srcLines, sec, sections, lines), v);
-}
-
-function cmdAppend(rest: string[], v: Values): CliResult {
-  const file = rest[0];
-  const selectorStr = rest[1];
-  if (file == null || selectorStr == null) return err("issuemd append: missing <file> or <selector>\n", 2);
-
-  const bodyResult = requireBody(v, "append");
-  if ("code" in bodyResult) return bodyResult;
-
-  const loaded = loadWritableFile(file);
-  if ("code" in loaded) return loaded;
-  const { sections, srcLines } = loaded;
-
-  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "append");
-  if ("code" in sec) return sec;
-
-  const atEof = sec.line_end === srcLines.length && !sections.some((section) => section.parent === sec);
-  const lines = bodyLinesAt(bodyResult.lines, atEof);
-  return applyWrite(file, loaded, appendToSection(srcLines, sec, sections, lines), v);
-}
-
-function cmdInsert(rest: string[], v: Values): CliResult {
-  const file = rest[0];
-  if (file == null) return err("issuemd insert: missing <file>\n", 2);
-  if (v.after == null) return err("issuemd insert: --after <selector> is required\n", 2);
-
-  const bodyResult = requireBody(v, "insert");
-  if ("code" in bodyResult) return bodyResult;
-
-  const loaded = loadWritableFile(file);
-  if ("code" in loaded) return loaded;
-  const { sections, srcLines } = loaded;
-
-  const sec = oneMatch(match(sections, parseSelector(v.after)), "insert");
-  if ("code" in sec) return sec;
-
-  const atEof = sec.line_end === srcLines.length;
-  const lines = bodyLinesAt(bodyResult.lines, atEof);
-  return applyWrite(file, loaded, insertAfter(srcLines, sec, lines), v);
-}
-
-function cmdRm(rest: string[], v: Values): CliResult {
-  const file = rest[0];
-  const selectorStr = rest[1];
-  if (file == null || selectorStr == null) return err("issuemd rm: missing <file> or <selector>\n", 2);
-
-  const loaded = loadWritableFile(file);
-  if ("code" in loaded) return loaded;
-  const { sections, srcLines } = loaded;
-
-  // A ledger's body block and its index row must move together. Generic `rm`
-  // can only do the first half, so it refuses and points at the ledger verb.
-  if (isLedger(loaded.doc.text)) {
+  const found = findRow(ledger, idText);
+  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (found.table === "closed") return err(`issuemd close: #${idText} is already closed\n`, 2);
+  if (found.span.start !== found.span.end) {
     return err(
-      "issuemd rm: this file is an issue ledger; removing a body block alone would orphan its index row.\n" +
-        "Use 'issuemd close FILE ID' (keeps the criteria) instead.\n",
+      `issuemd close: #${idText} is inside retired range ${spanText(found.span)}; close a concrete issue instead\n`,
+      2,
+    );
+  }
+  const status = v.status ?? "已修";
+  if (statusCategory(status) !== "closed") {
+    return err(`issuemd close: '${status}' is not a closed status\n`, 2);
+  }
+
+  const block = bodyBlocks(ledger).find((candidate) => candidate.id.start === found.span.start);
+  const bodyText = block ? ledger.lines.slice(block.line - 1, block.end) : [];
+  const criteria = v.criteria ?? (v["criteria-from-body"] ? extractCriteria(bodyText) ?? "" : "");
+
+  // Highest line number first so earlier coordinates stay valid.
+  let lines = loaded.lines;
+
+  const keepBody = !!v["keep-body"] && block != null;
+  const appendix = ledger.sections.find((section) => section.level === 2 && section.title === "附录");
+
+  if (block) {
+    if (keepBody) {
+      // 附录 sits after 正文, so insert there first, then delete the block.
+      const at = (appendix?.line_end ?? block.end) + 1;
+      lines = insertLines(lines, at, ["", ...bodyText]);
+    }
+    lines = removeLines(lines, block.line, block.end - block.line + 1);
+  }
+  // 索引 precedes 正文, so its line number survived the body deletion.
+  lines = removeLines(lines, found.row.line, 1);
+  const closedAt = tableRange(parseLedger(lines.join("\n")), "closed");
+  if (!closedAt) return err("issuemd close: the 已关闭 table is missing\n", 3);
+  lines = insertLines(lines, closedAt.end + 1, [
+    formatRow([idText, status, found.row.priority, found.row.summary, criteria]),
+  ]);
+
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  if (keepBody && result.code === 0) {
+    return { code: 0, stdout: result.stdout, stderr: `W250: kept the body of #${idText} by moving it into 附录\n` };
+  }
+  return result;
+}
+
+function cmdReopen(rest: string[], v: Values): CliResult {
+  const file = rest[0];
+  const idText = rest[1];
+  if (file == null || idText == null || rest.length !== 2) {
+    return err("usage: issuemd reopen FILE ID\n", 2);
+  }
+  const opened = openLedger(file);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
+
+  const found = findRow(ledger, idText);
+  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (found.table === "open") return err(`issuemd reopen: #${idText} is already open\n`, 2);
+  if (found.span.start !== found.span.end) {
+    return err(`issuemd reopen: #${idText} is a range; reopen is not supported\n`, 2);
+  }
+
+  const priority = found.row.priority || "P2";
+  const criteria = found.row.criteria.trim();
+  let lines = removeLines(loaded.lines, found.row.line, 1);
+
+  const fresh = parseLedger(lines.join("\n"));
+  const index = tableRange(fresh, "open");
+  if (!index) return err("issuemd reopen: the 索引 table is missing\n", 3);
+  const insertAt = (() => {
+    for (const row of fresh.rows.open) {
+      if (row.ids[0]!.start > found.span.start) return row.line;
+    }
+    return index.end + 1;
+  })();
+  lines = insertLines(lines, insertAt, [
+    formatRow([spanText(found.span), "未决", priority, found.row.summary]),
+  ]);
+
+  const bodySection = parseLedger(lines.join("\n")).sections.find(
+    (section) => section.level === 2 && section.title === "正文",
+  );
+  if (!bodySection) return err("issuemd reopen: the 正文 section is missing\n", 3);
+  lines = insertLines(lines, bodySection.line_end + 1, bodySkeleton(spanText(found.span), found.row.summary, criteria));
+
+  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+}
+
+function cmdStatus(rest: string[], v: Values): CliResult {
+  const file = rest[0];
+  const idText = rest[1];
+  const next = rest[2];
+  if (file == null || idText == null || next == null || rest.length !== 3) {
+    return err("usage: issuemd status FILE ID NEW_STATUS\n", 2);
+  }
+  if (!statusCategory(next)) return err(`issuemd status: unknown status '${next}'\n`, 2);
+  const opened = openLedger(file);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
+
+  const found = findRow(ledger, idText);
+  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (found.span.start !== found.span.end) {
+    return err(`issuemd status: #${idText} is a range; change a concrete issue\n`, 2);
+  }
+  const from = statusCategory(found.row.status);
+  const to = statusCategory(next);
+  if (from !== to) {
+    const verb = to === "closed" ? "issuemd close" : "issuemd reopen";
+    return err(
+      `issuemd status: #${idText} is ${found.row.status} (${from ?? "unknown"}); ` +
+        `${next} is ${to} — use '${verb}'\n`,
       2,
     );
   }
 
-  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "rm");
-  if ("code" in sec) return sec;
-
-  return applyWrite(file, loaded, removeSection(srcLines, sec), v);
+  const lines = [...loaded.lines];
+  lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 1, next);
+  return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
 
 function cmdRename(rest: string[], v: Values): CliResult {
   const file = rest[0];
-  const selectorStr = rest[1];
-  const newTitle = rest[2];
-  if (file == null || selectorStr == null) return err("issuemd rename: missing <file> or <selector>\n", 2);
-  if (newTitle == null) return err("issuemd rename: missing new name\n", 2);
+  const idText = rest[1];
+  const title = rest[2];
+  if (file == null || idText == null || title == null || rest.length !== 3) {
+    return err("usage: issuemd rename FILE ID \"NEW TITLE\"\n", 2);
+  }
+  const next = title.trim().replace(/\s+/g, " ");
+  if (next === "") return err("issuemd rename: title must not be empty\n", 2);
+  const opened = openLedger(file);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
 
-  const loaded = loadWritableFile(file);
-  if ("code" in loaded) return loaded;
-  const { sections, srcLines } = loaded;
+  const found = findRow(ledger, idText);
+  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (found.span.start !== found.span.end) {
+    return err(`issuemd rename: #${idText} is a range; rename a concrete issue\n`, 2);
+  }
 
-  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "rename");
-  if ("code" in sec) return sec;
-
-  return applyWrite(file, loaded, renameSection(srcLines, sec, newTitle), v);
+  const lines = [...loaded.lines];
+  lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 3, next);
+  const block = bodyBlocks(ledger).find((candidate) => candidate.id.start === found.span.start);
+  if (block) lines[block.line - 1] = `### Issue ${spanText(found.span)}: ${next}`;
+  return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
 
-function cmdPromote(rest: string[], v: Values): CliResult {
+function cmdSync(rest: string[], v: Values): CliResult {
   const file = rest[0];
-  const selectorStr = rest[1];
-  if (file == null || selectorStr == null) return err("issuemd promote: missing <file> or <selector>\n", 2);
-
-  const loaded = loadWritableFile(file);
-  if ("code" in loaded) return loaded;
-  const { sections, srcLines, headings } = loaded;
-
-  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "promote");
-  if ("code" in sec) return sec;
-
-  // Promoting to the parent's level turns a parent/child pair into siblings:
-  // that is a re-parent (`mv`), not a level change. A top-level H1 is already
-  // at level 1, so it stays a no-op clamp like lilmd's.
-  if (sec.parent && sec.level - 1 === sec.parent.level) {
+  if (file == null || rest.length !== 1) {
     return err(
-      `issuemd promote: '${sec.title}' would land on the same level as its parent '${sec.parent.title}'; use 'mv' to re-parent\n`,
+      "usage: issuemd sync FILE [--guide | --fix-tables | --titles [--prefer body|table]]\n",
       2,
     );
   }
-
-  return applyWrite(file, loaded, shiftLevel(srcLines, sec, -1, headings), v);
-}
-
-function cmdDemote(rest: string[], v: Values): CliResult {
-  const file = rest[0];
-  const selectorStr = rest[1];
-  if (file == null || selectorStr == null) return err("issuemd demote: missing <file> or <selector>\n", 2);
-
-  const loaded = loadWritableFile(file);
-  if ("code" in loaded) return loaded;
-  const { sections, srcLines, headings } = loaded;
-
-  const sec = oneMatch(match(sections, parseSelector(selectorStr)), "demote");
-  if ("code" in sec) return sec;
-
-  return applyWrite(file, loaded, shiftLevel(srcLines, sec, +1, headings), v);
-}
-
-function cmdMv(rest: string[], v: Values): CliResult {
-  const file = rest[0];
-  const fromStr = rest[1];
-  const toStr = rest[2];
-  if (file == null || fromStr == null) return err("issuemd mv: missing <file> or <from>\n", 2);
-  if (toStr == null) return err("issuemd mv: missing destination <to>\n", 2);
-
-  const loaded = loadWritableFile(file);
-  if ("code" in loaded) return loaded;
-  const { sections, srcLines, headings } = loaded;
-
-  const fromSec = oneMatch(match(sections, parseSelector(fromStr)), "mv");
-  if ("code" in fromSec) return fromSec;
-
-  const toSec = oneMatch(match(sections, parseSelector(toStr)), "mv --to");
-  if ("code" in toSec) return toSec;
-
-  // Guard against circular moves (toSec is a descendant of fromSec).
-  let cur: Section | null = toSec;
-  while (cur) {
-    if (cur === fromSec) return err("issuemd mv: cannot move a section into its own descendant\n", 2);
-    cur = cur.parent;
+  const modes = [!!v.guide, !!v["fix-tables"], !!v.titles].filter(Boolean).length;
+  if (modes === 0) return err("issuemd sync: choose --guide, --fix-tables or --titles\n", 2);
+  if (modes > 1) return err("issuemd sync: run one mode at a time\n", 2);
+  if ((v["move-progress"] || v["drop-progress"]) && !v.titles) {
+    return err("issuemd sync: --move-progress/--drop-progress require --titles\n", 2);
+  }
+  if (v["move-progress"] && v["drop-progress"]) {
+    return err("issuemd sync: choose --move-progress or --drop-progress, not both\n", 2);
+  }
+  const prefer = v.prefer ?? "body";
+  if (prefer !== "body" && prefer !== "table") {
+    return err(`issuemd sync: --prefer expects body or table, got '${prefer}'\n`, 2);
   }
 
-  return applyWrite(file, loaded, moveSection(srcLines, fromSec, toSec, headings), v);
-}
+  const opened = openLedger(file);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
+  let lines = loaded.lines;
 
-// ---- shared helpers ----------------------------------------------------
-
-function sliceBody(
-  srcLines: string[],
-  sec: Section,
-  all: Section[],
-  bodyOnly: boolean,
-): string {
-  let end = sec.line_end;
-  if (bodyOnly) {
-    const firstChild = all.find((s) => s.parent === sec);
-    if (firstChild) end = firstChild.line_start - 1;
+  if (v.guide) {
+    lines = rewriteBlock(lines, "<!-- issuemd:guide:begin -->", "<!-- issuemd:guide:end -->", guideBlockLines());
+    lines = rewriteBlock(lines, "<!-- issuemd:statuses:begin -->", "<!-- issuemd:statuses:end -->", statusBlockLines());
+    return commit(file, loaded, errors, lines, !!v["dry-run"]);
   }
-  return srcLines.slice(sec.line_start - 1, end).join("\n");
+
+  if (v["fix-tables"]) {
+    lines = fixTables(lines, ledger);
+    return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  }
+
+  return syncTitles(file, loaded, ledger, errors, prefer, v);
 }
 
-function maybeTruncate(body: string, maxLines: number): string {
-  return maxLines > 0 ? truncateBody(body, maxLines) : body;
+function syncTitles(
+  file: string,
+  loaded: Loaded,
+  ledger: ReturnType<typeof parseLedger>,
+  errors: Diagnostic[],
+  prefer: "body" | "table",
+  v: Values,
+): CliResult {
+  const blocks = bodyBlocks(ledger);
+  const byId = new Map(blocks.map((block) => [block.id.start, block]));
+  const index = tableRange(ledger, "open");
+  if (!index) return err("issuemd sync: the 索引 table is missing\n", 3);
+
+  type Change = { id: string; oldSummary: string; title: string; rowLine: number; bodyLine?: number };
+  const changes: Change[] = [];
+  for (const row of ledger.rows.open) {
+    if (row.ids.length !== 1) continue;
+    const id = spanText(row.ids[0]!);
+    const block = byId.get(row.ids[0]!.start);
+    if (!block) continue;
+    if (foldWhitespace(block.title) === foldWhitespace(row.summary)) continue;
+    changes.push({ id, oldSummary: row.summary, title: block.title, rowLine: row.line, bodyLine: block.line });
+  }
+  if (changes.length === 0) return ok("");
+
+  const progress = changes.filter((change) => PROGRESS.test(change.oldSummary));
+  if (prefer === "body" && progress.length > 0 && !v["move-progress"] && !v["drop-progress"]) {
+    const listed = progress.map(({ id, oldSummary }) => `  #${id}  ${oldSummary}`).join("\n");
+    return err(
+      `issuemd sync --titles: ${progress.length} summary/summary pair(s) carry progress text; nothing written\n` +
+        `${listed}\n` +
+        "re-run with --move-progress (keep it in the body) or --drop-progress (discard it)\n",
+      3,
+    );
+  }
+
+  let lines = [...loaded.lines];
+  for (const change of changes.sort((a, b) => b.rowLine - a.rowLine)) {
+    if (prefer === "body") {
+      lines[change.rowLine - 1] = replaceCell(lines[change.rowLine - 1]!, 3, change.title);
+    } else if (change.bodyLine != null) {
+      lines[change.bodyLine - 1] = `### Issue ${change.id}: ${change.oldSummary}`;
+    }
+  }
+
+  if (prefer === "body" && v["move-progress"]) {
+    // Insert from the bottom up so earlier line numbers remain valid.
+    for (const change of progress.sort((a, b) => (b.bodyLine ?? 0) - (a.bodyLine ?? 0))) {
+      if (change.bodyLine == null) continue;
+      lines = insertLines(lines, change.bodyLine + 2, [`> **进展（来自旧表）**：${change.oldSummary}`, ""]);
+    }
+  }
+
+  return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
 
-function sectionToJSON(sec: Section): Record<string, unknown> {
-  return {
-    level: sec.level,
-    title: sec.title,
-    line_start: sec.line_start,
-    line_end: sec.line_end,
-    path: pathOf(sec),
-  };
+/** Add a separator row after any pipe block that lacks one. */
+function fixTables(lines: string[], ledger: ReturnType<typeof parseLedger>): string[] {
+  const missing = ledger.blocks.filter((block) => !block.separator);
+  let result = [...lines];
+  for (const block of [...missing].sort((a, b) => b.line - a.line)) {
+    const width = block.rows[0]!.length;
+    const separator = `|${"---|".repeat(width)}`;
+    const inLedgerTable = ledger.sections.some(
+      (section) =>
+        (section.title === "索引" || section.title === "已关闭") &&
+        block.line > section.line_start &&
+        block.line <= section.line_end,
+    );
+    // A headerless data block in a ledger table would promote its first row
+    // to a header, so the canonical header row goes in along with the rule.
+    const needsHeader = inLedgerTable && block.rows[0]!.join(" | ") !== COLUMN_HEADERS[width];
+    result = insertLines(
+      result,
+      block.line + 1,
+      needsHeader ? [canonicalHeaderLine(width), separator] : [separator],
+    );
+  }
+  return result;
 }
 
-// Entry point lives in bin/issuemd.ts; this module only exports `run`.
+function canonicalHeaderLine(width: number): string {
+  return width === 4 ? formatRow(["#", "状态", "P", "摘要"]) : formatRow(["#", "状态", "P", "摘要", "判据"]);
+}
+
+const COLUMN_HEADERS: Record<number, string> = {
+  4: "# | 状态 | P | 摘要",
+  5: "# | 状态 | P | 摘要 | 判据",
+};
+
+const PROGRESS = /已落地|仍缺|仍无|仍逐|仍走/;
+const foldWhitespace = (text: string) => text.trim().replace(/\s+/g, " ");

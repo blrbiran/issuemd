@@ -1,11 +1,21 @@
+/**
+ * Write-safety regression tests for P1's byte guarantees.
+ *
+ * These used to run end-to-end through `set` / `rename`. Those generic
+ * commands are gone, so the guarantees are asserted directly against the
+ * three functions that implement them: `readDocument`, `joinDocument`,
+ * `writeAtomically`. Ledger verbs add the end-to-end layer again in
+ * `cli-write.test.ts`.
+ */
+
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 
-import { run } from "../src/cli.js";
+import { readDocument, joinDocument, writeAtomically } from "../src/io.js";
+import { scan } from "../src/scan.js";
 
 let dir: string;
 function file(name: string, bytes: string | Buffer): string {
@@ -15,186 +25,107 @@ function file(name: string, bytes: string | Buffer): string {
   return path;
 }
 const read = (path: string) => readFileSync(path);
+/** Split a Document's text into physical lines without the EOF sentinel. */
+const linesOf = (doc: { text: string; finalNewline: boolean }) =>
+  doc.text === "" ? [] : (doc.finalNewline ? doc.text.slice(0, -1) : doc.text).split("\n");
 
-describe("D1 — BOM must not hide the first heading", () => {
-  test("toc lists the H1 that follows a UTF-8 BOM", async () => {
+describe("D1 — a BOM is preserved and does not hide the first heading", () => {
+  test("readDocument strips it for parsing and joinDocument restores it", () => {
     const path = file("bom.md", "﻿# Title\n\n## Section\ntext\n");
-    const result = await run([path]);
-    expect(result.code).toBe(0);
-    expect(result.stdout).toContain("# Title");
-    expect(result.stdout).toContain("2 headings");
+    const doc = readDocument(path);
+    expect(doc.bom).toBe(true);
+    expect(doc.text.startsWith("# Title")).toBe(true);
+    expect(scan(doc.text).map((heading) => heading.title)).toEqual(["Title", "Section"]);
+    expect(joinDocument(linesOf(doc), doc).startsWith("﻿# Title")).toBe(true);
   });
 
-  test("a write keeps the BOM and still addresses the H1", async () => {
-    const path = file("bom-write.md", "﻿# Title\n\nbody\n");
-    const result = await run(["rename", path, "=Title", "Renamed"]);
-    expect(result.code).toBe(0);
-    expect(read(path).toString("utf8")).toBe("﻿# Renamed\n\nbody\n");
-  });
-});
-
-describe("D2 — heading-lookalikes inside fences are content", () => {
-  test("demote leaves fenced headings byte-identical", async () => {
-    const source = "# T\n\n## A\n\nbody\n\n```md\n## not a heading\n```\n\n## B\n\nb\n";
-    const path = file("fence.md", source);
-    const result = await run(["demote", path, "=A"]);
-    expect(result.code).toBe(0);
-    expect(read(path).toString("utf8")).toContain("```md\n## not a heading\n```");
-  });
-
-  test("promote leaves fenced headings byte-identical", async () => {
-    const source = "# T\n\n### A\n\n```\n#### inside\n```\n";
-    const path = file("fence-promote.md", source);
-    const result = await run(["promote", path, "=A"]);
-    expect(result.code).toBe(0);
-    const bytes = read(path).toString("utf8");
-    expect(bytes).toContain("```\n#### inside\n```");
-    expect(bytes).toContain("\n## A\n");
+  test("a BOM-free file stays BOM-free", () => {
+    const path = file("no-bom.md", "# Title\n");
+    expect(joinDocument(linesOf(readDocument(path)), readDocument(path))).toBe("# Title\n");
   });
 });
 
-describe("D3 — an ambiguous selector refuses instead of guessing", () => {
-  test("set with two matches exits 2, lists both, writes nothing", async () => {
-    const path = file("dup.md", "# T\n\n## Dup\n\none\n\n## Dup\n\ntwo\n");
-    const before = read(path);
-    const result = await run(["set", path, "=Dup", "--body", "X"]);
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("L3");
-    expect(result.stderr).toContain("L7");
-    expect(read(path)).toEqual(before);
+describe("D2 — fenced heading-lookalikes are content", () => {
+  test("scan ignores ## inside a fence", () => {
+    const src = "# T\n\n## A\n\n```md\n## not a heading\n```\n\n## B\n";
+    expect(scan(src).map((heading) => heading.title)).toEqual(["T", "A", "B"]);
   });
 
-  test("rename with several matches refuses", async () => {
-    const path = file("dup-rename.md", "# T\n\n## Dup\n\na\n\n## Dup\n\nb\n");
-    const result = await run(["rename", path, "=Dup", "New"]);
-    expect(result.code).toBe(2);
-    expect(result.stderr).toMatch(/ambiguous|more than one|2 matches/i);
+  test("a heading after an unclosed fence is not counted", () => {
+    expect(scan("# T\n\n```\n## hidden\n").map((heading) => heading.title)).toEqual(["T"]);
   });
 });
 
-describe("D4 — the file keeps its line endings", () => {
-  test("set on a CRLF file writes CRLF only", async () => {
+describe("D4 — line endings and the trailing-newline flag", () => {
+  test("CRLF round-trips with no stray LF", () => {
     const path = file("crlf.md", "# T\r\n\r\n## A\r\n\r\nold\r\n");
-    const result = await run(["set", path, "=A", "--body", "new"]);
-    expect(result.code).toBe(0);
-    const bytes = read(path).toString("utf8");
-    expect(bytes.replaceAll("\r\n", "")).not.toContain("\n");
-    expect(bytes).toContain("# T\r\n");
+    const doc = readDocument(path);
+    expect(doc.eol).toBe("\r\n");
+    const out = joinDocument(linesOf(doc), doc);
+    expect(out).toBe("# T\r\n\r\n## A\r\n\r\nold\r\n");
+    expect(out.replaceAll("\r\n", "")).not.toContain("\n");
   });
 
-  test("a file without a final newline keeps none", async () => {
+  test("an unterminated file stays unterminated", () => {
     const path = file("no-final.md", "# T\n\n## A\n\nold");
-    const result = await run(["set", path, "=A", "--body", "\nnew\n"]);
-    expect(result.code).toBe(0);
-    expect(read(path).toString("utf8")).toBe("# T\n\n## A\n\nnew");
+    const doc = readDocument(path);
+    expect(doc.finalNewline).toBe(false);
+    expect(joinDocument(["# T", "", "## A", "", "new"], doc)).toBe("# T\n\n## A\n\nnew");
   });
 
-  test("a file with a final newline keeps exactly one", async () => {
+  test("a terminated file keeps exactly one final newline", () => {
     const path = file("final.md", "# T\n\n## A\n\nold\n");
-    await run(["set", path, "=A", "--body", "\nnew\n"]);
-    expect(read(path).toString("utf8")).toBe("# T\n\n## A\n\nnew\n");
-  });
-});
-
-describe("D5 — stdin is a real body source", () => {
-  test("a real shell pipe reaches set without any flag", () => {
-    const path = file("stdin.md", "# T\n\n## A\n\nold\n");
-    const bin = fileURLToPath(new URL("../dist/bin/issuemd.js", import.meta.url));
-    const result = spawnSync("sh", ["-c", `printf 'from-stdin\\n' | "${process.execPath}" "${bin}" set "${path}" "=A"`], {
-      encoding: "utf8",
-    });
-    expect(result.status).toBe(0);
-    expect(read(path).toString("utf8")).toContain("from-stdin");
+    const doc = readDocument(path);
+    expect(doc.finalNewline).toBe(true);
+    expect(joinDocument(["# T", "", "## A", "", "new"], doc)).toBe("# T\n\n## A\n\nnew\n");
   });
 
-  test("a redirected file reaches set without any flag", () => {
-    const path = file("redirect.md", "# T\n\n## A\n\nold\n");
-    const body = file("body.txt", "via-redirect\n");
-    const bin = fileURLToPath(new URL("../dist/bin/issuemd.js", import.meta.url));
-    const result = spawnSync("sh", ["-c", `"${process.execPath}" "${bin}" set "${path}" "=A" < "${body}"`], {
-      encoding: "utf8",
-    });
-    expect(result.status).toBe(0);
-    expect(read(path).toString("utf8")).toContain("via-redirect");
-  });
-
-  test("--body-file - reads the body from stdin", () => {
-    const path = file("bodyfile.md", "# T\n\n## A\n\nold\n");
-    const bin = fileURLToPath(new URL("../dist/bin/issuemd.js", import.meta.url));
-    const result = spawnSync("sh", ["-c", `printf 'via-body-file\\n' | "${process.execPath}" "${bin}" set "${path}" "=A" --body-file -`], {
-      encoding: "utf8",
-    });
-    expect(result.status).toBe(0);
-    expect(read(path).toString("utf8")).toContain("via-body-file");
-  });
-});
-
-describe("D6 — heading levels never collide with an ancestor", () => {
-  test("promote refuses when the result equals the parent level", async () => {
-    const path = file("collide.md", "# T\n\n## A\n\n### deep\n\nx\n");
-    const before = read(path);
-    const result = await run(["promote", path, "=deep"]);
-    expect(result.code).toBe(2);
-    expect(result.stderr).toMatch(/mv|same level|ancestor/i);
-    expect(read(path)).toEqual(before);
-  });
-});
-
-describe("D7 — ledgers are not edited with generic tools", () => {
-  test("rm refuses on a ledger and points at close", async () => {
-    const path = file(
-      "ledger.md",
-      "# L\n\n## 索引\n\n| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 1 | 未决 | P2 | x |\n\n## 已关闭\n\n## 正文\n\n### Issue 1: x\n\nbody\n",
-    );
-    const before = read(path);
-    const result = await run(["rm", path, "/Issue 1:/"]);
-    expect(result.code).toBe(2);
-    expect(result.stderr).toMatch(/close|ledger|台账/i);
-    expect(read(path)).toEqual(before);
+  test("trailing blank lines are physical lines, not sentinels", () => {
+    const source = "﻿# T\r\n\r\n## A\r\nbody\r\n\r\n\r\n";
+    const doc = readDocument(file("blank-tail.md", source));
+    expect(joinDocument(linesOf(doc), doc)).toBe(source);
   });
 });
 
 describe("write safety", () => {
-  test("renaming an earlier heading preserves physical blank lines at EOF", async () => {
-    const source = "﻿# T\r\n\r\n## A\r\nbody\r\n\r\n\r\n";
-    const path = file("blank-tail.md", source);
-    expect((await run(["rename", path, "=A", "B"])).code).toBe(0);
-    expect(read(path)).toEqual(Buffer.from(source.replace("## A", "## B")));
+  test("a successful atomic write replaces the content and keeps the mode", () => {
+    const path = file("mode.md", "# T\n");
+    chmodSync(path, 0o600);
+    expect(writeAtomically(path, "# U\n", readDocument(path).stat)).toEqual({ ok: true });
+    expect(read(path).toString()).toBe("# U\n");
+    expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
-  test("removing the final section keeps a file without a final newline unterminated", async () => {
-    const source = "# Keep\n\n# Drop";
-    const path = file("remove-tail.md", source);
-    const preview = await run(["rm", path, "=Drop", "--dry-run"]);
-    expect(preview.code).toBe(0);
-    expect(preview.stdout).toContain("@@ -1,3 +1,1 @@");
-    expect(read(path).toString()).toBe(source);
-    expect((await run(["rm", path, "=Drop"])).code).toBe(0);
-    expect(read(path).toString()).toBe("# Keep");
+  test("a successful write leaves no temp file behind", () => {
+    const path = file("cleanup.md", "# T\n");
+    const before = readdirSync(dir).sort();
+    expect(writeAtomically(path, "# U\n", readDocument(path).stat)).toEqual({ ok: true });
+    expect(readdirSync(dir).sort()).toEqual(before);
   });
 
-  test("a valid no-op leaves the original inode and trailing blank lines in place", async () => {
-    const path = file("no-op.md", "# T\n\ntext\n\n");
-    const before = statSync(path);
-    expect((await run(["rename", path, "=T", "T"])).code).toBe(0);
-    expect(read(path).toString()).toBe("# T\n\ntext\n\n");
-    expect(statSync(path).ino).toBe(before.ino);
+  test("a stale read is rejected before writing", () => {
+    const path = file("race.md", "# T\n\n## A\n\nold\n");
+    const stale = readDocument(path).stat;
+    const modified = "# T\n\n## A\n\nchanged elsewhere\n";
+    writeFileSync(path, modified);
+    utimesSync(path, new Date(stale.mtimeMs), new Date(stale.mtimeMs));
+    expect(writeAtomically(path, "# T\n\n## A\n\nafter\n", stale)).toEqual({ ok: false, stale: true });
+    expect(read(path).toString()).toBe(modified);
   });
 
-  test("a replacement with the same size and mtime still invalidates the snapshot", async () => {
+  test("a replacement with the same size and mtime still invalidates the snapshot", () => {
     const path = file("replaced.md", "# Old\n");
-    const { readDocument, writeAtomically } = await import("../src/io.js");
     utimesSync(path, 10000, 10000);
     const snapshot = readDocument(path);
     const replacement = file("replacement.md", "# New\n");
     utimesSync(replacement, 10000, 10000);
-    const { renameSync, readdirSync } = await import("node:fs");
     renameSync(replacement, path);
     const entries = readdirSync(dir).sort();
     expect(writeAtomically(path, "# Lost\n", snapshot.stat)).toEqual({ ok: false, stale: true });
     expect(read(path).toString()).toBe("# New\n");
     expect(readdirSync(dir).sort()).toEqual(entries);
   });
+
   test("a change during temp-file fsync aborts the replacement and cleans up", () => {
     const path = file("publish-race.md", "# Original\n");
     const io = new URL("../dist/src/io.js", import.meta.url).href;
@@ -222,24 +153,10 @@ describe("write safety", () => {
     expect(read(path).toString()).toBe("# Other writer\n");
   });
 
-  test("file mode bits survive a write", async () => {
-    const path = file("mode.md", "# T\n\n## A\n\nold\n");
-    chmodSync(path, 0o600);
-    await run(["set", path, "=A", "--body", "new"]);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-  });
-
-  test("a stale read is rejected before writing", async () => {
-    const path = file("race.md", "# T\n\n## A\n\nold\n");
-    const { readDocument, writeAtomically } = await import("../src/io.js");
-    const stale = readDocument(path).stat;
-    // Change the contents and restore mtime to exercise the full snapshot.
-    const modified = "# T\n\n## A\n\nchanged elsewhere\n";
-    writeFileSync(path, modified);
-    utimesSync(path, new Date(stale.mtimeMs), new Date(stale.mtimeMs));
-
-    const result = writeAtomically(path, "# T\n\n## A\n\nafter\n", stale);
-    expect(result).toEqual({ ok: false, stale: true });
-    expect(read(path).toString()).toBe(modified);
+  test("a snapshot recorded by the reader still matches after an unrelated read", () => {
+    const path = file("stable.md", "# T\n");
+    const snapshot = readDocument(path).stat;
+    readDocument(path);
+    expect(writeAtomically(path, "# U\n", snapshot)).toEqual({ ok: true });
   });
 });
