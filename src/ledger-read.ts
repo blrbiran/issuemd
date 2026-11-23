@@ -8,6 +8,7 @@
 
 import type { IdSpan } from "./issue-id.js";
 import { bodyBlocks, parseLedger, type LedgerRow, type TableKind } from "./ledger.js";
+import { fencedLines } from "./ledger-edit.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
 
 export type ListedIssue = {
@@ -113,13 +114,16 @@ export function findLabel(
   label: string,
 ): LabeledParagraph | undefined {
   const canonical = (text: string) => text.trim().replace(/\s+/g, " ");
+  // A `**验收判据**` quoted inside a fence is an example, not the paragraph.
+  const fenced = fencedLines(lines);
   for (let line = start; line <= end && line <= lines.length; line++) {
+    if (fenced[line - 1]) continue;
     const match = /^ {0,3}\*\*([^*]+)\*\*\s*[:：]?\s*(.*)$/.exec(lines[line - 1]!);
     if (!match || match[1]!.trim() !== label) continue;
     const parts = [match[2]!.trim()];
     for (let next = line + 1; next <= end && next <= lines.length; next++) {
       const text = lines[next - 1]!;
-      if (text.trim() === "" || /^ {0,3}\*\*[^*]+\*\*/.test(text)) break;
+      if (fenced[next - 1] || text.trim() === "" || /^ {0,3}\*\*[^*]+\*\*/.test(text)) break;
       parts.push(text.trim());
     }
     return { label, text: canonical(parts.filter(Boolean).join(" ")), line };
@@ -130,7 +134,9 @@ export function findLabel(
 /** Every distinct `**label**` in a line range, in document order. */
 export function labelsIn(lines: string[], start: number, end: number): string[] {
   const out: string[] = [];
+  const fenced = fencedLines(lines);
   for (let line = start; line <= end && line <= lines.length; line++) {
+    if (fenced[line - 1]) continue;
     const match = /^ {0,3}\*\*([^*]+)\*\*/.exec(lines[line - 1]!);
     if (match && !out.includes(match[1]!.trim())) out.push(match[1]!.trim());
   }

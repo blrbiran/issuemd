@@ -35,7 +35,7 @@ import {
   guideBlockLines,
   insertLines,
   removeLines,
-  fencedLines,
+  endsInFence,
   replaceCell,
   rewriteBlock,
   statusBlockLines,
@@ -519,7 +519,7 @@ function readBodyFile(spec: string): { lines: string[] } | CliResult {
     if (lines.at(-1) === "") lines.pop();
     // An unclosed fence would swallow every heading after the body — including
     // `## 附录` — and `check` would still pass, so refuse it up front.
-    if (fencedLines(lines).at(-1)) {
+    if (endsInFence(lines)) {
       return err("issuemd new: --body-file ends inside an unclosed code fence\n", 2);
     }
     return { lines };
@@ -633,32 +633,38 @@ function cmdClose(rest: string[], v: Values): CliResult {
   let lines = loaded.lines;
 
   const keepBody = !!v["keep-body"] && block != null;
-  const appendix = ledger.sections.find((section) => section.level === 2 && section.title === "附录");
 
+  // The archived heading is deliberately not an `Issue N:` heading: 附录
+  // must not contain issue headings (E123), so the id moves into the text.
+  let archive: string[] | undefined;
   if (block) {
     if (keepBody) {
-      // 附录 sits after 正文, so insert there first, then delete the block.
-      // The archived heading is deliberately not an `Issue N:` heading: 附录
-      // must not contain issue headings (E123), so the id moves into the text.
-      // A ledger may legally lack 附录, in which case one is created at EOF
-      // rather than dropping the archive next to the body it replaces.
-      const at = appendix ? appendix.line_end + 1 : lines.length + 1;
       // Drop only the heading, then any leading blank lines: assuming a blank
       // line follows the heading would silently eat the first body line of a
       // tightly written ledger.
       const kept = bodyText.slice(1);
       while (kept.length > 0 && kept[0]!.trim() === "") kept.shift();
       while (kept.length > 0 && kept.at(-1)!.trim() === "") kept.pop();
-      const archived = [
+      archive = [
         `### #${idText} ${found.row.summary}（已关闭，正文保留）`,
         "",
         `> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。`,
         "",
         ...kept,
       ];
-      lines = insertLines(lines, at, appendix ? ["", ...archived] : ["", "## 附录", "", ...archived]);
     }
     lines = removeLines(lines, block.line, block.end - block.line + 1);
+  }
+  if (archive) {
+    // Locate 附录 *after* the body removal: it may sit before 正文, in which
+    // case inserting first would shift the block we then delete.
+    const afterRemoval = parseLedger(lines.join("\n"));
+    const target = afterRemoval.sections.find((section) => section.level === 2 && section.title === "附录");
+    if (target) {
+      lines = insertLines(lines, target.line_end + 1, ["", ...archive]);
+    } else {
+      lines = insertLines(lines, lines.length + 1, ["", "## 附录", "", ...archive]);
+    }
   }
   // 索引 precedes 正文, so its line number survived the body deletion.
   lines = removeLines(lines, found.row.line, 1);
@@ -753,12 +759,15 @@ function cmdStatus(rest: string[], v: Values): CliResult {
       2,
     );
   }
+  // `status` is also the repair verb for a typo'd word: an undeclared status
+  // has no category, so fall back to the table the row actually lives in.
   const from = statusCategory(found.row.status);
-  const to = statusCategory(next);
-  if (from !== to) {
+  const to = statusCategory(next)!;
+  const current = from ?? found.table;
+  if (current !== to) {
     const verb = to === "closed" ? "issuemd close" : "issuemd reopen";
     return err(
-      `issuemd status: #${idText} is ${found.row.status} (${from ?? "unknown"}); ` +
+      `issuemd status: #${idText} is ${found.row.status} (${current}); ` +
         `${next} is ${to} — use '${verb}'\n`,
       2,
     );
@@ -925,8 +934,10 @@ function syncTitles(
   prefer: "body" | "table",
   v: Values,
 ): CliResult {
+  // Keyed by the full id: `21` and `21a` are different issues and must not
+  // resolve to the same body block.
   const blocks = bodyBlocks(ledger);
-  const byId = new Map(blocks.map((block) => [block.id.start, block]));
+  const byId = new Map(blocks.map((block) => [`${block.id.start}${block.id.suffix}`, block]));
   const index = tableRange(ledger, "open");
   if (!index) return err("issuemd sync: the 索引 table is missing\n", 3);
 
@@ -935,7 +946,7 @@ function syncTitles(
   for (const row of ledger.rows.open) {
     if (row.ids.length !== 1) continue;
     const id = spanText(row.ids[0]!);
-    const block = byId.get(row.ids[0]!.start);
+    const block = byId.get(id);
     if (!block) continue;
     if (foldWhitespace(block.title) === foldWhitespace(row.summary)) continue;
     changes.push({ id, oldSummary: row.summary, title: block.title, rowLine: row.line, bodyLine: block.line });

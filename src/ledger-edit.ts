@@ -148,6 +148,23 @@ export function fencedLines(lines: string[]): boolean[] {
   return out;
 }
 
+/** True when the last line leaves a code fence open. */
+export function endsInFence(lines: string[]): boolean {
+  let fence: { char: string; len: number } | undefined;
+  for (const line of lines) {
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!fence) {
+      // A backtick fence's info string may not itself contain a backtick.
+      if (match && !(match[1]!.startsWith("`") && match[2]!.includes("`"))) {
+        fence = { char: match[1]![0]!, len: match[1]!.length };
+      }
+    } else if (match && match[1]![0] === fence.char && match[1]!.length >= fence.len && /^[ \t]*$/.test(match[2]!)) {
+      fence = undefined;
+    }
+  }
+  return fence !== undefined;
+}
+
 /** Indices of `needle` occurrences that sit outside every fence. */
 function unfencedIndexes(lines: string[], needle: string): number[] {
   const fenced = fencedLines(lines);

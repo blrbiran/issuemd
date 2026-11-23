@@ -89,6 +89,14 @@ issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
 - **`--body-file` 里未闭合的 fence 会吞掉后续所有标题且 `check` 仍通过**，现在直接拒绝。
 - **adopt 的决策清单行号指向转换后的文档**，不是输入；并且不再为区间行编造正文标题。
 
+第二轮复查又报了 5 条，同样已修并配测试（`cli-write.test.ts` 的 `second review round`）：
+
+- `--body-file` 的围栏判断曾把"正常闭合的 fence"误判为未闭合（`fencedLines().at(-1)` 判断的是最后一行是否属于围栏，不是围栏是否还开着）；改用 `endsInFence()`。
+- `sync --titles` 曾把 `21` 和 `21a` 解析到同一个正文块，两条都写成 `21a` 的标题；现在按完整 id 建索引。
+- `close --keep-body` 在 `## 附录` 位于 `## 正文` 之前时会失败（先插入再删除，坐标错位）；现在先删正文块、再重新定位附录。
+- `show --label` 曾把 fence 里的示例标签当成真的段落；`findLabel` / `labelsIn` 现在跳过围栏。
+- `status` 无法修复拼错的状态词（`未觉`）；现在对未声明状态用语所在表推断分类，跨表移动仍然拒绝。
+
 仍未处理的一条（review 标为 risky，非 bug）：原子替换最后一步 `lstat` 与 `rename` 之间仍有极小竞态窗口，见「已知的坑」第 3 条。
 
 ## 还没做（按优先级）

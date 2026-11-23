@@ -556,3 +556,65 @@ describe("regressions found in review", () => {
     expect(readFileSync(path)).toEqual(before);
   });
 });
+
+describe("second review round", () => {
+  test("a body file that closes its fence is accepted", async () => {
+    const path = ledger();
+    const body = join(dir, "closed-fence.md");
+    writeFileSync(body, "**现象**：x\n\n```\ncode\n```\n");
+    expect((await run(["new", path, "--title", "x", "--body-file", body])).code).toBe(0);
+    expect((await clean(path)).code).toBe(0);
+  });
+
+  test("sync --titles keeps 21 and 21a apart", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path)
+      .replace("| 4 | 观察 | P3 | 长列表滚动掉帧 |", "| 4 | 观察 | P3 | 长列表滚动掉帧 |\n| 21 | 未决 | P2 | 表里说二十一 |\n| 21a | 未决 | P2 | 表里说二十一甲 |")
+      .replace("### Issue 4: 长列表滚动掉帧", "### Issue 4: 长列表滚动掉帧\n\n**现象**：四。\n\n### Issue 21: 正文说二十一\n\n**现象**：二一。\n\n### Issue 21a: 正文说二十一甲\n\n**现象**：二一甲。"));
+    expect((await run(["sync", path, "--titles"])).code).toBe(0);
+    const after = text(path);
+    expect(after).toContain("| 21 | 未决 | P2 | 正文说二十一 |");
+    expect(after).toContain("| 21a | 未决 | P2 | 正文说二十一甲 |");
+  });
+
+  test("close --keep-body works when 附录 precedes 正文", async () => {
+    const path = ledger();
+    const source = text(path);
+    const bodyAt = source.indexOf("## 正文");
+    const appendixAt = source.indexOf("## 附录");
+    writeFileSync(path, source.slice(0, bodyAt) + source.slice(appendixAt).replace(/\n+$/, "") +
+      "\n\n" + source.slice(bodyAt, appendixAt).replace(/\n+$/, "") + "\n");
+    expect((await clean(path)).code).toBe(0);
+    expect((await run(["close", path, "2", "--keep-body"])).code).toBe(0);
+    const after = text(path);
+    expect(after.indexOf("### #2 ")).toBeGreaterThan(after.indexOf("## 附录"));
+    expect(after.indexOf("### #2 ")).toBeLessThan(after.indexOf("## 正文"));
+    expect((await clean(path)).code).toBe(0);
+  });
+
+  test("show --label ignores a label quoted inside a fence", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path).replace(
+      "### Issue 2: 侧栏宽度不可调\n\n**现象**",
+      "### Issue 2: 侧栏宽度不可调\n\n```\n**验收判据**：假\n```\n\n**现象**",
+    ));
+    const result = await run(["show", path, "2", "--label", "验收判据"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("重启后保持上次宽度");
+    expect(result.stdout).not.toContain("假");
+  });
+
+  test("status repairs an undeclared status word without crossing tables", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path).replace("| 3 | 部分解决 | P2 | 导出 CSV 丢空行 |", "| 3 | 未觉 | P2 | 导出 CSV 丢空行 |"));
+    expect((await run(["status", path, "3", "未决"])).code).toBe(0);
+    expect(text(path)).toContain("| 3 | 未决 | P2 | 导出 CSV 丢空行 |");
+    expect((await clean(path)).report.errors).toEqual([]);
+  });
+
+  test("status still refuses a cross-table move on an undeclared word", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path).replace("| 3 | 部分解决 | P2 | 导出 CSV 丢空行 |", "| 3 | 未觉 | P2 | 导出 CSV 丢空行 |"));
+    expect((await run(["status", path, "3", "已修"])).code).toBe(2);
+  });
+});
