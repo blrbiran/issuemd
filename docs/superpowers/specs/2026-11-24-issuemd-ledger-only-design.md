@@ -37,7 +37,9 @@ P3 再补 `new` / `close` / `reopen` / `status` / `rename` / `sync`，P4 补 `ad
 
 读：`toc`、`ls`、`grep`、`links`、`code`，以及 `read` 的选择器语法。
 写：`set`、`append`、`insert`、`rm`、`promote`、`demote`、`mv`，以及通用版 `rename`。
-连带删除：`src/select.ts`（179 行）、`src/write.ts` 中的变更函数、`src/render.ts` 的 TOC/截断路径、`src/index.ts` 里不再公开的导出。
+连带删除：`src/select.ts`（179 行，含 `select.test.ts`）、`src/render.ts` 整份（含 `render.test.ts`）、`src/cli.ts` 中所有通用命令的处理层、`src/index.ts` 里不再公开的导出。
+
+**保留**：`src/write.ts` 的行级原语（`removeSection` / `insertAfter` / `renameSection` / `shiftLevel` / `unifiedDiff`）与 `src/sections.ts`——台账写命令直接复用它们，`unifiedDiff` 也是 `--dry-run` 的唯一实现。
 
 `issuemd FILE` 不再隐式等价于任何命令，直接报用法错误并提示 `issuemd list FILE`——一个动作只有一种写法。
 
@@ -52,6 +54,14 @@ P3 再补 `new` / `close` / `reopen` / `status` / `rename` / `sync`，P4 补 `ad
 3. 最后进 P3 写命令。
 
 先加后删，保证任何时刻仓库里都存在一条可用的读取路径。
+
+### 实施后的偏差（2026-11-24）
+
+实现时对本文档做了三处修正，均已落地并有测试：
+
+1. **`--keep-body` 不能把 `### Issue N` 原样搬进 `## 附录`** —— I12/E123 明文禁止附录出现 Issue 标题，两者直接冲突。改为归档为普通 `### #N <摘要>（已关闭，正文保留）` 小节，正文其余行原样保留，id 写进标题文本。
+2. **每命令必须拒绝多编号行** —— 规范允许 `| 20, 24, 29 |`，但 `close`/`rename`/`status`/`reopen` 无法只改其中一个号而不猜另外两个的去向。这类请求 exit 2 并提示先拆行。
+3. **写入门禁以 `checkLedger` 的完整诊断集为基线**，而非 `parseLedger` 的解析期诊断——否则输入里本就存在的 `E112` 会被当成新错误。
 
 ## 风险
 

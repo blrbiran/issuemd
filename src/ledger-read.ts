@@ -34,14 +34,19 @@ export function filterRows(
   );
 }
 
+/** `20, 24, 29` — every id in a row, spelled the way the cell spells them. */
+export function rowIds(row: LedgerRow): string {
+  return row.ids.map(spanText).join(", ");
+}
+
 /** `2  未决  P1  侧栏宽度不可调`; an empty priority reads as `-`. */
 export function formatIssueRow(row: LedgerRow): string {
-  return [spanText(row.ids[0]!), row.status, row.priority || "-", row.summary].join("  ");
+  return [rowIds(row), row.status, row.priority || "-", row.summary].join("  ");
 }
 
 export function toListedIssue(row: LedgerRow, table: TableKind): ListedIssue {
   const issue: ListedIssue = {
-    id: spanText(row.ids[0]!),
+    id: rowIds(row),
     status: row.status,
     priority: row.priority,
     summary: row.summary,
@@ -66,18 +71,31 @@ export function summaryLine(counts: {
   return `open ${counts.open ?? "?"}${breakdown}   closed ${counts.closed ?? "?"}`;
 }
 
+export type FoundRow = {
+  row: LedgerRow;
+  table: TableKind;
+  /** The row's own span; for a bare number inside a range this is the range. */
+  span: IdSpan;
+  /** The id the caller asked for, resolved (`8` for a `7–20` row). */
+  id: string;
+  /** True when the id is only covered by a range, not a row of its own. */
+  inRange: boolean;
+};
+
 /** Locate an issue by exact id, or by a bare number covered by a range row. */
 export function findRow(
   ledger: ReturnType<typeof parseLedger>,
   id: string,
-): { row: LedgerRow; table: TableKind; span: IdSpan } | undefined {
+): FoundRow | undefined {
   const bare = /^\d+$/.test(id) ? Number(id) : undefined;
   for (const table of ["open", "closed"] as const) {
     for (const row of ledger.rows[table]) {
       for (const span of row.ids) {
-        if (spanText(span) === id) return { row, table, span };
+        if (spanText(span) === id) {
+          return { row, table, span, id, inRange: span.start !== span.end };
+        }
         if (bare !== undefined && span.start !== span.end && span.start <= bare && bare <= span.end) {
-          return { row, table, span: { start: bare, end: bare, suffix: "" } };
+          return { row, table, span, id: String(bare), inRange: true };
         }
       }
     }
@@ -140,7 +158,7 @@ export function viewIssue(
   if (!found) return undefined;
   const block = bodyBlocks(ledger).find((candidate) => candidate.id.start === found.span.start);
   const view: IssueView = {
-    id: spanText(found.span),
+    id: found.id,
     table: found.table,
     status: found.row.status,
     priority: found.row.priority,

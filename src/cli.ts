@@ -334,7 +334,13 @@ function cmdShow(rest: string[], v: Values): CliResult {
   lines.push(`L${view.body?.line ?? view.line}-${view.body?.end ?? view.end}`);
   if (view.criteria) lines.push(`判据: ${view.criteria}`);
   lines.push("");
-  lines.push(view.body ? view.body.text : "(已关闭，只保留判据)");
+  if (view.body) {
+    lines.push(view.body.text);
+  } else if (view.table === "closed") {
+    lines.push("(已关闭，只保留判据)");
+  } else {
+    lines.push("(无正文块)");
+  }
   return ok(lines.join("\n"));
 }
 
@@ -441,7 +447,10 @@ function openLedger(file: string): { loaded: Loaded; ledger: ReturnType<typeof p
   const ledger = parseLedger(loaded.lines.join("\n"));
   const unusable = unusableLedger(ledger);
   if (unusable) return unusable;
-  return { loaded, ledger, errors: ledger.errors };
+  // Baseline diagnostics must be the checker's full set, not just the parser's:
+  // the write gate only refuses *new* errors, so a pre-existing E112 in the
+  // input must not look new after the edit.
+  return { loaded, ledger, errors: checkLedger(loaded.doc.text, file).errors };
 }
 
 function parseIntArg(v: string | undefined, flag: string): { value: number } | CliResult {
@@ -454,6 +463,23 @@ function parseIntArg(v: string | undefined, flag: string): { value: number } | C
 }
 
 // ---- write commands ---------------------------------------------------
+
+/**
+ * Where a new body block for `id` belongs: before the first body whose id is
+ * larger, else just past the last body. Bodies must stay strictly ascending
+ * (E105), so appending blindly would fail for an explicitly low `--id`.
+ */
+function bodyInsertAt(
+  ledger: ReturnType<typeof parseLedger>,
+  id: number,
+  bodySectionEnd: number,
+): number {
+  const blocks = bodyBlocks(ledger);
+  const later = blocks.find((block) => block.id.start > id);
+  if (later) return later.line;
+  const last = blocks.at(-1);
+  return last ? last.end + 1 : bodySectionEnd + 1;
+}
 
 /** Rows in `status`'s category, used by close/reopen/status decisions. */
 function statusCategory(status: string): "open" | "closed" | undefined {
@@ -490,23 +516,24 @@ function cmdNew(rest: string[], v: Values): CliResult {
   const { loaded, ledger, errors } = opened;
 
   const max = maxIssueId(ledger.rows);
-  let id = max + 1;
+  let idText = String(max + 1);
   if (v.id != null) {
-    const parsed = parseIntArg(v.id, "--id");
-    if ("code" in parsed) return parsed;
-    id = parsed.value;
-    if (id < 1) return err("issuemd new: --id must be a positive integer\n", 2);
-    const clash = findRow(ledger, String(id));
-    if (clash) return err(`issuemd new: id ${id} already exists\n`, 2);
+    // Ids are `\d+[a-z]?` (the real ledgers contain `393b`), not plain ints.
+    if (!/^[1-9]\d*[a-z]?$/.test(v.id)) {
+      return err(`issuemd new: --id expects a positive id like 42 or 393b, got '${v.id}'\n`, 2);
+    }
+    idText = v.id;
+    if (findRow(ledger, idText)) return err(`issuemd new: id ${idText} already exists\n`, 2);
   }
+  const id = Number.parseInt(idText, 10);
 
   let body: string[];
   if (v["body-file"] != null) {
     const read = readBodyFile(v["body-file"]);
     if ("code" in read) return read;
-    body = [`### Issue ${id}: ${title}`, "", ...read.lines, ""];
+    body = [`### Issue ${idText}: ${title}`, "", ...read.lines, ""];
   } else {
-    body = bodySkeleton(String(id), title);
+    body = bodySkeleton(idText, title);
   }
 
   const index = tableRange(ledger, "open");
@@ -520,11 +547,13 @@ function cmdNew(rest: string[], v: Values): CliResult {
     return index.end + 1;
   })();
 
-  const bodySection = ledger.sections.find((section) => section.level === 2 && section.title === "正文");
-  if (!bodySection) return err("issuemd new: the 正文 section is missing\n", 3);
-
-  let lines = insertLines(loaded.lines, insertAt, [formatRow([String(id), status, priority, title])]);
-  lines = insertLines(lines, bodySection.line_end === bodySection.line_start ? bodySection.line_start + 2 : bodySection.line_end + 1, body);
+  let lines = insertLines(loaded.lines, insertAt, [formatRow([idText, status, priority, title])]);
+  // The body position is computed after the index edit, which sits above 正文
+  // and therefore shifts every later line by one.
+  const afterIndex = parseLedger(lines.join("\n"));
+  const shiftedBody = afterIndex.sections.find((section) => section.level === 2 && section.title === "正文");
+  if (!shiftedBody) return err("issuemd new: the 正文 section is missing\n", 3);
+  lines = insertLines(lines, bodyInsertAt(afterIndex, id, shiftedBody.line_end), body);
 
   return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
@@ -545,9 +574,16 @@ function cmdClose(rest: string[], v: Values): CliResult {
   const found = findRow(ledger, idText);
   if (!found) return noMatch(`(no such issue: ${idText})\n`);
   if (found.table === "closed") return err(`issuemd close: #${idText} is already closed\n`, 2);
-  if (found.span.start !== found.span.end) {
+  if (found.inRange) {
     return err(
       `issuemd close: #${idText} is inside retired range ${spanText(found.span)}; close a concrete issue instead\n`,
+      2,
+    );
+  }
+  if (found.row.ids.length > 1) {
+    return err(
+      `issuemd close: #${idText} shares a row with other ids (${found.row.ids.map(spanText).join(", ")}); ` +
+        "split the row first\n",
       2,
     );
   }
@@ -569,8 +605,17 @@ function cmdClose(rest: string[], v: Values): CliResult {
   if (block) {
     if (keepBody) {
       // 附录 sits after 正文, so insert there first, then delete the block.
+      // The archived heading is deliberately not an `Issue N:` heading: 附录
+      // must not contain issue headings (E123), so the id moves into the text.
       const at = (appendix?.line_end ?? block.end) + 1;
-      lines = insertLines(lines, at, ["", ...bodyText]);
+      const archived = [
+        `### #${idText} ${found.row.summary}（已关闭，正文保留）`,
+        "",
+        `> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。`,
+        "",
+        ...bodyText.slice(2).filter((line, index, all) => !(line === "" && all.slice(index).every((rest) => rest === ""))),
+      ];
+      lines = insertLines(lines, at, ["", ...archived]);
     }
     lines = removeLines(lines, block.line, block.end - block.line + 1);
   }
@@ -602,8 +647,15 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   const found = findRow(ledger, idText);
   if (!found) return noMatch(`(no such issue: ${idText})\n`);
   if (found.table === "open") return err(`issuemd reopen: #${idText} is already open\n`, 2);
-  if (found.span.start !== found.span.end) {
+  if (found.inRange) {
     return err(`issuemd reopen: #${idText} is a range; reopen is not supported\n`, 2);
+  }
+  if (found.row.ids.length > 1) {
+    return err(
+      `issuemd reopen: #${idText} shares a row with other ids (${found.row.ids.map(spanText).join(", ")}); ` +
+        "split the row first\n",
+      2,
+    );
   }
 
   const priority = found.row.priority || "P2";
@@ -623,11 +675,15 @@ function cmdReopen(rest: string[], v: Values): CliResult {
     formatRow([spanText(found.span), "未决", priority, found.row.summary]),
   ]);
 
-  const bodySection = parseLedger(lines.join("\n")).sections.find(
+  // Coordinates for the body block are taken after the index edit landed,
+  // so they already reflect the one-line shift it caused.
+  const reopened = parseLedger(lines.join("\n"));
+  const bodySection = reopened.sections.find(
     (section) => section.level === 2 && section.title === "正文",
   );
   if (!bodySection) return err("issuemd reopen: the 正文 section is missing\n", 3);
-  lines = insertLines(lines, bodySection.line_end + 1, bodySkeleton(spanText(found.span), found.row.summary, criteria));
+  const bodyAt = bodyInsertAt(reopened, found.span.start, bodySection.line_end);
+  lines = insertLines(lines, bodyAt, bodySkeleton(spanText(found.span), found.row.summary, criteria));
 
   return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
@@ -646,8 +702,15 @@ function cmdStatus(rest: string[], v: Values): CliResult {
 
   const found = findRow(ledger, idText);
   if (!found) return noMatch(`(no such issue: ${idText})\n`);
-  if (found.span.start !== found.span.end) {
+  if (found.inRange) {
     return err(`issuemd status: #${idText} is a range; change a concrete issue\n`, 2);
+  }
+  if (found.row.ids.length > 1) {
+    return err(
+      `issuemd status: #${idText} shares a row with other ids (${found.row.ids.map(spanText).join(", ")}); ` +
+        "split the row first\n",
+      2,
+    );
   }
   const from = statusCategory(found.row.status);
   const to = statusCategory(next);
@@ -680,8 +743,15 @@ function cmdRename(rest: string[], v: Values): CliResult {
 
   const found = findRow(ledger, idText);
   if (!found) return noMatch(`(no such issue: ${idText})\n`);
-  if (found.span.start !== found.span.end) {
+  if (found.inRange) {
     return err(`issuemd rename: #${idText} is a range; rename a concrete issue\n`, 2);
+  }
+  if (found.row.ids.length > 1) {
+    return err(
+      `issuemd rename: #${idText} shares a row with other ids (${found.row.ids.map(spanText).join(", ")}); ` +
+        "split the row first\n",
+      2,
+    );
   }
 
   const lines = [...loaded.lines];
@@ -804,11 +874,12 @@ function fixTables(lines: string[], ledger: ReturnType<typeof parseLedger>): str
     // A headerless data block in a ledger table would promote its first row
     // to a header, so the canonical header row goes in along with the rule.
     const needsHeader = inLedgerTable && block.rows[0]!.join(" | ") !== COLUMN_HEADERS[width];
-    result = insertLines(
-      result,
-      block.line + 1,
-      needsHeader ? [canonicalHeaderLine(width), separator] : [separator],
-    );
+    // A headerless data block would promote its first row to a header, so the
+    // canonical header and the rule both go *above* it; otherwise the rule
+    // simply follows the existing header row.
+    result = needsHeader
+      ? insertLines(result, block.line, [canonicalHeaderLine(width), separator])
+      : insertLines(result, block.line + 1, [separator]);
   }
   return result;
 }

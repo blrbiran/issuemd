@@ -1,12 +1,12 @@
 ---
 name: issuemd
 description: |
-  Read and edit a single-file issue ledger (issue 台账) with structural guarantees: one status table, one body block per open issue, criteria stored once. Use this skill whenever a task touches an issue ledger — 台账 / issue 文档 / 状态总览 / 待处理 / 关一条 issue / 新增 issue / 核对台账 / 改 issue 状态 / 修台账漂移 — or when you are about to hand-edit a `| # | 状态 | … |` table and a `### Issue N:` body in the same file. Also trigger when a ledger check fails or when titles/status/counts disagree. Prefer issuemd over lilmd for ledgers; use lilmd for ordinary long Markdown.
+  Read and edit a single-file issue ledger (issue 台账) with structural guarantees: one status table, one body block per open issue, criteria stored once. Use this skill whenever a task touches an issue ledger — 台账 / issue 文档 / 状态总览 / 待处理 / 关一条 issue / 新增 issue / 核对台账 / 改 issue 状态 / 修台账漂移 — or when you are about to hand-edit a `| # | 状态 | … |` table and a `### Issue N:` body in the same file. Also trigger when a ledger check fails or when titles/status/counts disagree. Use issuemd for ledgers; use lilmd or any text editor for ordinary Markdown — issuemd is deliberately not a general Markdown tool.
 ---
 
 # issuemd — an issue ledger that cannot drift
 
-`lilmd` lets you read one section of a big file cheaply. `issuemd` does that **and** keeps three places in agreement: the status table, the body blocks, and the criteria.
+`issuemd` keeps three places in agreement: the status table, the body blocks, and the criteria. It is a ledger tool only — it has no generic Markdown editing verbs, so every command below is about issues.
 
 The rule that matters: **never hand-edit a status table.** A ledger has structure; use the command that changes all affected places at once, then prove it with `check`.
 
@@ -23,10 +23,11 @@ If `issuemd` is unavailable and cannot be installed, fall back to `lilmd` + a ma
 ### 1. Survey
 
 ```bash
-issuemd FILE                    # TOC + line ranges
 issuemd list FILE               # open issues only: id, status, priority, summary
 issuemd list FILE --status 未决
+issuemd list FILE --closed      # the closed table, with criteria
 issuemd counts FILE             # per-status counts, computed (never stored)
+issuemd read FILE 附录          # any top-level section, verbatim
 ```
 
 `list` is the cheap view. Don't read the whole table if you only need to know what's open.
@@ -36,7 +37,7 @@ issuemd counts FILE             # per-status counts, computed (never stored)
 ```bash
 issuemd show FILE 65                 # the body block, plus its table row
 issuemd show FILE 65 --label 验收判据  # just that labelled paragraph
-issuemd show FILE 65 --json          # {id,status,priority,title,criteria,body}
+issuemd show FILE 65 --json          # {id,table,status,priority,summary,criteria,body}
 ```
 
 Reading the row and the body together is the point: if they disagree, `show` tells you.
@@ -46,6 +47,7 @@ Reading the row and the body together is the point: if they disagree, `show` tel
 ```bash
 issuemd new    FILE --title "…" --status 未决 --priority P2   # id defaults to max+1
 issuemd close  FILE 57 --criteria-from-body      # criteria moves to the closed table
+issuemd close  FILE 57 --keep-body               # archive the body under 附录 instead
 issuemd status FILE 56 部分解决                  # open→open or closed→closed only
 issuemd reopen FILE 57
 issuemd rename FILE 16 "new summary"             # table + body title, one transaction
@@ -82,12 +84,14 @@ If `--titles` reports W260 (a table summary carries progress text the body title
 - **Count issues by id, not by row.** One cell may hold several ids (`| 20, 24, 29 |` is three) or a retired range (`| 1–199 |`).
 - **No headings inside an issue body.** Use `**bold labels**`; `####` inside a body is `E110`. Read one labelled paragraph with `show --label`.
 - **A closed issue must have no body block.** Closing deletes it and promotes `**验收判据**` into the table; a leftover block is `E111`.
-- **Never put counts in headings** (`## 待处理（16）`). Every count change then changes the selector, and stale references fail silently (`E121`).
+- **Never put counts in headings** (`## 待处理（16）`). Every count change then invalidates every reference, and stale ones fail silently (`E121`).
 - **Status lives only in the table.** A `**状态**` line in a body is an error (`E107`).
 - **The summary and the body title are the same string.** Don't shorten one; `rename` changes both.
 - **Escape pipes inside cells** as `\|` (`E108` / `W205`).
 - **Ids are `\d+[a-z]?`** (`393b` is real) and are never recycled.
-- **Pad `--body` with a newline on both ends**, same discipline as lilmd.
+- **`--body-file` replaces the whole body**; without it, `new` writes the four-label skeleton (`现象` / `根因` / `期望` / `验收判据`).
+- **`read` matches a top-level `##` heading exactly** — no regex, no substring, no chain. A duplicate or missing title exits `2` and lists the candidates.
+- **A row that holds several ids is read-only for per-id verbs.** `close`/`rename`/`status` on `| 20, 24, 29 |` refuse; split the row first.
 
 ## Writing issues an owner can act on
 
@@ -106,7 +110,6 @@ It does the mechanical part (add missing sections, drop closed rows from the ind
 ## Quick reference
 
 ```bash
-issuemd FILE                              # survey
 issuemd list FILE --status 未决           # what's open
 issuemd show FILE 65                      # one issue, row + body
 issuemd check FILE --json                 # verify (exit 3 = errors)
