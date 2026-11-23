@@ -1,7 +1,7 @@
 # issuemd 收敛为纯台账工具（设计）
 
 日期：2026-11-24
-状态：待确认
+状态：已确认（2026-11-24）
 
 ## 目标
 
@@ -57,7 +57,7 @@ P3 再补 `new` / `close` / `reopen` / `status` / `rename` / `sync`，P4 补 `ad
 
 **回归覆盖会暂时变薄。** P1 的字节保持（尾换行、CRLF、模式位、E130）目前是通过 `set` / `rename` 做端到端验证的。删掉这些命令后，`tests/write-safety.test.ts` 需要改为直接对 `readDocument` / `joinDocument` / `writeAtomically` 断言，等 P3 的 `rename` / `close` 落地后再补一层端到端。这一步不能省，否则 P1 的保证会变成「代码在但没人验证」。
 
-## 待确认后执行
+## 已确认的决定
 
-- 是否接受 `issuemd FILE` 不再隐式工作（我倾向接受）。
-- 是否接受删除 `select.ts` 整份（台账不需要通用选择器）。
+- `issuemd FILE` 不再隐式工作：报用法错误并提示 `issuemd list FILE`。
+- 删除 `select.ts` 整份（含 `select.test.ts`）；台账命令只按 id 和固定 H2 标题定位。
