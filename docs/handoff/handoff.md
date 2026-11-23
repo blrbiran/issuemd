@@ -12,13 +12,13 @@
 
 ## 一句话现状
 
-`issuemd` 已完成 **p0–p3**：只做单文件台账，命令表面为 `check` / `list` / `show` / `counts` / `read` + 六个写命令 `new` / `close` / `reopen` / `status` / `rename` / `sync`。通用 Markdown 命令已全部删除。全部测试通过（数量现查：`npm test` 末行）。剩余工作只有 **P4 `adopt`** 与 **P5 文档/skill/清理**。
+`issuemd` 已完成 **P0–P4**：只做单文件台账，命令表面为 `check` / `list` / `show` / `counts` / `read` + 六个写命令 `new` / `close` / `reopen` / `status` / `rename` / `sync` + 一次性迁移 `adopt`。通用 Markdown 命令已全部删除，两个历史交叉核对脚本也已删除。全部测试通过（数量现查：`npm test` 末行）。剩余只有 P5 的打包决定与发布前授权确认。
 
 ## 分支状态
 
 - 工作在分支 `feat/ledger-only`，基座是当时的 `main`（`eee6ebf`，含已批准的设计文档与上一版交接）。
 - **尚未合入 `main`，尚未 push。** 按用户约定，合入 `main`、`npm link`、发布 npm、push 都必须等用户显式指令，且只做 fast-forward 合并。
-- 三个提交：
+- 提交（按主题）：
   - `feat: expose ledger body blocks and max issue id`
   - `feat: read ledger views; drop generic markdown commands`
   - `feat: ledger write verbs with a validation gate`
