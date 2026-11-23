@@ -1,78 +1,125 @@
 # issuemd 交接文档
 
-更新于 2026-11-24。写给下一位接手者。
+更新于 2026-11-24（第二轮）。写给下一位接手者。
 
 > 版本定位方式：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
 >
 > ```bash
-> git log --oneline -5
+> git log --oneline -8
 > git log -1 --format=%h   # 本文档所在的提交
 > ```
 
 ## 一句话现状
 
-P0（Markdown CLI 基线）、P1（写入安全）、P2（台账校验）已合入本地 `main` 并通过 217 个测试；当前有一个**已写好、待用户确认**的架构决定——把 `issuemd` 收敛为纯台账工具，删掉从 lilmd 拷来的通用 Markdown 命令。
+`issuemd` 已完成 **p0–p3**：只做单文件台账，命令表面为 `check` / `list` / `show` / `counts` / `read` + 六个写命令 `new` / `close` / `reopen` / `status` / `rename` / `sync`。通用 Markdown 命令已全部删除。全部测试通过（数量现查：`npm test` 末行）。剩余工作只有 **P4 `adopt`** 与 **P5 文档/skill/清理**。
+
+## 分支状态
+
+- 工作在分支 `feat/ledger-only`，基座是当时的 `main`（`eee6ebf`，含已批准的设计文档与上一版交接）。
+- **尚未合入 `main`，尚未 push。** 按用户约定，合入 `main`、`npm link`、发布 npm、push 都必须等用户显式指令，且只做 fast-forward 合并。
+- 三个提交：
+  - `feat: expose ledger body blocks and max issue id`
+  - `feat: read ledger views; drop generic markdown commands`
+  - `feat: ledger write verbs with a validation gate`
+  - 末尾还有一个 docs 提交（README / SKILL.md / 设计文档偏差记录 / 本文档）
 
 ## 必须先读的三份材料
 
 | 文件 | 作用 |
 |---|---|
-| `docs/spec.md` | 唯一的规格来源。格式、不变量、错误码、命令表面、分阶段验收都在这里，其余文档不重复 |
-| `docs/adr/0001`–`0005` | 五个会显得"莫名其妙"的决定：自持 lilmd 源码、单一格式无兼容层、关闭即删正文、摘要等于正文标题、正文内禁标题 |
-| `docs/superpowers/specs/2026-11-24-issuemd-ledger-only-design.md` | **当前待批准的设计**。决定 `issuemd` 只做台账，命令表面收敛为 `check/list/show/counts/read` |
+| `docs/spec.md` | 唯一的规格来源。格式、不变量、错误码、命令表面、分阶段验收 |
+| `docs/adr/0001`–`0005` | 五个会显得"莫名其妙"的决定 |
+| `docs/superpowers/specs/2026-11-24-issuemd-ledger-only-design.md` | 已批准的设计。末尾「实施后的偏差」记录了三处实现时对设计的修正，**读它，否则会照着旧设计改回去** |
 
-辅助：`GLOSSARY.md`（术语，实现无关）、`README.md`（对外）、`skills/issuemd/SKILL.md`（给 agent 用，目前超前于实现，尚未打进 npm 包）。
+辅助：`GLOSSARY.md`（术语）、`README.md`（对外）、`skills/issuemd/SKILL.md`（给 agent 用；仍未打进 npm 包，`tests/bin.test.ts` 断言了这点）。
+计划：`docs/superpowers/plans/2026-11-24-ledger-only.md`（本轮执行的 14 个 task）。
 
-## 立刻要做的决定
+## 命令表面（现状）
 
-用户已经同意方向（"只做单纯的 issuemd"、"按推荐"，推荐是保留一条窄 `read`），但**还没有批准设计文档本身**。设计文档末尾留了两个问题：
+```text
+issuemd check   FILE [--json] [--strict] [--verify-commits]
+issuemd list    FILE [--status S] [--priority P] [--closed] [--json]
+issuemd show    FILE ID [--json] [--label NAME]
+issuemd counts  FILE [--json]
+issuemd read    FILE <H2 标题>          # 精确匹配顶层标题，无正则/链式/子串
 
-1. `issuemd FILE` 不再隐式等价于 `toc` —— 是否接受？
-2. 是否删除 `src/select.ts` 整份？
+issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]
+issuemd close   FILE ID [--criteria TEXT | --criteria-from-body] [--keep-body]
+issuemd reopen  FILE ID
+issuemd status  FILE ID NEW_STATUS      # 只允许同分类内改
+issuemd rename  FILE ID "NEW TITLE"     # 表格摘要 + 正文 H3，一次事务
+issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
+                      [--move-progress | --drop-progress]]
+```
 
-拿到批准后：先加 `list`/`show`/`counts`/窄 `read`，再删通用命令（顺序不能颠倒，否则中间状态没有可用的读取路径），然后才进 P3。
+退出码：0 成功 / 1 没有这条 issue / 2 用法错误 / 3 校验失败。
 
-## 已完成部分（不要重做）
+## 架构要点（改之前必须知道）
 
-- **P0** `dc96861` 量级：拷贝 lilmd 的 Markdown 核心，npm 构建，产物可直接被 Node 运行，运行时依赖为零。`dist/bin/issuemd.js` 是入口。
-- **P1**：`src/io.ts` 提供 `readDocument` / `joinDocument` / `writeAtomically`——原子替换（临时文件 + fsync + rename）、保留 BOM / 行尾风格 / 尾换行有无 / 权限位、替换前复核快照（`E130`）。`src/scan.ts` 是 fence 感知的标题扫描器。
-- **P2**：`src/ledger.ts`（管道块、编号与区间、骨架识别）、`src/issue-id.ts`（`IdSet` 用 `bigint` 计数，避免大区间溢出）、`src/ledger-check.ts`（`checkLedger`）。CLI 已有 `issuemd check FILE [--json] [--strict] [--verify-commits]`，退出码 0/2/3。
+- **`src/ledger.ts`**：`parseLedger(src)` 返回 `{ lines, visible, sections, rows, blocks, errors, warnings }`。`rows` 是表行，`blocks` 是管道块（含 header/separator 标志），`bodyBlocks(ledger)` 返回正文块，`maxIssueId(rows)` 算最大编号（区间端点参与）。`parseLedger` 只做解析期诊断，**不是**完整校验。
+- **`src/ledger-check.ts`**：`checkLedger(src, file, opts)` 是唯一权威。E120 表示"根本不是台账"。
+- **`src/ledger-read.ts`**：纯只读视图。`findRow` 返回 `{ row, table, span, id, inRange }`；`inRange` 表示"这个号只在区间行里"（如 `7–20` 中的 8），per-id 写命令必须拒绝它。
+- **`src/ledger-edit.ts`**：纯行级原语（`replaceCell` / `insertLines` / `removeLines` / `bodySkeleton` / `extractCriteria` / `rewriteBlock` / 受控块内容）。不碰磁盘。
+- **`src/cli.ts`**：所有命令。写命令共享 `commit()`：
+  1. `joinDocument` 拼出候选内容（保留 BOM/行尾/尾换行）；
+  2. 对候选内容跑 `checkLedger`；
+  3. **只拒绝"新出现"的 error**（以 `code|id|message` 为键，基线来自 `openLedger()` 的 `checkLedger(...).errors`）；
+  4. `--dry-run` 输出 diff 并 exit 0；否则 `writeAtomically`（E130 时 exit 2）。
+- **`src/io.ts`**：不要改。原子写、快照复核、BOM/EOL/尾换行/权限位。
 
-## 还没做
+## 本轮的关键实现决定（照旧设计改会出错）
 
-- P3 台账写命令：`new` / `close` / `reopen` / `status` / `rename` / `sync` / `counts`（见 `docs/spec.md` §7、§12）。
-- P4 `adopt` 一次性迁移（§10）。
-- P5 skill / 文档 / 清理，包括删除仓库根目录的 `check-issues.mjs` 与 `verify-facts.mjs`（约定 P5 再删，它们现在只作交叉核对用）。
+1. **`--keep-body` 不把 `### Issue N` 原样搬进附录**。I12/E123 禁止附录出现 Issue 标题。归档写成普通 `### #N <摘要>（已关闭，正文保留）` 小节，正文其余行原样保留。台账没有 `## 附录` 时会在 EOF 新建一节。输出 `W250` 到 stderr。
+2. **多编号行 + per-id 命令 = exit 2**。`| 20, 24, 29 |` 合法，但 `close`/`rename`/`status`/`reopen` 无法只改一个号而不猜另外两个的去向。提示「先拆行」。`list`/`show` 仍能读整行（`show 24` 会显示该行的正文）。
+3. **写入门禁的基线是 `checkLedger` 的完整诊断集**，不是 `parseLedger` 的解析期诊断——否则输入里本就存在的 `E112` 会被当成新错误拒绝。
+4. **`new --id` 接受 `\d+[a-z]?`**（真实台账有 `393b`），不再只接受整数。
+5. **正文块按编号升序插入**（`bodyInsertAt`），显式给小号时不会触发 E105。
+6. **`fixTables` 对无表头块的处理**：台账的 `索引`/`已关闭` 里若有"首行即数据"的块，会把标准表头 + 分隔行一起插在该行**之前**；普通文档的块只在首行后插分隔行。
+
+## 还没做（按优先级）
+
+- **P4 `adopt`**：一次性把旧布局（cafe/orca 形状）转成 canonical。规格 §10 与 `fixtures/cafe-shaped.md`、`fixtures/orca-shaped.md` 的 `*.expected.json` 是验收依据。设计要求：机械改动 + 待决清单 + `--dry-run` + `--report`，且输出必须能通过 `check`（附录内容除外）。
+- **P5 清理**：
+  - 删除仓库根目录的 `check-issues.mjs` 与 `verify-facts.mjs`（约定 P5 删，它们已入库）。
+  - 决定 `skills/issuemd/SKILL.md` 是否打进 npm 包（当前 `package.json#files` 只有 `dist`，测试断言它**不在**包里）。
+  - `README` 的「License」段仍写着「确认 lilmd 上游授权后再公开」——发布前要处理。
+- 规格 §6.2 里几条 warn 尚未实现：`W203`（guide 点名的标题不存在）、`W211`（编号疑似复用）、`W260` 已在 `sync --titles` 的护栏里实现但 `check` 本身不报。若要补，先看 `docs/spec.md` §6.2。
 
 ## 验收与命令
 
 ```bash
-npm run typecheck && npm test     # 必须全绿，217 个测试
+npm run typecheck && npm test     # 必须全绿
 node dist/bin/issuemd.js check fixtures/canonical-clean.md
-# 期望：open 3 (未决 1, 部分解决 1, 观察 1)   closed 17   /  0 errors
+# open 3 (未决 1, 部分解决 1, 观察 1)   closed 17 / 0 errors, 1 warning (W202, 夹具里的 a1b2c3d)
+node dist/bin/issuemd.js list fixtures/canonical-clean.md     # 3 行
+node dist/bin/issuemd.js show fixtures/canonical-clean.md 2   # 表行 + 正文
+node dist/bin/issuemd.js counts fixtures/canonical-clean.md   # 与 expected.json 一致
+node dist/bin/issuemd.js read fixtures/canonical-clean.md 附录
+node dist/bin/issuemd.js fixtures/canonical-clean.md          # exit 2，「missing command」
 ```
 
-夹具是合成的，**不要**把真实台账（cafe / orca 的 issue-*.md）放进测试。`fixtures/*.expected.json` 是人工核对过的黄金答案。`fixtures/cafe-shaped.md` 里有 13 条"已关闭但仍有正文"的 issue，用来断言 `E111`；`fixtures/orca-shaped.md` 有 11 个缺分隔行的管道块和 12 个计数标题。
+夹具是合成的，**不要**把真实台账（cafe / orca 的 `issue-*.md`）放进测试。`fixtures/*.expected.json` 是人工核对过的黄金答案。`fixtures/cafe-shaped.md` 有 13 条"已关闭但仍有正文"的 issue（断言 `E111`）；`fixtures/orca-shaped.md` 有 11 个缺分隔行的管道块和 12 个计数标题。
 
 ## 工作流约定（用户明确要求，别自作主张）
 
-- 改动开 `feat/...` 分支提交；**合入 `main`、`npm link`、发布 npm 都要等用户显式指令**，且只做 fast-forward 合并。
+- 改动开 `feat/...` 分支提交；**合入 `main`、`npm link`、发布 npm、push 都要等用户显式指令**，且只做 fast-forward 合并。
 - 提交前跑类型检查 + 完整测试。
-- 不要 push。
 - 一轮结束时用中文给条目化小结，未决项用编号 Q 加推荐答案。
+- 用户可能要求「这一轮不要考虑 context 大小，尽量做完」；卡住必须等人的部分留到最后汇报并写进本文件。
 
 ## 已知的坑
 
-1. **删除通用命令会让 P1 的回归变薄。** 现在字节保持是用 `set`/`rename` 端到端验证的；删掉后必须改成直接对 `io.ts` 三个函数断言，等 P3 的 `rename` 落地再补端到端。设计文档 §风险 已写明。
-2. **bun 的 `spawnSync({ input })` 用的是 socket，不是 FIFO。** `readFileSync(0)` 在 socket 上会永久阻塞。隐式 stdin 只认 FIFO 与普通文件；测试里要用真实 shell 管道（`sh -c 'printf ... | issuemd ...'`）。
-3. **`text.split("\n")` 带出 EOF 哨兵。** 行数组必须去掉尾部空串再拼回，否则每次写入都会在文件末尾多一行。`loaded.srcLines` 已这样处理。
-4. **原子替换仍有极小竞态窗口**：最后一次 stat 与 `rename` 之间。当前已把窗口压到最小并在测试中覆盖"fsync 期间被改"的情形，属于已知接受项。
-5. **混合行尾文件**（同时存在 LF 和 CRLF）会被整体归一成 CRLF，这是继承自 lilmd 的行为，尚未修。
+1. **bun 的 `spawnSync({ input })` 用的是 socket，不是 FIFO。** `readFileSync(0)` 在 socket 上会永久阻塞。隐式 stdin 只认 FIFO 与普通文件；测试里要用真实 shell 管道（`sh -c 'printf ... | issuemd ...'`）。
+2. **`text.split("\n")` 带出 EOF 哨兵。** 读写的行数组必须去掉尾部空串再拼回。`loadWritable()` 已按 `doc.finalNewline` 处理。
+3. **原子替换仍有极小竞态窗口**：最后一次 stat 与 `rename` 之间。已压到最小并用「fsync 期间被改」的用例覆盖，属于已知接受项。
+4. **混合行尾文件**（同时 LF 和 CRLF）会被整体归一成文件中首个出现的行尾，继承自 lilmd，未修。
+5. **行号坐标在插入/删除后会变。** 写命令里凡是先改一处再算下一处，都必须重新 `parseLedger` 取新坐标（`cmdNew`、`cmdReopen`、`cmdClose` 都是这么做的）。新增写命令时照做。
+6. **`--dry-run` 也会跑校验**：不合法的操作即使 dry-run 也是 exit 3。这是故意的。
 
 ## 建议调用这些 skill
 
-- `superpowers:writing-plans` —— 设计文档获批后，把它转成分步计划（这是流程要求的下一步）。
-- `superpowers:test-driven-development` —— P3 每个台账写命令都先写失败用例。
-- `superpowers:systematic-debugging` —— 若 `io.ts` 或行级拼接出现意外行为。
-- `mattpocock-skills:domain-modeling` —— 新增术语时更新 `GLOSSARY.md`；只有"难逆转 + 无背景会困惑 + 有真实权衡"三条同时成立才加 ADR。
+- `superpowers:test-driven-development` —— P4 的每个机械转换都先写失败用例。
+- `superpowers:systematic-debugging` —— 若行级拼接或 `io.ts` 出现意外行为。
+- `superpowers:requesting-code-review` —— 合入 `main` 前。
+- `mattpocock-skills:domain-modeling` —— 新增术语时更新 `GLOSSARY.md`；“难逆转 + 无背景会困惑 + 有真实权衡”三条同时成立才加 ADR。

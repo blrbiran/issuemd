@@ -153,6 +153,18 @@ describe("close", () => {
     expect((await clean(path)).code).toBe(0);
   });
 
+  test("--keep-body creates 附录 when the ledger has none", async () => {
+    const path = join(dir, "no-appendix.md");
+    const source = readFileSync(fixture, "utf8").replace(/\n## 附录[\s\S]*$/, "\n");
+    writeFileSync(path, source);
+    const result = await run(["close", path, "2", "--keep-body"]);
+    expect(result.code).toBe(0);
+    const after = text(path);
+    expect(after).toContain("## 附录");
+    expect(after.indexOf("### #2 ")).toBeGreaterThan(after.indexOf("## 附录"));
+    expect((await clean(path)).code).toBe(0);
+  });
+
   test("closing an id inside a retired range exits 2", async () => {
     const path = ledger();
     const before = readFileSync(path);
@@ -294,7 +306,10 @@ describe("multi-id rows", () => {
   test("list and show still read the row", async () => {
     const path = await shared();
     expect((await run(["list", path])).stdout).toContain("4, 24  观察");
-    expect((await run(["show", path, "24"])).code).toBe(0);
+    const shown = await run(["show", path, "24"]);
+    expect(shown.code).toBe(0);
+    // The body belongs to the row, so it is shown for either id in it.
+    expect(shown.stdout).toContain("**现象**：2000 行列表滚动时降至 20fps。");
   });
 });
 
@@ -373,6 +388,20 @@ describe("sync --fix-tables", () => {
     const after = text(path);
     expect(after).toContain("| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 2 | 未决 | P1 | 侧栏宽度不可调 |");
     expect((await clean(path)).report.errors.some((error: { code: string }) => error.code === "E122")).toBe(false);
+  });
+
+  test("a headerless data block keeps its first row as data", async () => {
+    // The real orca ledger has this shape: a data block with no header at all.
+    const path = join(dir, "no-header.md");
+    writeFileSync(path, readFileSync(fixture, "utf8").replace(
+      "| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 2 | 未决 | P1 | 侧栏宽度不可调 |",
+      "| 2 | 未决 | P1 | 侧栏宽度不可调 |",
+    ));
+    expect((await run(["sync", path, "--fix-tables"])).code).toBe(0);
+    const after = text(path);
+    expect(after).toContain("| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 2 | 未决 | P1 | 侧栏宽度不可调 |");
+    expect((await clean(path)).code).toBe(0);
+    expect((await run(["list", path])).stdout).toContain("侧栏宽度不可调");
   });
 
   test("the canonical fixture is already fixed, so sync is a no-op", async () => {

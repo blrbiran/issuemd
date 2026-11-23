@@ -156,7 +156,12 @@ export function viewIssue(
 ): IssueView | undefined {
   const found = findRow(ledger, id);
   if (!found) return undefined;
-  const block = bodyBlocks(ledger).find((candidate) => candidate.id.start === found.span.start);
+  // A row may hold several ids; its body block is keyed by whichever of them
+  // actually has one, not necessarily the id the caller asked for.
+  const blocks = bodyBlocks(ledger);
+  const block = found.row.ids
+    .map((span) => blocks.find((candidate) => candidate.id.start === span.start))
+    .find((candidate) => candidate != null);
   const view: IssueView = {
     id: found.id,
     table: found.table,

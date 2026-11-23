@@ -607,7 +607,9 @@ function cmdClose(rest: string[], v: Values): CliResult {
       // 附录 sits after 正文, so insert there first, then delete the block.
       // The archived heading is deliberately not an `Issue N:` heading: 附录
       // must not contain issue headings (E123), so the id moves into the text.
-      const at = (appendix?.line_end ?? block.end) + 1;
+      // A ledger may legally lack 附录, in which case one is created at EOF
+      // rather than dropping the archive next to the body it replaces.
+      const at = appendix ? appendix.line_end + 1 : lines.length + 1;
       const archived = [
         `### #${idText} ${found.row.summary}（已关闭，正文保留）`,
         "",
@@ -615,7 +617,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
         "",
         ...bodyText.slice(2).filter((line, index, all) => !(line === "" && all.slice(index).every((rest) => rest === ""))),
       ];
-      lines = insertLines(lines, at, ["", ...archived]);
+      lines = insertLines(lines, at, appendix ? ["", ...archived] : ["", "## 附录", "", ...archived]);
     }
     lines = removeLines(lines, block.line, block.end - block.line + 1);
   }
