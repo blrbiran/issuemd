@@ -17,6 +17,7 @@ issuemd reopen  FILE ID
 issuemd status  FILE ID NEW_STATUS
 issuemd rename  FILE ID "NEW TITLE"
 issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]]
+issuemd adopt   FILE [--dry-run] [--report PATH]
 ```
 
 Every write verb is atomic, keeps the file's BOM, line endings, trailing newline and mode bits, and validates the result before replacing the file: a change that would introduce a new `check` error is refused with exit `3` and nothing is written. `--dry-run` prints a unified diff instead.
@@ -68,15 +69,15 @@ Three principles run through all of them:
 
 ## One format, no compatibility layer
 
-Earlier editions of the ledgers need conversion before running `check`. The planned `issuemd adopt FILE --dry-run --report decisions.md` will preview mechanical changes and flag decisions about conflicting titles, progress text, and closed issues that still have bodies.
+Earlier editions of the ledgers need conversion before running `check`. `issuemd adopt FILE --dry-run --report decisions.md` previews the mechanical changes — merging a duplicated closed table, stripping `（N）` from headings, adding missing table separators, demoting body `####` to bold labels, moving the bodies of closed issues into the appendix — and writes a decision list for everything it will not decide: conflicting titles, progress text, status words outside the vocabulary, rows holding several ids. It never makes a semantic call. Both shapes it was built for (`fixtures/cafe-shaped.md`, `fixtures/orca-shaped.md`) convert to a ledger whose `check` is clean.
 
 There is exactly one command surface: `issuemd` is a ledger tool, not a general Markdown editor. Reading a section of an ordinary Markdown file is `issuemd read FILE <H2 heading>`, and nothing else.
 
 ## Status
 
-P0–P3 are implemented: the Markdown baseline, byte-faithful atomic writes, the canonical parser and `check`, the read views, and the ledger write verbs. `new`, `close`, `reopen`, `status`, `rename` and `sync` all share one gate that re-runs `check` in memory and refuses any change that introduces a new error.
+P0–P4 are implemented: the Markdown baseline, byte-faithful atomic writes, the canonical parser and `check`, the read views, the ledger write verbs, and `adopt`. `new`, `close`, `reopen`, `status`, `rename` and `sync` all share one gate that re-runs `check` in memory and refuses any change that introduces a new error.
 
-P4 (`adopt`, one-time conversion of older layouts) and P5 (skill, docs, cleanup) remain; see [the implementation plan](docs/spec.md#12-实施计划).
+P5 (shipping the skill, deleting the two cross-check scripts) remains; see [the implementation plan](docs/spec.md#12-实施计划).
 
 ## License
 

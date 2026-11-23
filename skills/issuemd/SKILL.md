@@ -105,7 +105,7 @@ Don't write status into the body. The table is the only place status exists, whi
 issuemd adopt OLD.md --dry-run --report decisions.md
 ```
 
-It does the mechanical part (add missing sections, drop closed rows from the index, strip `（N）`, add separators, demote body `####` to bold labels) and lists what it will not decide: title conflicts, progress text, closed issues that still have bodies, status words outside the vocabulary. Read the report; approve or fix each item. It never makes a semantic call for you.
+It does the mechanical part (add missing sections, merge a duplicated closed table, drop closed rows from the index, strip `（N）` from headings, add missing table separators, demote body `####` to bold labels, move closed issues' bodies into the appendix) and lists what it will not decide: title conflicts, progress text, status words outside the vocabulary, rows holding several ids. Read the report; approve or fix each item. It never makes a semantic call for you, and it refuses to write if the result would still fail `check`.
 
 ## Quick reference
 
