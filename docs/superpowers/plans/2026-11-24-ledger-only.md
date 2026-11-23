@@ -1012,3 +1012,10 @@ node dist/bin/issuemd.js fixtures/canonical-clean.md            # exit 2, "missi
 | 未提及 | `fixTables` 给台账内无表头块补标准表头 | 否则首行数据会被当成表头（规格 §2.6 的坑） |
 
 `src/write.ts` 的行级原语与 `src/sections.ts` 保留（台账写命令与 `read` 复用），其余按计划删除。
+
+### 计划外完成的部分
+
+批准的范围是到 P3，实际继续做了 P4 与 P5 的一部分：
+
+- **P4 `adopt`**（`src/adopt.ts` + `src/adopt.test.ts`）：识别 cafe 与 orca 两种旧布局，只做机械改动，语义判断进待决清单。转两个夹具都得到 `check` 0 error 的台账。
+- **P5 部分清理**：删除 `check-issues.mjs` 与 `verify-facts.mjs`。仍未决的是 `skills/issuemd/SKILL.md` 是否打进 npm 包。
