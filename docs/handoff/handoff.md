@@ -78,6 +78,19 @@ issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
 5. **正文块按编号升序插入**（`bodyInsertAt`），显式给小号时不会触发 E105。
 6. **`fixTables` 对无表头块的处理**：台账的 `索引`/`已关闭` 里若有"首行即数据"的块，会把标准表头 + 分隔行一起插在该行**之前**；普通文档的块只在首行后插分隔行。
 
+## 本轮末的独立审查与修复
+
+写完 P4 后跑了一次独立 review（另一 agent 只读 + 复现），报了 10 个 bug 与 5 个 adopt bug，**全部已修并有回归测试**（`src/cli-write.test.ts` / `src/adopt.test.ts` 末尾的 `regressions found in review` 两个 describe）。值得记住的几条，因为它们改变了对代码的预期：
+
+- **`replaceCell` 必须按原文拼接，不能解码后重组。** 后者会把没被改的单元格里的 `\|` 转义吃掉，5 格变 6 格。
+- **所有"按标签找段落 / 按标记重写块"的逻辑都要跳过 fence。** 正文或附录里引用一段示例，曾会被当成真的 `**验收判据**` 或真的受控块标记。
+- **追加内容到 EOF 时，`joinDocument` 会把末尾空行变成尾换行。** `commit()` 现在用 `terminate()` 修正。
+- **id 是 `\d+[a-z]?`，`2` 与 `2a` 是两条不同的 issue。** 查正文块必须比完整 id，不能只比数字。
+- **`--body-file` 里未闭合的 fence 会吞掉后续所有标题且 `check` 仍通过**，现在直接拒绝。
+- **adopt 的决策清单行号指向转换后的文档**，不是输入；并且不再为区间行编造正文标题。
+
+仍未处理的一条（review 标为 risky，非 bug）：原子替换最后一步 `lstat` 与 `rename` 之间仍有极小竞态窗口，见「已知的坑」第 3 条。
+
 ## 还没做（按优先级）
 
 - ~~**P4 `adopt`**~~ **已完成**（`src/adopt.ts` + `src/adopt.test.ts`）：cafe 形状 → open 3 / closed 13，orca 形状 → open 2 / closed 11，两者 `check` 均 0 error。只做机械改动，语义判断全部进待决清单；输出若仍不过 `check` 则 exit 3 不落盘。已知限制：已关闭表的摘要在索引与已关闭表冲突时一律取「已关闭表」那份（与 `--prefer=body` 的口径不同，因为已关闭项没有正文标题可比）。
