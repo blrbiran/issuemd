@@ -30,7 +30,7 @@
 | 文件 | 作用 |
 |---|---|
 | `docs/spec.md` | 唯一的规格来源。格式、不变量、错误码、命令表面、分阶段验收 |
-| `docs/adr/0001`–`0005` | 五个会显得"莫名其妙"的决定 |
+| `docs/adr/0001`–`0006` | 六个会显得"莫名其妙"的决定；0006 是"只做台账、一个入口" |
 | `docs/superpowers/specs/2026-11-24-issuemd-ledger-only-design.md` | 已批准的设计。末尾「实施后的偏差」记录了三处实现时对设计的修正，**读它，否则会照着旧设计改回去** |
 
 辅助：`GLOSSARY.md`（术语）、`README.md`（对外）、`skills/issuemd/SKILL.md`（给 agent 用；仍未打进 npm 包，`tests/bin.test.ts` 断言了这点）。
