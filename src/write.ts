@@ -233,9 +233,12 @@ export function unifiedDiff(
   const oldTotal = ctxBefore + removedCount + ctxAfter;
   const newTotal = ctxBefore + addedCount + ctxAfter;
 
+  // Absolute paths already start with `/`; a naive `a/` prefix would print
+  // a confusing `a//tmp/...`.
+  const label = (side: string) => (path.startsWith("/") ? `${side}${path}` : `${side}/${path}`);
   const lines: string[] = [
-    `--- a/${path}`,
-    `+++ b/${path}`,
+    `--- ${label("a")}`,
+    `+++ ${label("b")}`,
     `@@ -${ctxLo + 1},${oldTotal} +${ctxLo + 1},${newTotal} @@`,
   ];
 
