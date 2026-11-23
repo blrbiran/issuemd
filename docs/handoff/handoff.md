@@ -84,7 +84,7 @@ issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
   - 删除仓库根目录的 `check-issues.mjs` 与 `verify-facts.mjs`（约定 P5 删，它们已入库）。
   - 决定 `skills/issuemd/SKILL.md` 是否打进 npm 包（当前 `package.json#files` 只有 `dist`，测试断言它**不在**包里）。
   - `README` 的「License」段仍写着「确认 lilmd 上游授权后再公开」——发布前要处理。
-- 规格 §6.2 里几条 warn 尚未实现：`W203`（guide 点名的标题不存在）、`W211`（编号疑似复用）、`W260` 已在 `sync --titles` 的护栏里实现但 `check` 本身不报。若要补，先看 `docs/spec.md` §6.2。
+- 规格 §6.2 里仍有未实现的项：`W211`（编号疑似复用，`check` 不报）；`W250` 只在 `close --keep-body` 时打到 stderr，`check` 不报。其余 warn（含 `W203`、`W260`）已在 `src/ledger-check.ts` 里实现。补之前先看 `docs/spec.md` §6.2。
 
 ## 验收与命令
 
