@@ -994,3 +994,21 @@ node dist/bin/issuemd.js counts fixtures/canonical-clean.md     # matches expect
 node dist/bin/issuemd.js read fixtures/canonical-clean.md 附录  # appendix only
 node dist/bin/issuemd.js fixtures/canonical-clean.md            # exit 2, "missing command"
 ```
+---
+
+## 执行记录（2026-11-24）
+
+14 个 task 全部执行完毕，测试从 217 增至 175 —— 注意是**减少**：删除通用命令时一并删掉了约 60 个只覆盖已删命令的用例，新增的台账读/写用例净增约 20 个。
+
+与计划的偏差（均有测试覆盖）：
+
+| 计划 | 实际 | 原因 |
+|---|---|---|
+| 读命令用例加进 `src/cli.test.ts` | 新建 `src/cli-ledger.test.ts`、`src/cli-write.test.ts` | `cli.test.ts` 整体随通用命令删除，新用例单独成文件不会丢 |
+| Task 5 的 D5 stdin 用例移到 Task 7 | 由 `new --body-file -` 的真实 shell 管道用例覆盖 | `set` 已删，`--body-file` 是唯一 stdin 入口 |
+| `--keep-body` 把正文块原样搬进附录 | 归档为 `### #N <摘要>（已关闭，正文保留）` | I12/E123 禁止附录出现 Issue 标题，原设计自相矛盾 |
+| 未提及 | per-id 命令拒绝多编号行（exit 2） | `close`/`rename`/`status`/`reopen` 无法只改一个号 |
+| 未提及 | `new --id` 接受 `\d+[a-z]?` | 真实台账有 `393b` |
+| 未提及 | `fixTables` 给台账内无表头块补标准表头 | 否则首行数据会被当成表头（规格 §2.6 的坑） |
+
+`src/write.ts` 的行级原语与 `src/sections.ts` 保留（台账写命令与 `read` 复用），其余按计划删除。
