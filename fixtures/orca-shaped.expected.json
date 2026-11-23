@@ -1,0 +1,28 @@
+{
+  "openIds": [
+    21,
+    22
+  ],
+  "closedIds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    20
+  ],
+  "missingSeparatorBlocks": 11,
+  "countHeadings": 12,
+  "countMismatches": [
+    {
+      "heading": "已修",
+      "declared": 1,
+      "actual": 2
+    }
+  ]
+}

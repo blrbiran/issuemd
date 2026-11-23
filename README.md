@@ -2,7 +2,7 @@
 
 A CLI for **single-file issue ledgers** — the kind of Markdown where a table holds status, one `### Issue N:` block per open issue holds the root cause, and a closed section holds only the acceptance criteria.
 
-It is a superset of [`lilmd`](https://github.com/molefrog/lilmd): every read and write command works the same way, plus a set of ledger-aware verbs that change the table, the body, and the criteria **in one transaction**, and a `check` that proves nothing drifted.
+The P0 build provides the Markdown commands from [`lilmd`](https://github.com/molefrog/lilmd) with plain-text and JSON reads. The examples below describe the planned ledger commands, which will update the table, body, and criteria together.
 
 ```bash
 issuemd check issue-20261119.md          # exit 3 = structural errors
@@ -30,13 +30,16 @@ It also fixes a rendering bug that no checker noticed: **11 pipe blocks** in a r
 
 ## Install
 
-The bare name is taken on npm by an unrelated 2014 package, so this ships scoped:
+Build and link from this checkout with Node.js 20 or later and npm.
 
 ```bash
-npm install -g @blrbiran/issuemd
+npm ci
+npm run build
+npm link
+issuemd fixtures/canonical-clean.md
 ```
 
-The binary is still `issuemd`.
+With Bun available, run `npm test` to build the CLI and run its tests. The planned npm package name is `@blrbiran/issuemd`.
 
 ## Design
 
@@ -57,8 +60,8 @@ Existing ledgers are **not** adopted at runtime. `issuemd adopt FILE --dry-run -
 
 ## Status
 
-Specification complete. Implementation starts at P0: copy lilmd's source in-house, fix the seven silent-corruption bugs, add atomic line-level writes, then the ledger model. See `/docs/spec.md` §12.
+P0 ships the Markdown CLI baseline. Use the generic write commands on test copies during this phase. P1 covers the known write-safety defects, and P2 onward adds the ledger-specific commands described in [the implementation plan](docs/spec.md#12-实施计划).
 
 ## License
 
-MIT. The read and generic write commands are derived from [`lilmd`](https://github.com/molefrog/lilmd) by the same author, whose repository carries no license file; it is treated as MIT here.
+issuemd uses MIT for its own code. The Markdown CLI baseline was copied from [`lilmd`](https://github.com/molefrog/lilmd) at `b557b02`. The upstream checkout has no license file. Confirm permission to redistribute that code before a public release.

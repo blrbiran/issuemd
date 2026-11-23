@@ -1,0 +1,25 @@
+{
+  "name": "@blrbiran/issuemd",
+  "version": "0.1.0",
+  "description": "A CLI for single-file Markdown issue ledgers",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "issuemd": "dist/bin/issuemd.js"
+  },
+  "files": ["dist"],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && bun test src tests",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "@types/node": "20.19.43",
+    "typescript": "5.9.3"
+  }
+}

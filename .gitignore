@@ -1,4 +1,6 @@
 .omc/
 .ccmem/
 .codegraph/
+node_modules/
+dist/
 

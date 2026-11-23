@@ -569,16 +569,16 @@ issuemd adopt old.md --dry-run --report decisions.md
 
 ## 13. 验收（mock fixtures）
 
-不使用真实台账。`fixtures/` 下构造三份文档，每个已知答案先写成断言：
+不使用真实台账。`fixtures/` 下有四份合成文档，各自固定一组验收数据：
 
 | 编号 | fixture | 用途 | 关键断言 |
 |---|---|---|---|
-| F1 | `fixtures/canonical-clean.md` | 完全合规 | `check` exit 0；`list` 数量正确；`counts` 数字正确 |
-| F2 | `fixtures/cafe-shaped.md` | L1 形状，含 13 条孤儿正文、60/61 摘要漂移、标题计数 0 | E106×N、E111×13、E104×0；`sync --titles --move-progress` 的 diff 恰为 N 行表 + M 处正文追加 |
-| F3 | `fixtures/orca-shaped.md` | L2 形状，含 11 个无分隔行块、12 个计数标题、1 处计数与编号数不符 | E122×11、E121×12；`sync --fix-tables` diff 恰为 11 处插入 |
-| F4 | `fixtures/crlf-bom.md` | 编码边界 | CRLF/BOM/无尾换行在 `new`/`close`/`sync` 后逐字节保持 |
+| F1 | `fixtures/canonical-clean.md` | 规范格式 | `check` exit 0，开放 3 条，关闭 17 个编号，最大编号 20 |
+| F2 | `fixtures/cafe-shaped.md` | 旧全量表布局 | `adopt` 列出 13 条仍有正文的已关闭项、2 条开放项标题冲突和 1 条携带进展的摘要 |
+| F3 | `fixtures/orca-shaped.md` | 旧分组布局 | `adopt` 识别 11 个缺分隔行的管道块、12 个计数标题、1 处计数不符，保留无表头块的首行数据 |
+| F4 | `fixtures/crlf-bom.md` | 编码边界 | 首个标题可读，写入后保留 BOM 和 CRLF，末尾仍无换行 |
 
-每个 fixture 配一个 `fixtures/*.expected.json`，内容是 `check --json` 的期望输出。测试直接对拍——**不是「跑通」，而是「与人工核对过的已知答案吻合」**。
+`fixtures/*.expected.json` 记录人工核对过的结果。F1 用于 `check` 和 `counts`，F2/F3 用于 `adopt`，F4 用于字节保持测试。
 
 ---
 

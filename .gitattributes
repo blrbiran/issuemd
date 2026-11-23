@@ -1,0 +1,2 @@
+# Preserve BOM, CRLF, and final-newline behavior in the byte fixture.
+fixtures/crlf-bom.md -text -diff

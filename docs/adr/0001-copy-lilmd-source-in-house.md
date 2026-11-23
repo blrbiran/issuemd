@@ -10,4 +10,4 @@ lilmd 的写入路径有七个会静默改错文件的行为（BOM 吞标题、f
 
 **Consequences**
 
-lilmd 无 LICENSE 文件、`package.json` 无 `license` 字段、npm registry 上 license 为 null；仓库作者与本项目作者为同一人，故按 MIT 处理并在 README 注明 derived from lilmd。向量、嵌入、banner、pretty 四个模块及其六个运行时依赖随之删除，运行时依赖归零。包名不能沿用 `issuemd`（npm 上已被 2014 年的同名包占用），发布为 `@blrbiran/issuemd`，`bin` 仍叫 `issuemd`。
+issuemd 使用 MIT。P0 从 lilmd 的 `b557b02` 复制 Markdown 相关模块。该上游版本未附许可证，公开分发前需核实上游代码的授权。P0 裁掉向量、嵌入、banner 和 pretty 功能，运行时依赖为零。计划发布到 `@blrbiran/issuemd`，命令名仍是 `issuemd`。
