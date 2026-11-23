@@ -22,9 +22,10 @@
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
 import { splitCells } from "./ledger.js";
+import { fencedLines, formatRow, guideBlockLines, statusBlockLines } from "./ledger-edit.js";
 import { parseIds } from "./issue-id.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
-import { formatRow, guideBlockLines, statusBlockLines } from "./ledger-edit.js";
+
 
 export type DecisionKind =
   | "open-title-conflict"
@@ -141,8 +142,10 @@ function pipeBlocks(lines: string[], sections: Section[]): Block[] {
     }
     block = undefined;
   };
+  const fenced = fencedLines(lines);
   lines.forEach((text, index) => {
-    if (/^ {0,3}\|/.test(text)) {
+    // A table quoted inside a fence is an example, not data.
+    if (!fenced[index] && /^ {0,3}\|/.test(text)) {
       if (!block) block = { line: index + 1, cells: [] };
       block.cells.push(splitCells(text));
     } else {
@@ -168,7 +171,10 @@ function rowsOf(blocks: Block[]): Row[] {
       if (!spans) return;
       const ids = spans.map((span) => span.start);
       const declared = mapping.status != null ? cells[mapping.status]?.trim() : undefined;
-      const status = declared && STATUS_WORDS.has(declared) ? declared : block.groupStatus;
+      // Keep the declared string even when it is not in the vocabulary, so
+      // the decision report can name what the ledger actually said. A group
+      // heading wins only when the row itself declares nothing.
+      const status = declared || block.groupStatus;
       out.push({
         line: block.line + index,
         idText,
@@ -186,6 +192,9 @@ function rowsOf(blocks: Block[]): Row[] {
 }
 
 type Body = { idText: string; id: number; title: string; line: number; end: number };
+
+/** The identity of an issue: `2` and `2a` are different issues. */
+const fullId = (row: { idText: string }) => row.idText.replace(/\s+/g, "");
 
 function bodyHeadings(sections: Section[]): Body[] {
   const out: Body[] = [];
@@ -220,7 +229,9 @@ function criteriaOf(bodyLines: string[]): string | undefined {
 /** `#### 现象` inside a body becomes `**现象**`; H3 is the issue heading. */
 function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
   let count = 0;
-  const out = lines.map((line) => {
+  const fenced = fencedLines(lines);
+  const out = lines.map((line, index) => {
+    if (fenced[index]) return line;
     const match = /^(#{4,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
     if (!match) return line;
     count++;
@@ -232,16 +243,17 @@ function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
 /** Add the missing separator row to each header-less block, once per block. */
 function fixSeparators(lines: string[]): { lines: string[]; count: number } {
   const out: string[] = [];
+  const fenced = fencedLines(lines);
   let count = 0;
   let index = 0;
   while (index < lines.length) {
-    if (!/^ {0,3}\|/.test(lines[index]!)) {
+    if (fenced[index] || !/^ {0,3}\|/.test(lines[index]!)) {
       out.push(lines[index]!);
       index++;
       continue;
     }
     const start = index;
-    while (index < lines.length && /^ {0,3}\|/.test(lines[index]!)) index++;
+    while (index < lines.length && !fenced[index] && /^ {0,3}\|/.test(lines[index]!)) index++;
     const blockLines = lines.slice(start, index);
     const cells = blockLines.map((text) => splitCells(text));
     // A block whose second row is a separator is already well-formed.
@@ -260,8 +272,9 @@ function fixSeparators(lines: string[]): { lines: string[]; count: number } {
 /** Any heading with a trailing `（N）` count loses it. */
 function stripCounts(lines: string[]): { lines: string[]; count: number } {
   let count = 0;
-  const out = lines.map((line) => {
-    if (!/^#{1,6} /.test(line)) return line;
+  const fenced = fencedLines(lines);
+  const out = lines.map((line, index) => {
+    if (fenced[index] || !/^#{1,6} /.test(line)) return line;
     const next = line.replace(/[ \t]*[（(]\s*\d+\s*[）)]\s*$/, "");
     if (next !== line) count++;
     return next;
@@ -312,10 +325,15 @@ export function adopt(src: string): AdoptResult {
   for (const [idText, group] of groups) {
     // Rows are merged field by field, not row by row: cafe's index keeps the
     // status, its closed table keeps the criteria, and neither copy alone has
-    // both.
-    const withStatus = group.find((row) => row.status != null && STATUS_WORDS.has(row.status));
-    const status = withStatus?.status;
+    // both. The index copy (outside 已关闭) is authoritative for status, since
+    // that is the table people edit; the closed table fills in the criteria.
     const closedSection = group.find((row) => isClosedSection(row.section));
+    const indexCopy = group.find((row) => !isClosedSection(row.section));
+    const withStatus =
+      indexCopy?.status != null && STATUS_WORDS.has(indexCopy.status)
+        ? indexCopy
+        : group.find((row) => row.status != null && STATUS_WORDS.has(row.status));
+    const status = withStatus?.status;
     const category = status
       ? STATUS_CLASSES[status as keyof typeof STATUS_CLASSES]
       : closedSection
@@ -340,11 +358,16 @@ export function adopt(src: string): AdoptResult {
       });
     }
     if (group.length > 1) {
+      const declaredStatuses = [...new Set(group.map((row) => row.status).filter((value) => value != null))];
       decisions.push({
         kind: "duplicate-row",
         id: idText,
         line: group[1]!.line,
-        message: `#${idText} 在多张表里各有一行；已按字段合并（状态取自索引，判据取自已关闭表）`,
+        message:
+          `#${idText} 在多张表里各有一行；已按字段合并（状态取索引，判据取已关闭表）` +
+          (declaredStatuses.length > 1
+            ? `；两处状态矛盾（${declaredStatuses.join(" / ")}），需人工确认`
+            : ""),
       });
     }
     if (merged.ids.length > 1) {
@@ -357,6 +380,21 @@ export function adopt(src: string): AdoptResult {
     }
     if (/[–~-]/.test(idText)) {
       decisions.push({ kind: "id-range", id: idText, line: merged.line, message: `编号区间（${idText}）；已原样保留` });
+      // An older ledger may also carry an explicit row for an id inside the
+      // range. That is E103 in the canonical format, so name it here rather
+      // than letting the final check refuse the whole conversion blind.
+      const [low, high] = idText.split(/[–~-]/).map((part) => Number.parseInt(part, 10));
+      for (const [otherId, otherGroup] of groups) {
+        if (otherId === idText || /[–~-]/.test(otherId)) continue;
+        const n = Number.parseInt(otherId, 10);
+        if (Number.isNaN(n) || low === undefined || high === undefined || n < low || n > high) continue;
+        decisions.push({
+          kind: "id-range",
+          id: otherId,
+          line: otherGroup[0]!.line,
+          message: `#${otherId} 已被区间 ${idText} 覆盖；规范化后是 E103，需要人工删掉其中一行`,
+        });
+      }
     }
 
     if (category === "closed") closed.push({ ...merged, status: status ?? "已修" });
@@ -382,9 +420,10 @@ export function adopt(src: string): AdoptResult {
 
   // ---- bodies --------------------------------------------------------
   const bodies = bodyHeadings(sections);
-  const bodyById = new Map(bodies.map((body) => [body.id, body]));
+  // Keyed by the full id text (`2` vs `2a`), not the numeric part.
+  const bodyById = new Map(bodies.map((body) => [body.idText, body]));
   for (const row of open) {
-    const body = bodyById.get(row.firstId);
+    const body = bodyById.get(fullId(row));
     if (!body) {
       decisions.push({
         kind: "missing-body",
@@ -407,7 +446,7 @@ export function adopt(src: string): AdoptResult {
     }
   }
   for (const row of closed) {
-    const body = bodyById.get(row.firstId);
+    const body = bodyById.get(fullId(row));
     if (!body) continue;
     decisions.push({
       kind: "closed-with-body",
@@ -453,7 +492,19 @@ export function adopt(src: string): AdoptResult {
   const sortedOpen = [...open].sort((a, b) => a.firstId - b.firstId);
   const bodyOut: string[] = [];
   for (const row of sortedOpen) {
-    const body = bodyById.get(row.firstId);
+    // An open *range* has no single id to hang a `### Issue N:` heading on;
+    // `### Issue 7–20` would be an invalid heading (E109). It becomes a
+    // decision instead of a body.
+    if (row.ids.length > 1 || /[–~-]/.test(row.idText)) {
+      decisions.push({
+        kind: "id-range",
+        id: row.idText,
+        line: row.line,
+        message: `索引区间行 ${row.idText} 无法生成正文标题；已留在索引，需人工拆行`,
+      });
+      continue;
+    }
+    const body = bodyById.get(fullId(row));
     bodyOut.push(`### Issue ${row.idText}: ${row.summary}`, "");
     // `body.line` is the heading itself; the slice starts one line later.
     const slice = body ? lines.slice(body.line, body.end) : [];
@@ -463,7 +514,7 @@ export function adopt(src: string): AdoptResult {
     bodyOut.push(...content, "");
   }
 
-  const archived = closed.filter((row) => bodyById.has(row.firstId));
+  const archived = closed.filter((row) => bodyById.has(fullId(row)));
   const appendixOut: string[] = [];
   if (appendix) {
     const existing = lines.slice(appendix.line_start, appendix.line_end);
@@ -472,7 +523,7 @@ export function adopt(src: string): AdoptResult {
     if (existing.length > 0) appendixOut.push(...existing, "");
   }
   for (const row of archived) {
-    const body = bodyById.get(row.firstId)!;
+    const body = bodyById.get(fullId(row))!;
     appendixOut.push(`### #${row.idText} ${row.summary}（adopt 保留的已关闭正文）`, "");
     const content = lines.slice(body.line, body.end).filter((line) => line.trim() !== "");
     appendixOut.push(...(content.length ? content : ["（空）"]), "");
@@ -518,5 +569,29 @@ export function adopt(src: string): AdoptResult {
   ];
   while (out.at(-1) === "") out.pop();
 
-  return { lines: out, decisions, changes };
+  // Decision line numbers were collected while scanning the *input*; report
+  // them against the output instead, so `adopt --report` points at the file
+  // the reader will actually open. Anything no longer locatable keeps 0.
+  const located = decisions.map((decision) => {
+    const hint = decision.body ?? decision.table ?? "";
+    const id = decision.id ?? "";
+    const pattern = id === "" ? undefined : new RegExp(`^\\|?\\s*${escapeRegExp(id)}\\s*\\|`);
+    const index = hint !== ""
+      ? out.findIndex((line) => line.includes(hint))
+      : pattern
+        ? out.findIndex((line) => pattern.test(line))
+        : -1;
+    // A conflict is best reported where the *body* heading now sits, not on
+    // the table row that happens to hold the chosen string.
+    // `pattern` was built for `| id |` table rows; a body heading is matched
+    // by its own `### Issue <id>:` prefix instead.
+    const bodyIndex = decision.kind.startsWith("open-title") && id !== ""
+      ? out.findIndex((line) => line.startsWith(`### Issue ${id}:`))
+      : -1;
+    const line = bodyIndex >= 0 ? bodyIndex : index;
+    return line >= 0 ? { ...decision, line: line + 1 } : { ...decision, line: 0 };
+  });
+  return { lines: out, decisions: located, changes };
 }
+
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

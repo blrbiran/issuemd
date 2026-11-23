@@ -465,3 +465,94 @@ describe("sync --titles", () => {
     expect((await run(["sync", path])).code).toBe(2);
   });
 });
+describe("regressions found in review", () => {
+  test("replaceCell keeps escapes in cells it does not touch", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path)
+      .replace("| 1 | 已修 | P3 | 登录页闪烁 | `a1b2c3d`：连续 3 轮 12/12 |",
+               "| 1 | 已修 | P3 | 登录页闪烁 | passed \\| verified |"));
+    expect((await run(["status", path, "1", "延后"])).code).toBe(0);
+    expect(text(path)).toContain("| 1 | 延后 | P3 | 登录页闪烁 | passed \\| verified |");
+    expect((await clean(path)).code).toBe(0);
+  });
+
+  test("close --keep-body keeps the first body line when the heading is tight", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path).replace("### Issue 2: 侧栏宽度不可调\n\n**现象**", "### Issue 2: 侧栏宽度不可调\n**现象**"));
+    expect((await run(["close", path, "2", "--keep-body"])).code).toBe(0);
+    const after = text(path);
+    expect(after).toContain("**现象**：侧栏固定 240px，无法拖拽。");
+    expect(after).toContain("**验收判据**：重启后保持上次宽度。");
+  });
+
+  test("close --criteria-from-body ignores a fenced example label", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path).replace(
+      "### Issue 2: 侧栏宽度不可调\n\n**现象**",
+      "### Issue 2: 侧栏宽度不可调\n\n```\n**验收判据**：示例\n```\n\n**现象**",
+    ));
+    expect((await run(["close", path, "2", "--criteria-from-body"])).code).toBe(0);
+    expect(text(path)).toContain("| 2 | 已修 | P1 | 侧栏宽度不可调 | 重启后保持上次宽度。 |");
+  });
+
+  test("sync --guide ignores a marker pair quoted inside a fence", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path).replace(
+      "## 附录",
+      "## 附录\n\n```\n<!-- issuemd:guide:begin -->\n<!-- issuemd:guide:end -->\n```",
+    ));
+    expect((await run(["sync", path, "--guide"])).code).toBe(0);
+    expect(text(path)).toContain("| 查看开放项 | `issuemd list FILE` |");
+    expect((await clean(path)).code).toBe(0);
+  });
+
+  test("sync --titles --move-progress stays inside the issue it belongs to", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path)
+      .replace("| 2 | 未决 | P1 | 侧栏宽度不可调 |", "| 2 | 未决 | P1 | 宽度，仍缺记忆 |")
+      .replace("### Issue 2: 侧栏宽度不可调\n\n**现象**", "### Issue 2: 侧栏宽度不可调\n**现象**"));
+    expect((await run(["sync", path, "--titles", "--move-progress"])).code).toBe(0);
+    const between = text(path).split("### Issue 3:")[0]!;
+    expect(between).toContain("> **进展（来自旧表）**：宽度，仍缺记忆");
+  });
+
+  test("`2` and `2a` keep separate bodies", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path)
+      .replace("| 3 | 部分解决 | P2 | 导出 CSV 丢空行 |", "| 3 | 部分解决 | P2 | 导出 CSV 丢空行 |\n| 3a | 观察 | P2 | 后缀测试 |")
+      .replace("### Issue 3: 导出 CSV 丢空行", "### Issue 3: 导出 CSV 丢空行\n\n**现象**：原三号。\n\n### Issue 3a: 后缀测试\n\n**现象**：三号后缀。"));
+    expect((await clean(path)).code).toBe(0);
+    expect((await run(["show", path, "3"])).stdout).toContain("原三号");
+    expect((await run(["show", path, "3a"])).stdout).toContain("三号后缀");
+    expect((await run(["close", path, "3a", "--criteria-from-body"])).code).toBe(0);
+    expect(text(path)).toContain("### Issue 3: 导出 CSV 丢空行");
+    expect(text(path)).not.toContain("### Issue 3a:");
+  });
+
+  test("an unterminated ledger stays unterminated after new, reopen and close", async () => {
+    const base = readFileSync(fixture, "utf8").split("## 附录")[0]!.replace(/\n+$/, "");
+    for (const [id, args] of [["new", ["--title", "X"]], ["reopen", ["6"]], ["close", ["4"]]] as const) {
+      const path = join(dir, `unterminated-${id}.md`);
+      writeFileSync(path, base);
+      expect((await run([id, path, ...args])).code).toBe(0);
+      expect(readFileSync(path, "utf8").endsWith("\n")).toBe(false);
+    }
+  });
+
+  test("sync --fix-tables replaces a short separator instead of stacking one", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path).replace("| # | 状态 | P | 摘要 |\n|---|---|---|---|", "| # | 状态 | P | 摘要 |\n|---|---|---|"));
+    expect((await run(["sync", path, "--fix-tables"])).code).toBe(0);
+    expect(text(path)).toContain("| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 2 |");
+    expect((await clean(path)).code).toBe(0);
+  });
+
+  test("new refuses a body file that ends inside a fence", async () => {
+    const path = ledger();
+    const body = join(dir, "unclosed.md");
+    writeFileSync(body, "**现象**：\n\n```\nunclosed\n");
+    const before = readFileSync(path);
+    expect((await run(["new", path, "--title", "x", "--body-file", body])).code).toBe(2);
+    expect(readFileSync(path)).toEqual(before);
+  });
+});

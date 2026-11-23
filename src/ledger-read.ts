@@ -156,12 +156,16 @@ export function viewIssue(
 ): IssueView | undefined {
   const found = findRow(ledger, id);
   if (!found) return undefined;
-  // A row may hold several ids; its body block is keyed by whichever of them
-  // actually has one, not necessarily the id the caller asked for.
+  // A body block is identified by its full id (`2` and `2a` are distinct
+  // issues). Prefer an exact match, then fall back to the row's other ids:
+  // `| 4, 24 |` keeps one body under 4, and `show 24` should still find it.
   const blocks = bodyBlocks(ledger);
-  const block = found.row.ids
-    .map((span) => blocks.find((candidate) => candidate.id.start === span.start))
-    .find((candidate) => candidate != null);
+  const key = (span: IdSpan) => `${span.start}${span.suffix}`;
+  const block =
+    blocks.find((candidate) => key(candidate.id) === found.id) ??
+    found.row.ids
+      .map((span) => blocks.find((candidate) => key(candidate.id) === key(span)))
+      .find((candidate) => candidate != null);
   const view: IssueView = {
     id: found.id,
     table: found.table,

@@ -126,3 +126,64 @@ describe("adopt: guards", () => {
     expect((await run(["adopt", join(dir, "nope.md")])).code).toBe(2);
   });
 });
+describe("adopt: regressions found in review", () => {
+  test("a table quoted inside a fence never becomes a row", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace("## 附录", "## 附录\n\n```md\n| 99 | Fake | yes |\n```"));
+    expect((await run(["adopt", path])).code).toBe(0);
+    const after = readFileSync(path, "utf8");
+    expect(after).not.toContain("Issue 99");
+    expect(after).toContain("| 99 | Fake | yes |");
+  });
+
+  test("an unknown status is named in the report", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace("| 3 | 部分解决 | P2 | 导出 CSV 丢空行 |", "| 3 | 拼错的状态 | P2 | 导出 CSV 丢空行 |"));
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.stdout).toContain("unknown-status x1");
+    expect(result.stdout).toContain("拼错的状态");
+  });
+
+  test("`2` and `2a` keep their own bodies", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8")
+      .replace("| 3 | 部分解决 | P2 | 导出 CSV 丢空行 |", "| 3 | 部分解决 | P2 | 导出 CSV 丢空行 |\n| 3a | 观察 | P2 | 后缀测试 |")
+      .replace("### Issue 3: 导出 CSV 丢空行", "### Issue 3: 导出 CSV 丢空行\n\n**现象**：原三号。\n\n### Issue 3a: 后缀测试\n\n**现象**：三号后缀。"));
+    expect((await run(["adopt", path])).code).toBe(0);
+    const after = readFileSync(path, "utf8");
+    expect(after).toContain("### Issue 3: 导出 CSV 丢空行\n\n**现象**：原三号。");
+    expect(after).toContain("### Issue 3a: 后缀测试\n\n**现象**：三号后缀。");
+  });
+
+  test("contradictory duplicate statuses are reported, not silently merged", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8")
+      .replace("| 1 | 已修 | P3 | 登录页闪烁 | `a1b2c3d`：连续 3 轮 12/12 |",
+               "| 1 | 已修 | P3 | 登录页闪烁 | `a1b2c3d`：连续 3 轮 12/12 |\n| 1 | 未决 | P3 | 登录页闪烁 | |"));
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.stdout).toContain("两处状态矛盾");
+  });
+
+  test("an id covered by a retired range is flagged before check refuses", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8")
+      .replace("| 7–20 | 撤回 | | 无记录 | 早期关闭，编号已退休 |",
+               "| 7–20 | 撤回 | | 无记录 | 早期关闭，编号已退休 |\n| 8 | 已修 | P3 | 八号 | 旧记录 |"));
+    // The conversion is refused (E103), so the report arrives on stderr — it
+    // must still name the cause rather than a bare check dump.
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain("已被区间 7–20 覆盖");
+  });
+
+  test("report line numbers point into the converted output", async () => {
+    const path = copy("cafe-shaped.md");
+    const result = await run(["adopt", path, "--dry-run"]);
+    const match = /L(\d+) #1 表格摘要与正文标题不一致/.exec(result.stdout);
+    expect(match).not.toBeNull();
+    // The converted document is what `--report` describes; convert and look.
+    await run(["adopt", path]);
+    const line = Number(match![1]!);
+    expect(readFileSync(path, "utf8").split("\n")[line - 1]).toContain("### Issue 1:");
+  });
+});

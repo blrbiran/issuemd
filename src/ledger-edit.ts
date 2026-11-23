@@ -47,16 +47,38 @@ export function cellAt(line: string, index: number): string {
   return (raw ?? "").trim().replace(/\\\|/g, "|");
 }
 
-/** Replace data cell `index`, keeping the padding of the cell it overwrites. */
+/** Offsets of the unescaped `|` characters in `text`. */
+function pipeOffsets(text: string): number[] {
+  const out: number[] = [];
+  let slashes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]!;
+    if (char === "|" && slashes % 2 === 0) out.push(i);
+    slashes = char === "\\" ? slashes + 1 : 0;
+  }
+  return out;
+}
+
+/**
+ * Replace data cell `index` by splicing the original text, keeping the
+ * padding of the cell it overwrites.
+ *
+ * Splicing rather than re-joining decoded cells is deliberate: an escaped
+ * `\|` in a cell that is *not* being replaced must survive untouched, and
+ * re-joining the decoded cells would silently un-escape it (turning a 5-cell
+ * row into a 6-cell one).
+ */
 export function replaceCell(line: string, index: number, value: string): string {
-  const cells = rawCells(line);
-  const position = index + 1;
-  if (position < 1 || position >= cells.length - 1) return line;
-  const original = cells[position]!;
+  const pipes = pipeOffsets(line);
+  if (pipes.length < 2 || index < 0) return line;
+  const start = pipes[index];
+  // A row without a trailing pipe ends its last cell at end-of-line.
+  const end = pipes[index + 1] ?? line.length;
+  if (start === undefined) return line;
+  const original = line.slice(start + 1, end);
   const lead = /^\s*/.exec(original)![0];
   const trail = /\s*$/.exec(original)![0];
-  cells[position] = `${lead}${escapeCell(value)}${trail}`;
-  return cells.join("|");
+  return `${line.slice(0, start + 1)}${lead}${escapeCell(value)}${trail}${line.slice(end)}`;
 }
 
 export function formatRow(cells: string[]): string {
@@ -97,6 +119,45 @@ export function ascendingRows(rows: LedgerRow[]): boolean {
   return rows.every((row, index) => index === 0 || rows[index - 1]!.ids[0]!.start < row.ids[0]!.start);
 }
 
+// ---- fences ------------------------------------------------------------
+
+/**
+ * `true` for every 0-based line index that is *inside* or *is* a fence
+ * (delimiters included). Both the criteria extractor and the controlled-block
+ * rewriter must ignore fenced lookalikes: a code block in an issue body or the
+ * appendix can legitimately contain `**验收判据**：…` or a marker pair.
+ */
+export function fencedLines(lines: string[]): boolean[] {
+  const out = new Array<boolean>(lines.length).fill(false);
+  let fence: { char: string; len: number } | undefined;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!fence) {
+      if (match && !(match[1]!.startsWith("`") && match[2]!.includes("`"))) {
+        fence = { char: match[1]![0]!, len: match[1]!.length };
+        out[index] = true;
+      }
+      continue;
+    }
+    out[index] = true;
+    if (match && match[1]![0] === fence.char && match[1]!.length >= fence.len && /^[ \t]*$/.test(match[2]!)) {
+      fence = undefined;
+    }
+  }
+  return out;
+}
+
+/** Indices of `needle` occurrences that sit outside every fence. */
+function unfencedIndexes(lines: string[], needle: string): number[] {
+  const fenced = fencedLines(lines);
+  const out: number[] = [];
+  lines.forEach((line, index) => {
+    if (line.trim() === needle && !fenced[index]) out.push(index);
+  });
+  return out;
+}
+
 // ---- bodies ------------------------------------------------------------
 
 export function bodySkeleton(id: string, title: string, criteria = ""): string[] {
@@ -119,13 +180,17 @@ export function bodySkeleton(id: string, title: string, criteria = ""): string[]
  * the label to the next blank line or `**label**`, with soft wraps joined.
  */
 export function extractCriteria(bodyLines: string[]): string | undefined {
-  const start = bodyLines.findIndex((line) => /^ {0,3}\*\*验收判据\*\*\s*[:：]?\s*/.test(line));
+  const fenced = fencedLines(bodyLines);
+  const start = bodyLines.findIndex(
+    (line, index) => !fenced[index] && /^ {0,3}\*\*验收判据\*\*\s*[:：]?\s*/.test(line),
+  );
   if (start < 0) return undefined;
   const first = bodyLines[start]!.replace(/^ {0,3}\*\*验收判据\*\*\s*[:：]?\s*/, "").trim();
   const parts = [first];
   for (let index = start + 1; index < bodyLines.length; index++) {
     const line = bodyLines[index]!;
-    if (line.trim() === "" || /^ {0,3}\*\*[^*]+\*\*/.test(line)) break;
+    // A fence ends the paragraph: its contents are an example, not criteria.
+    if (fenced[index] || line.trim() === "" || /^ {0,3}\*\*[^*]+\*\*/.test(line)) break;
     parts.push(line.trim());
   }
   const text = parts.filter(Boolean).join(" ").replace(/\s+/g, " ");
@@ -162,9 +227,13 @@ export function guideBlockLines(): string[] {
  * reports that as E112, and a write verb should never guess.
  */
 export function rewriteBlock(lines: string[], begin: string, end: string, content: string[]): string[] {
-  const first = lines.indexOf(begin);
-  const last = lines.indexOf(end);
-  if (first < 0 || last < 0 || last <= first) return lines;
-  if (lines.indexOf(begin, first + 1) >= 0 || lines.indexOf(end, last + 1) >= 0) return lines;
+  // Only real markers count. A marker pair quoted inside a fenced example in
+  // the appendix must not be mistaken for the controlled block.
+  const begins = unfencedIndexes(lines, begin);
+  const ends = unfencedIndexes(lines, end);
+  if (begins.length !== 1 || ends.length !== 1) return lines;
+  const first = begins[0]!;
+  const last = ends[0]!;
+  if (last <= first) return lines;
   return [...lines.slice(0, first + 1), ...content, ...lines.slice(last)];
 }

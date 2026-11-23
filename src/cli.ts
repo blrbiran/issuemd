@@ -25,6 +25,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { scan } from "./scan.js";
 import { buildSections, countLines } from "./sections.js";
 import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
+import { parseId, compareIds, type IdSpan } from "./issue-id.js";
 import { bodyBlocks, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
 import {
@@ -34,6 +35,7 @@ import {
   guideBlockLines,
   insertLines,
   removeLines,
+  fencedLines,
   replaceCell,
   rewriteBlock,
   statusBlockLines,
@@ -401,6 +403,19 @@ function loadWritable(file: string): Loaded | CliResult {
   }
 }
 
+/**
+ * A document with no final newline must not end in a newline after a write.
+ * An appended block usually ends in a blank line, and `join("\n")` would turn
+ * that blank into a trailing newline — so drop trailing blank lines whenever
+ * the source had none.
+ */
+function terminate(lines: string[], doc: Document): string[] {
+  if (doc.finalNewline) return lines;
+  let end = lines.length;
+  while (end > 0 && lines[end - 1] === "") end--;
+  return end === lines.length ? lines : lines.slice(0, end);
+}
+
 /** `code|id|message` — the identity used to decide whether a diagnostic is new. */
 const diagnosticKey = (d: Diagnostic) => `${d.code}|${d.id ?? ""}|${d.message}`;
 
@@ -415,9 +430,10 @@ function commit(
   file: string,
   loaded: Loaded,
   before: Diagnostic[],
-  newLines: string[],
+  candidate: string[],
   dryRun: boolean,
 ): CliResult {
+  const newLines = terminate(candidate, loaded.doc);
   const content = joinDocument(newLines, loaded.doc);
   const after = checkLedger(content, file).errors;
   const known = new Set(before.map(diagnosticKey));
@@ -478,11 +494,11 @@ function parseIntArg(v: string | undefined, flag: string): { value: number } | C
  */
 function bodyInsertAt(
   ledger: ReturnType<typeof parseLedger>,
-  id: number,
+  id: IdSpan,
   bodySectionEnd: number,
 ): number {
-  const blocks = bodyBlocks(ledger);
-  const later = blocks.find((block) => block.id.start > id);
+  const blocks = [...bodyBlocks(ledger)].sort((a, b) => compareIds(a.id, b.id));
+  const later = blocks.find((block) => compareIds(block.id, id) > 0);
   if (later) return later.line;
   const last = blocks.at(-1);
   return last ? last.end + 1 : bodySectionEnd + 1;
@@ -499,7 +515,14 @@ function statusCategory(status: string): "open" | "closed" | undefined {
 function readBodyFile(spec: string): { lines: string[] } | CliResult {
   try {
     const src = spec === "-" ? readFileSync(0, "utf8") : readFileSync(spec, "utf8");
-    return { lines: src.replaceAll("\r\n", "\n").split("\n").filter((line, index, all) => index < all.length - 1 || line !== "") };
+    const lines = src.replaceAll("\r\n", "\n").split("\n");
+    if (lines.at(-1) === "") lines.pop();
+    // An unclosed fence would swallow every heading after the body — including
+    // `## 附录` — and `check` would still pass, so refuse it up front.
+    if (fencedLines(lines).at(-1)) {
+      return err("issuemd new: --body-file ends inside an unclosed code fence\n", 2);
+    }
+    return { lines };
   } catch (e) {
     return err(`issuemd: cannot read --body-file: ${(e as Error).message}\n`, 2);
   }
@@ -560,7 +583,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   const afterIndex = parseLedger(lines.join("\n"));
   const shiftedBody = afterIndex.sections.find((section) => section.level === 2 && section.title === "正文");
   if (!shiftedBody) return err("issuemd new: the 正文 section is missing\n", 3);
-  lines = insertLines(lines, bodyInsertAt(afterIndex, id, shiftedBody.line_end), body);
+  lines = insertLines(lines, bodyInsertAt(afterIndex, parseId(idText)!, shiftedBody.line_end), body);
 
   return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
@@ -599,7 +622,10 @@ function cmdClose(rest: string[], v: Values): CliResult {
     return err(`issuemd close: '${status}' is not a closed status\n`, 2);
   }
 
-  const block = bodyBlocks(ledger).find((candidate) => candidate.id.start === found.span.start);
+  // Match the full id: `2` and `2a` are distinct issues with distinct bodies.
+  const block = bodyBlocks(ledger).find(
+    (candidate) => `${candidate.id.start}${candidate.id.suffix}` === idText,
+  );
   const bodyText = block ? ledger.lines.slice(block.line - 1, block.end) : [];
   const criteria = v.criteria ?? (v["criteria-from-body"] ? extractCriteria(bodyText) ?? "" : "");
 
@@ -617,12 +643,18 @@ function cmdClose(rest: string[], v: Values): CliResult {
       // A ledger may legally lack 附录, in which case one is created at EOF
       // rather than dropping the archive next to the body it replaces.
       const at = appendix ? appendix.line_end + 1 : lines.length + 1;
+      // Drop only the heading, then any leading blank lines: assuming a blank
+      // line follows the heading would silently eat the first body line of a
+      // tightly written ledger.
+      const kept = bodyText.slice(1);
+      while (kept.length > 0 && kept[0]!.trim() === "") kept.shift();
+      while (kept.length > 0 && kept.at(-1)!.trim() === "") kept.pop();
       const archived = [
         `### #${idText} ${found.row.summary}（已关闭，正文保留）`,
         "",
         `> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。`,
         "",
-        ...bodyText.slice(2).filter((line, index, all) => !(line === "" && all.slice(index).every((rest) => rest === ""))),
+        ...kept,
       ];
       lines = insertLines(lines, at, appendix ? ["", ...archived] : ["", "## 附录", "", ...archived]);
     }
@@ -691,7 +723,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
     (section) => section.level === 2 && section.title === "正文",
   );
   if (!bodySection) return err("issuemd reopen: the 正文 section is missing\n", 3);
-  const bodyAt = bodyInsertAt(reopened, found.span.start, bodySection.line_end);
+  const bodyAt = bodyInsertAt(reopened, found.span, bodySection.line_end);
   lines = insertLines(lines, bodyAt, bodySkeleton(spanText(found.span), found.row.summary, criteria));
 
   return commit(file, loaded, errors, lines, !!v["dry-run"]);
@@ -765,8 +797,10 @@ function cmdRename(rest: string[], v: Values): CliResult {
 
   const lines = [...loaded.lines];
   lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 3, next);
-  const block = bodyBlocks(ledger).find((candidate) => candidate.id.start === found.span.start);
-  if (block) lines[block.line - 1] = `### Issue ${spanText(found.span)}: ${next}`;
+  const block = bodyBlocks(ledger).find(
+    (candidate) => `${candidate.id.start}${candidate.id.suffix}` === idText,
+  );
+  if (block) lines[block.line - 1] = `### Issue ${idText}: ${next}`;
   return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
 
@@ -930,9 +964,15 @@ function syncTitles(
 
   if (prefer === "body" && v["move-progress"]) {
     // Insert from the bottom up so earlier line numbers remain valid.
+    const note = (summary: string) => `> **进展（来自旧表）**：${summary}`;
     for (const change of progress.sort((a, b) => (b.bodyLine ?? 0) - (a.bodyLine ?? 0))) {
       if (change.bodyLine == null) continue;
-      lines = insertLines(lines, change.bodyLine + 2, [`> **进展（来自旧表）**：${change.oldSummary}`, ""]);
+      // Anchor to the heading, not to "heading + 2": a body written with no
+      // blank line after its heading would put the note in the next issue.
+      const after = lines[change.bodyLine];
+      lines = after !== undefined && after.trim() === ""
+        ? insertLines(lines, change.bodyLine + 2, [note(change.oldSummary), ""])
+        : insertLines(lines, change.bodyLine + 1, ["", note(change.oldSummary), ""]);
     }
   }
 
@@ -952,15 +992,20 @@ function fixTables(lines: string[], ledger: ReturnType<typeof parseLedger>): str
         block.line > section.line_start &&
         block.line <= section.line_end,
     );
-    // A headerless data block in a ledger table would promote its first row
-    // to a header, so the canonical header row goes in along with the rule.
+    // A short separator (the right number of `---` cells, wrong count) is the
+    // case the parser flags as "missing separator". Replacing that row is the
+    // only fix that does not leave a malformed data row behind.
+    const second = block.rows[1];
+    const isShortSeparator =
+      second !== undefined && second.length > 0 && second.every((cell) => /^:?-+:?$/.test(cell));
     const needsHeader = inLedgerTable && block.rows[0]!.join(" | ") !== COLUMN_HEADERS[width];
-    // A headerless data block would promote its first row to a header, so the
-    // canonical header and the rule both go *above* it; otherwise the rule
-    // simply follows the existing header row.
-    result = needsHeader
-      ? insertLines(result, block.line, [canonicalHeaderLine(width), separator])
-      : insertLines(result, block.line + 1, [separator]);
+    if (isShortSeparator) {
+      result = insertLines(removeLines(result, block.line + 1, 1), block.line + 1, [separator]);
+    } else if (needsHeader) {
+      result = insertLines(result, block.line, [canonicalHeaderLine(width), separator]);
+    } else {
+      result = insertLines(result, block.line + 1, [separator]);
+    }
   }
   return result;
 }
