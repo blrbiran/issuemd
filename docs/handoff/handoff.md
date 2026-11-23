@@ -22,7 +22,8 @@
   - `feat: expose ledger body blocks and max issue id`
   - `feat: read ledger views; drop generic markdown commands`
   - `feat: ledger write verbs with a validation gate`
-  - 末尾还有一个 docs 提交（README / SKILL.md / 设计文档偏差记录 / 本文档）
+  - `feat: add adopt for one-shot conversion of older layouts`
+  - 若干 `docs:` 提交（设计文档偏差、执行记录、README/SKILL/本文档）
 
 ## 必须先读的三份材料
 
@@ -79,10 +80,9 @@ issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
 
 ## 还没做（按优先级）
 
-- **P4 `adopt`**：一次性把旧布局（cafe/orca 形状）转成 canonical。规格 §10 与 `fixtures/cafe-shaped.md`、`fixtures/orca-shaped.md` 的 `*.expected.json` 是验收依据。设计要求：机械改动 + 待决清单 + `--dry-run` + `--report`，且输出必须能通过 `check`（附录内容除外）。
-- **P5 清理**：
-  - 删除仓库根目录的 `check-issues.mjs` 与 `verify-facts.mjs`（约定 P5 删，它们已入库）。
-  - 决定 `skills/issuemd/SKILL.md` 是否打进 npm 包（当前 `package.json#files` 只有 `dist`，测试断言它**不在**包里）。
+- ~~**P4 `adopt`**~~ **已完成**（`src/adopt.ts` + `src/adopt.test.ts`）：cafe 形状 → open 3 / closed 13，orca 形状 → open 2 / closed 11，两者 `check` 均 0 error。只做机械改动，语义判断全部进待决清单；输出若仍不过 `check` 则 exit 3 不落盘。已知限制：已关闭表的摘要在索引与已关闭表冲突时一律取「已关闭表」那份（与 `--prefer=body` 的口径不同，因为已关闭项没有正文标题可比）。
+- **P5 剩余**：
+  - 决定 `skills/issuemd/SKILL.md` 是否打进 npm 包（当前 `package.json#files` 只有 `dist`，`tests/bin.test.ts` 断言它**不在**包里）。
   - `README` 的「License」段仍写着「确认 lilmd 上游授权后再公开」——发布前要处理。
 - 规格 §6.2 里仍有未实现的项：`W211`（编号疑似复用，`check` 不报）；`W250` 只在 `close --keep-body` 时打到 stderr，`check` 不报。其余 warn（含 `W203`、`W260`）已在 `src/ledger-check.ts` 里实现。补之前先看 `docs/spec.md` §6.2。
 

@@ -77,7 +77,7 @@ There is exactly one command surface: `issuemd` is a ledger tool, not a general 
 
 P0–P4 are implemented: the Markdown baseline, byte-faithful atomic writes, the canonical parser and `check`, the read views, the ledger write verbs, and `adopt`. `new`, `close`, `reopen`, `status`, `rename` and `sync` all share one gate that re-runs `check` in memory and refuses any change that introduces a new error.
 
-P5 (shipping the skill, deleting the two cross-check scripts) remains; see [the implementation plan](docs/spec.md#12-实施计划).
+The two hand-written cross-check scripts (`check-issues.mjs`, `verify-facts.mjs`) that predated `check` have been removed. What remains from P5 is a packaging decision: whether to ship `skills/issuemd/SKILL.md` in the npm package (today `files` is `dist` only, and a test pins that).
 
 ## License
 
