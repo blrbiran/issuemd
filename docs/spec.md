@@ -578,7 +578,7 @@ issuemd adopt old.md --dry-run --report decisions.md
 | Q1 | 关闭即删正文后，`reopen` 只能从判据反推，原描述不可逆 | 已接受 | `--keep-body` 把正文搬 `## 附录`，信息可找回 |
 | Q2 | `adopt --prefer` 在两边标题都「还行」时会丢信息 | 存在 | 默认 `--prefer=body`；`--dry-run` 必看 |
 | Q3 | 单元格含换行/代码块 | 不支持 | `E108` 并提示拆行 |
-| Q4 | >10k 行解析耗时 | 未测（2701 行 < 10ms） | P2 补 10k 基准 |
+| Q4 | >10k 行解析耗时 | 已测（2026-11-24）：10k issue / ~35k 行 ≈ 44ms 解析 + 79ms 完整 `check`；40k issue / 120k 行 ≈ 155ms + 270ms，无明显超线性 | `tests/scale.test.ts` 是上限守卫（2s/4s），不是微基准；解析器保持线性 |
 | Q5 | 若团队需要第二套状态词 | v1 不支持 | 改工具或等 config |
 | Q6 | 给旧台账补分隔行属于「改文档」 | 由 `adopt` 承担 | 默认 `--dry-run`；真应用需显式确认 |
 
