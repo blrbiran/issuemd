@@ -112,3 +112,33 @@ test("the built bin is executable, so npm link keeps working after a rebuild (#2
   const result = spawnSync(bin, ["--help"], { cwd, encoding: "utf8" });
   expect(result.status).toBe(0);
 });
+
+test("a concurrent change is exit 4 (E130, retryable), distinct from usage errors (#18)", async () => {
+  const { mkdtempSync, writeFileSync, appendFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const work = mkdtempSync(join(tmpdir(), "issuemd-race-"));
+  try {
+    const ledger = join(work, "l.md");
+    writeFileSync(ledger, readFileSync(new URL("../TEMPLATE.md", import.meta.url)));
+    const fifo = join(work, "body.fifo");
+    expect(spawnSync("mkfifo", [fifo]).status).toBe(0);
+    // `new` reads the ledger first, then blocks opening the FIFO body.
+    const child = spawn("node", [bin, "new", ledger, "--title", "A", "--body-file", fifo]);
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    const closed = once(child, "close");
+    // Opening the FIFO for writing blocks until the child opens it to read,
+    // which it only does after loading the ledger: no sleep, no race.
+    const { open } = await import("node:fs/promises");
+    const writer = await open(fifo, "w");
+    appendFileSync(ledger, "\n另一个 agent 的改动\n");
+    await writer.write("**现象**：a\n");
+    await writer.close(); // EOF unblocks the child
+    const [code] = await closed;
+    expect(code).toBe(4);
+    expect(stderr).toContain("E130");
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});

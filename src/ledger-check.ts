@@ -16,6 +16,8 @@ export const STATUS_CLASSES = {
   并入: "closed",
   未分类: "closed",
 } as const satisfies Record<string, TableKind>;
+/** Priorities `new` accepts and `check` knows; "" means "not prioritised". */
+export const PRIORITIES: readonly string[] = ["P0", "P1", "P2", "P3", ""];
 const STATUS_LINES = [
   "| 状态 | 分类 |", "|---|---|",
   ...Object.entries(STATUS_CLASSES).map(([status, kind]) => `| ${status} | ${kind} |`),
@@ -187,6 +189,9 @@ function checkRows(ledger: Ledger, ids: Record<TableKind, IdSet>) {
       const id = idText(row.ids[0]);
       const info = { line: row.line, id };
       const category = Object.hasOwn(STATUS_CLASSES, row.status) ? STATUS_CLASSES[row.status as keyof typeof STATUS_CLASSES] : undefined;
+      if (!PRIORITIES.includes(row.priority)) {
+        warnings.push({ ...info, code: "W221", message: `Undeclared priority: ${row.priority} (expected P0–P3 or empty)` });
+      }
       if (!category) warnings.push({ ...info, code: "W220", message: `Undeclared status: ${row.status}` });
       else if (category !== kind) errors.push({ ...info, code: "E112", message: `Status ${row.status} belongs in the ${category} table` });
       if (kind === "open" && PROGRESS.test(row.summary)) {

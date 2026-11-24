@@ -388,3 +388,77 @@ describe("#48 new keeps a blank line before an appended body", () => {
     expect(out).not.toContain("\n\n\n### Issue");
   });
 });
+
+describe("#13/#14 options are checked per command", () => {
+  test("an option the command does not take is a usage error", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    for (const args of [["list", path, "--title", "x"], ["check", path, "--closed"], ["new", path, "--title", "j", "--json"],
+      ["close", path, "1", "--json"], ["show", path, "1", "--dry-run"]]) {
+      const before = text(path);
+      const result = await run(args);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/not supported by '\w+'/);
+      expect(text(path)).toBe(before);
+    }
+  });
+
+  test("issuemd <command> --help prints that command's usage and options only", async () => {
+    const result = await run(["close", "--help"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toMatch(/issuemd close +FILE ID/);
+    expect(result.stdout).toContain("--keep-body");
+    expect(result.stdout).toContain("--status");
+    expect(result.stdout).not.toContain("--fix-tables");
+    expect(result.stdout).not.toContain("--json");
+  });
+
+  test("global --help documents --status for list, new and close", async () => {
+    const result = await run(["--help"]);
+    const line = result.stdout.split("\n").find((l) => l.trimStart().startsWith("--status"))!;
+    expect(line).toContain("list");
+    expect(line).toContain("new");
+    expect(line).toContain("close");
+  });
+});
+
+describe("#33 list --status is validated", () => {
+  test("an unknown status is a usage error that lists the vocabulary", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    const result = await run(["list", path, "--status", "未決"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("unknown status");
+    expect(result.stderr).toContain("部分解决");
+  });
+
+  test("a closed status on the open table says to add --closed", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    const result = await run(["list", path, "--status", "已修"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("--closed");
+  });
+
+  test("an undeclared status that is actually in the ledger can still be listed", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    writeFileSync(path, text(path).replace("| 1 | 未决 |", "| 1 | 未觉 |"));
+    expect((await run(["list", path, "--status", "未觉"])).code).toBe(0);
+  });
+});
+
+describe("#9 priority vocabulary", () => {
+  test("new refuses a priority outside P0–P3", async () => {
+    const path = file();
+    const before = text(path);
+    const result = await run(["new", path, "--title", "x", "--priority", "Q9"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("P0");
+    expect(text(path)).toBe(before);
+    expect((await run(["new", path, "--title", "x", "--priority", "P0"])).code).toBe(0);
+  });
+
+  test("check warns about an undeclared priority already in the ledger", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    writeFileSync(path, text(path).replace("| 1 | 未决 | P2 |", "| 1 | 未决 | Q9 |"));
+    const report = JSON.parse((await run(["check", path, "--json"])).stdout);
+    expect(report.warnings.map((w: { code: string }) => w.code)).toContain("W221");
+  });
+});

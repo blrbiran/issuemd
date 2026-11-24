@@ -29,7 +29,7 @@ import { buildSections, countLines } from "./sections.js";
 import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
 import { parseId, compareIds, type IdSpan } from "./issue-id.js";
 import { bodyBlocks, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
-import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
+import { checkLedger, PRIORITIES, STATUS_CLASSES } from "./ledger-check.js";
 import {
   bodySkeleton,
   extractCriteria,
@@ -60,52 +60,90 @@ import {
 import { unifiedDiff } from "./write.js";
 import { adopt, type Decision } from "./adopt.js";
 
-const HELP = `issuemd — read and maintain a single-file Markdown issue ledger
+/** Exit codes, shared by the global and per-command help. */
+const EXIT_CODES =
+  "Exit codes: 0 ok, 1 no such issue / empty result, 2 usage or I/O error, 3 ledger validation error,\n" +
+  "            4 the file changed after it was read (E130) — re-read and retry.";
 
-Usage:
-  issuemd check   FILE [--json] [--strict] [--verify-commits]
-  issuemd list    FILE [--status S] [--priority P] [--closed] [--json]
-  issuemd show    FILE ID [--json] [--label NAME]
-  issuemd counts  FILE [--json]
-  issuemd read    FILE <H2 heading>
+/**
+ * Every command, its usage line and the options it accepts. `run` refuses any
+ * other option (exit 2) instead of silently ignoring it (dogfood #13/#14):
+ * `list --title x` or `new --json` used to "work" and do nothing.
+ */
+const COMMANDS = {
+  check: { usage: "issuemd check   FILE [--json] [--strict] [--verify-commits]", options: ["json", "strict", "verify-commits"] },
+  list: { usage: "issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json]", options: ["status", "priority", "closed", "expand", "json"] },
+  show: { usage: "issuemd show    FILE ID [--json] [--label NAME]", options: ["json", "label"] },
+  counts: { usage: "issuemd counts  FILE [--json]", options: ["json"] },
+  read: { usage: "issuemd read    FILE <H2 heading>", options: [] },
+  new: { usage: "issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]", options: ["title", "id", "status", "priority", "body-file", "dry-run"] },
+  close: { usage: "issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]", options: ["status", "criteria", "criteria-from-body", "no-criteria", "keep-body", "dry-run"] },
+  reopen: { usage: "issuemd reopen  FILE ID", options: ["dry-run"] },
+  status: { usage: "issuemd status  FILE ID NEW_STATUS", options: ["dry-run"] },
+  rename: { usage: "issuemd rename  FILE ID \"NEW TITLE\"", options: ["dry-run"] },
+  sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress]]", options: ["guide", "fix-tables", "titles", "prefer", "move-progress", "drop-progress", "dry-run"] },
+  adopt: { usage: "issuemd adopt   FILE [--dry-run] [--report PATH]", options: ["dry-run", "report"] },
+} as const satisfies Record<string, { usage: string; options: readonly string[] }>;
+type Command = keyof typeof COMMANDS;
 
-  [write — atomic, keeps BOM/line endings/mode; --dry-run prints a diff]:
-  issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]
-  issuemd close   FILE ID [--criteria TEXT | --criteria-from-body] [--keep-body]
-  issuemd reopen  FILE ID
-  issuemd status  FILE ID NEW_STATUS
-  issuemd rename  FILE ID "NEW TITLE"
-  issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
-                        [--move-progress | --drop-progress]]
-  issuemd adopt   FILE [--dry-run] [--report PATH]
+/** Option help, one entry per flag; continuation lines start with spaces. */
+const OPTION_HELP: Record<string, string> = {
+  json: "--json                    machine-readable JSON output (read commands)",
+  strict: "--strict                  check: fail on warnings (W250 is informational and never fails)",
+  "verify-commits": "--verify-commits          check: verify commit references in the ledger directory (W240)",
+  status:
+    "--status <S>              list: filter; new: initial open status (未决); close: closed status (已修)",
+  priority:
+    "--priority <P>            list: filter by priority; new: P0–P3 or \"\" (default P2)",
+  closed: "--closed                  list: show the closed table instead of the index",
+  expand: "--expand                  list: one entry per id (a `20, 24` or `7–20` row becomes several)",
+  label: "--label <NAME>            show: print only the **NAME** block",
+  title: "--title <T>               new: summary/body title (starts with '-'? write --title=\"-…\")",
+  id: "--id <N>                  new: explicit issue id",
+  "body-file": "--body-file <path|->      new: body text under the heading (no `### Issue` line), or '-' for stdin",
+  criteria: "--criteria <TEXT>         close: criteria column text",
+  "criteria-from-body":
+    "--criteria-from-body      close: lift the **验收判据** block into the column (the default\n" +
+    "                            when the body has one); refuses if it is missing or empty",
+  "no-criteria": "--no-criteria             close: close with an empty criteria cell on purpose",
+  "keep-body": "--keep-body               close: move the body into 附录 instead of deleting it",
+  guide: "--guide                   sync: rewrite the controlled guide and status blocks",
+  "fix-tables": "--fix-tables              sync: add missing table separator rows",
+  titles: "--titles                  sync: align body headings with index summaries",
+  prefer: "--prefer <body|table>     sync --titles: which side wins (default body)",
+  "move-progress": "--move-progress           sync --titles: move progress text into the body",
+  "drop-progress": "--drop-progress           sync --titles: discard progress text",
+  report: "--report <path>           adopt: write the decision list to a new file (or over an earlier report)",
+  "dry-run": "--dry-run                 write: print a unified diff, don't modify the file",
+};
 
-Options:
-  --json                    machine-readable JSON output
-  --strict                  check: fail on warnings (W250 is informational and never fails)
-  --verify-commits          check: verify commit references in the ledger directory
-  --status <S>              list: filter by status
-  --priority <P>            list: filter by priority
-  --closed                  list: show the closed table instead of the index
-  --label <NAME>            show: print only the **NAME** paragraph
-  --title <T>               new: summary/body title
-  --id <N>                  new: explicit issue id
-  --body-file <path|->      new: body from a file, or '-' for stdin
-  --criteria <TEXT>         close: criteria column text
-  --criteria-from-body      close: lift the **验收判据** block into the column (the default
-                            when the body has one); refuses if it is missing or empty
-  --no-criteria             close: close with an empty criteria cell on purpose
-  --keep-body               close: move the body into 附录 instead of deleting it
-  --guide                   sync: rewrite the controlled guide and status blocks
-  --fix-tables              sync: add missing table separator rows
-  --titles                  sync: align body headings with index summaries
-  --prefer <body|table>     sync --titles: which side wins (default body)
-  --move-progress           sync --titles: move progress text into the body
-  --drop-progress           sync --titles: discard progress text
-  --report <path>           adopt: write the decision list to a file
-  --dry-run                 write: print a unified diff, don't modify the file
+const READ_COMMANDS: Command[] = ["check", "list", "show", "counts", "read"];
+const HELP = [
+  "issuemd — read and maintain a single-file Markdown issue ledger",
+  "",
+  "Usage:",
+  ...READ_COMMANDS.map((name) => `  ${COMMANDS[name].usage}`),
+  "",
+  "  [write — atomic, keeps BOM/line endings/mode; --dry-run prints a diff]:",
+  ...(Object.keys(COMMANDS) as Command[]).filter((name) => !READ_COMMANDS.includes(name))
+    .map((name) => `  ${COMMANDS[name].usage}`),
+  "",
+  "  issuemd <command> --help   that command's usage and options",
+  "",
+  "Options:",
+  ...Object.values(OPTION_HELP).map((text) => `  ${text}`),
+  "",
+  EXIT_CODES,
+  "",
+].join("\n");
 
-Exit codes: 0 ok, 1 no such issue, 2 usage error, 3 ledger validation error.
-`;
+function commandHelp(name: Command): string {
+  const { usage, options } = COMMANDS[name];
+  const lines = [`usage: ${usage}`, ""];
+  if (options.length > 0) lines.push("Options:", ...options.map((option) => `  ${OPTION_HELP[option]}`), "");
+  lines.push(EXIT_CODES, "");
+  return lines.join("\n");
+}
 
 export type CliResult = { code: number; stdout: string; stderr: string };
 
@@ -150,6 +188,8 @@ const OPTIONS = {
   "drop-progress": { type: "boolean" },
   // adopt
   report: { type: "string" },
+  // list
+  expand: { type: "boolean" },
 } satisfies NonNullable<ParseArgsConfig["options"]>;
 
 export async function run(argv: string[]): Promise<CliResult> {
@@ -162,13 +202,32 @@ export async function run(argv: string[]): Promise<CliResult> {
       strict: true,
     });
   } catch (e) {
-    return err(`issuemd: ${(e as Error).message}\n${HELP}`, 2);
+    const message = (e as Error).message;
+    const hint = /ambiguous/.test(message)
+      ? "A value that starts with '-' must be attached with '=', e.g. --title=\"--body-file is confusing\".\n"
+      : "";
+    return err(`issuemd: ${message}\n${hint}Try 'issuemd --help'.\n`, 2);
   }
 
   const { values, positionals } = parsed;
   const head = positionals[0];
-  if (values.help || head == null) {
+  if (head == null) {
     return values.help ? ok(HELP) : err("issuemd: missing command. Try 'issuemd list FILE' or 'issuemd --help'\n", 2);
+  }
+  if (Object.hasOwn(COMMANDS, head)) {
+    const command = head as Command;
+    if (values.help) return ok(commandHelp(command));
+    const allowed: readonly string[] = COMMANDS[command].options;
+    const stray = Object.keys(values).filter((name) => !allowed.includes(name));
+    if (stray.length > 0) {
+      return err(
+        `issuemd ${command}: ${stray.map((name) => `--${name}`).join(", ")} ${stray.length > 1 ? "are" : "is"} ` +
+          `not supported by '${command}'\nusage: ${COMMANDS[command].usage}\n`,
+        2,
+      );
+    }
+  } else if (values.help) {
+    return ok(HELP);
   }
 
   switch (head) {
@@ -303,16 +362,32 @@ function cmdList(rest: string[], v: Values): CliResult {
   if (unusable) return unusable;
 
   const table = v.closed ? "closed" : "open";
+  // A typo'd filter used to look exactly like an empty result (dogfood #33).
+  // A word that really occurs in the ledger is always allowed: that is how
+  // rows with an undeclared status (W220) are found.
+  const everyRow = [...ledger.rows.open, ...ledger.rows.closed];
+  if (v.status != null && !statusCategory(v.status) && !everyRow.some((row) => row.status === v.status)) {
+    return err(
+      `issuemd list: unknown status '${v.status}'; statuses: ${Object.keys(STATUS_CLASSES).join(" / ")}\n`,
+      2,
+    );
+  }
+  if (v.priority != null && !PRIORITIES.includes(v.priority) && !everyRow.some((row) => row.priority === v.priority)) {
+    return err(`issuemd list: unknown priority '${v.priority}'; priorities: ${PRIORITIES.filter(Boolean).join(" / ")}\n`, 2);
+  }
   const rows = filterRows(ledger.rows[table], { status: v.status, priority: v.priority });
+  const wrongTable = v.status != null && statusCategory(v.status) != null && statusCategory(v.status) !== table
+    ? `'${v.status}' is ${statusCategory(v.status)}; ${table === "open" ? "add --closed" : "drop --closed"} to list it\n`
+    : "";
   if (v.json) {
     const body = JSON.stringify(
       { file, table, issues: rows.map((row) => toListedIssue(row, table)) },
       null,
       2,
     );
-    return rows.length === 0 ? { code: 1, stdout: body + "\n", stderr: "" } : ok(body);
+    return rows.length === 0 ? { code: 1, stdout: body + "\n", stderr: wrongTable } : ok(body);
   }
-  if (rows.length === 0) return noMatch("(no issues)\n");
+  if (rows.length === 0) return { code: 1, stdout: "(no issues)\n", stderr: wrongTable };
   return ok(rows.map(formatIssueRow).join("\n"));
 }
 
@@ -539,7 +614,7 @@ function commit(
   try {
     const written = writeAtomically(file, content, loaded.doc.stat);
     if (!written.ok) {
-      return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 2);
+      return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 4);
     }
   } catch (error) {
     return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
@@ -647,6 +722,9 @@ function cmdNew(rest: string[], v: Values): CliResult {
   if (badTitle) return err(`issuemd new: ${badTitle}\n`, 2);
   const status = v.status ?? "未决";
   const priority = v.priority ?? "P2";
+  if (!PRIORITIES.includes(priority)) {
+    return err(`issuemd new: --priority expects one of ${PRIORITIES.filter(Boolean).join(", ")} or "", got '${priority}'\n`, 2);
+  }
   const category = statusCategory(status);
   if (!category) return err(`issuemd new: unknown status '${status}'\n`, 2);
   if (category === "closed") {
@@ -1098,7 +1176,7 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
   if (!unchanged) {
     try {
       const written = writeAtomically(file, target, loaded.doc.stat);
-      if (!written.ok) return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 2);
+      if (!written.ok) return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 4);
     } catch (error) {
       return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
     }
