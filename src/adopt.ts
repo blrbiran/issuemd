@@ -297,7 +297,7 @@ function rowsOf(blocks: Block[], badIds: BadIdRow[] = []): Row[] {
         if (plain) {
           rawStatus = declared;
           status = plain.word;
-          if (plain.note !== "") extras.push(`原状态：${declared}`);
+          if (plain.keepRaw) extras.push(`原状态：${declared}`);
         } else {
           extras.push(`原状态：${declared}`);
         }
@@ -321,16 +321,19 @@ function rowsOf(blocks: Block[], badIds: BadIdRow[] = []): Row[] {
   return out;
 }
 
-/** A status word with Markdown emphasis, emoji or a trailing （note） around it. */
-function plainStatus(raw: string): { word: string; note: string } | undefined {
-  let text = raw.replace(/[*_`~]/g, "").replace(/^[^\p{L}\p{N}]+/u, "").replace(/[^\p{L}\p{N}）)]+$/u, "").trim();
-  let note = "";
+/**
+ * A status word in costume: Markdown emphasis (`**未决**`), a leading check
+ * mark (`✅ 已修`) or a trailing （note）. Only these neutral wrappers are
+ * removed: `❌ 已修`, `已修？`, `~~已修~~` negate or doubt the word and stay
+ * unknown. `keepRaw` is true when more than emphasis was removed, so the
+ * original cell is written into the ledger.
+ */
+function plainStatus(raw: string): { word: string; keepRaw: boolean } | undefined {
+  const emphasisFree = raw.replace(/\*\*|__|`/g, "").trim();
+  let text = emphasisFree.replace(/^(?:✅|✔️|✔|☑️|☑)\s*/u, "").trim();
   const annotated = /^(.*?)\s*[（(]([^（）()]*)[）)]$/.exec(text);
-  if (annotated && STATUS_WORDS.has(annotated[1]!.trim())) {
-    text = annotated[1]!.trim();
-    note = annotated[2]!.trim();
-  }
-  return STATUS_WORDS.has(text) ? { word: text, note } : undefined;
+  if (annotated && STATUS_WORDS.has(annotated[1]!.trim())) text = annotated[1]!.trim();
+  return STATUS_WORDS.has(text) ? { word: text, keepRaw: text !== emphasisFree } : undefined;
 }
 
 type Body = { idText: string; id: number; title: string; line: number; end: number };

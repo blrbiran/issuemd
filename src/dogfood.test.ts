@@ -1323,3 +1323,14 @@ test("probe: a malformed id is a usage error (2), an absent one is 1", async () 
   expect((await run(["close", path, "abc", "--no-criteria"])).code).toBe(2);
   expect((await run(["close", path, "9", "--no-criteria"])).code).toBe(1);
 });
+
+test("review: negated or doubtful status cells are not read as closed", async () => {
+  const path = file("# T\n\n## 索引\n\n| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 1 | ❌ 已修 | P2 | reverted fix |\n| 3 | 已修？ | P2 | unsure |\n| 4 | ~~已修~~ | P2 | struck |\n| 5 | ✅ 已修 | P2 | done |\n\n## 正文\n\n### Issue 1: reverted fix\n\n**现象**：x\n\n### Issue 3: unsure\n\nz\n\n### Issue 4: struck\n\nq\n");
+  expect((await run(["adopt", path])).code).toBe(0);
+  const out = text(path);
+  for (const [id, raw] of [["1", "❌ 已修"], ["3", "已修？"], ["4", "~~已修~~"]] as const) {
+    expect(out).toContain(`| ${id} | 未决 | P2 |`);
+    expect(out).toContain(`原状态：${raw}`);
+  }
+  expect(out).toMatch(/\| 5 \| 已修 \| P2 \| done \| 原状态：✅ 已修 \|/);
+});
