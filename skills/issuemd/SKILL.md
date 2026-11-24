@@ -49,7 +49,7 @@ Reading the row and the body together is the point: if they disagree, `show` tel
 ```bash
 issuemd new    FILE --title "…" --status 未决 --priority P2   # id defaults to max+1
 issuemd close  FILE 57 --criteria-from-body      # criteria moves to the closed table
-issuemd close  FILE 57 --keep-body               # archive the body under 附录 instead
+issuemd close  FILE 57 --keep-body               # archive the body under 附录 (reopen restores it)
 issuemd status FILE 56 部分解决                  # open→open or closed→closed only
 issuemd reopen FILE 57
 issuemd rename FILE 16 "new summary"             # table + body title, one transaction
@@ -90,8 +90,10 @@ If `--titles` reports W260 (a table summary carries progress text the body title
 - **Status lives only in the table.** A `**状态**` line in a body is an error (`E107`).
 - **The summary and the body title are the same string.** Don't shorten one; `rename` changes both.
 - **Escape pipes inside cells** as `\|` (`E108` / `W205`).
+- **A title may not end with ` #`** — Markdown strips the trailing hash from the body heading, so it could never match the table summary. `new` / `rename` refuse it up front.
+- **Writes refuse files they would corrupt.** A ledger that is not valid UTF-8, or that mixes LF and CRLF, gets exit `2` with an explanation instead of a silently re-encoded rewrite.
 - **Ids are `\d+[a-z]?`** (`393b` is real) and are never recycled. `new FILE --id N` with `N` at or below the highest existing id still writes, but prints `W211` — don't reuse a number just because its row is gone.
-- **`--body-file` replaces the whole body**; without it, `new` writes the four-label skeleton (`现象` / `根因` / `期望` / `验收判据`).
+- **`--body-file` replaces the whole body**; without it, `new` writes the four-label skeleton (`现象` / `根因` / `期望` / `验收判据`). A body file may not contain `#` / `##` headings (they would end the issue block while `check` still passes) and may not end inside an open fence; a leading BOM is stripped.
 - **`read` matches a top-level `##` heading exactly** — no regex, no substring, no chain. A duplicate or missing title exits `2` and lists the candidates.
 - **A row that holds several ids is read-only for per-id verbs.** `close`/`rename`/`status` on `| 20, 24, 29 |` refuse; split the row first.
 
