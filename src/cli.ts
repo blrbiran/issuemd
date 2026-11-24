@@ -1209,7 +1209,7 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
     }
     throw error;
   }
-  const report = renderAdoptReport(file, result.changes, result.decisions);
+  const report = renderAdoptReport(file, result.changes, result.decisions, !!v["dry-run"]);
   const target = joinDocument(result.lines, loaded.doc);
   const after = checkLedger(target, file).errors;
   if (after.length > 0) {
@@ -1287,33 +1287,47 @@ function reportTargetProblem(ledgerPath: string, reportPath: string): string | n
   return "the file exists and is not an earlier adopt report; choose a new path or remove it first";
 }
 
-function renderAdoptReport(file: string, changes: string[], decisions: Decision[]): string {
+/** Decisions that only record where unrecognised text was kept verbatim. */
+const KEPT_KINDS = new Set<Decision["kind"]>(["foreign-section", "preamble", "orphan-body", "section-prose", "kept-section-text"]);
+
+/**
+ * Three parts (dogfood #17): what changed mechanically, what was kept
+ * verbatim, and the semantic defaults adopt applied — those are written too
+ * (a dry run says "would be"), each naming the side it chose; review them.
+ */
+function renderAdoptReport(file: string, changes: string[], decisions: Decision[], dryRun = false): string {
   const out = [`adopt: ${file}`, ""];
   out.push("机械改动：");
   out.push(...(changes.length ? changes.map((change) => `  - ${change}`) : ["  （无）"]));
-  out.push("", `待决事项（${decisions.length}）：`);
-  if (decisions.length === 0) out.push("  （无）");
-  const group = new Map<string, Decision[]>();
-  for (const decision of decisions) {
-    const list = group.get(decision.kind) ?? [];
-    list.push(decision);
-    group.set(decision.kind, list);
-  }
-  for (const [kind, list] of group) {
-    out.push(`  ${kind} x${list.length}`);
+  const kept = decisions.filter((decision) => KEPT_KINDS.has(decision.kind));
+  const defaults = decisions.filter((decision) => !KEPT_KINDS.has(decision.kind));
+  const section = (title: string, list: Decision[]) => {
+    out.push("", `${title}（${list.length}）：`);
+    if (list.length === 0) out.push("  （无）");
+    const group = new Map<string, Decision[]>();
     for (const decision of list) {
-      const id = decision.id ? ` #${decision.id}` : "";
-      const pair = decision.table != null
-        ? `\n      表: ${decision.table}\n      文: ${decision.body ?? ""}`
-        : "";
-      // `L` is the output file; a decision with nothing left to point at in
-      // the output falls back to the input coordinate, never a fake `L0`.
-      const where = decision.line > 0
-        ? `L${decision.line}`
-        : decision.sourceLine != null ? `源 L${decision.sourceLine}` : "L?";
-      out.push(`    ${where}${id} ${decision.message}${pair}`);
+      const entries = group.get(decision.kind) ?? [];
+      entries.push(decision);
+      group.set(decision.kind, entries);
     }
-  }
+    for (const [kind, entries] of group) {
+      out.push(`  ${kind} x${entries.length}`);
+      for (const decision of entries) {
+        const id = decision.id ? ` #${decision.id}` : "";
+        const pair = decision.table != null
+          ? `\n      表: ${decision.table}\n      文: ${decision.body ?? ""}`
+          : "";
+        // `L` is the output file; a decision with nothing left to point at in
+        // the output falls back to the input coordinate, never a fake `L0`.
+        const where = decision.line > 0
+          ? `L${decision.line}`
+          : decision.sourceLine != null ? `源 L${decision.sourceLine}` : "L?";
+        out.push(`    ${where}${id} ${decision.message}${pair}`);
+      }
+    }
+  };
+  section("原样保留的内容", kept);
+  section(dryRun ? "将按默认处理、请复核的决定（真实运行时会写入）" : "已按默认处理、请复核的决定（已写入）", defaults);
   return out.join("\n") + "\n";
 }
 

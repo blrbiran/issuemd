@@ -79,7 +79,8 @@ describe("adopt: cafe layout", () => {
     expect((await run(["adopt", path, "--dry-run", "--report", report])).code).toBe(0);
     const text = readFileSync(report, "utf8");
     expect(text).toContain("open-title-conflict");
-    expect(text).toContain("待决事项");
+    expect(text).toContain("将按默认处理、请复核的决定");
+    expect(text).toContain("原样保留的内容");
   });
 });
 
