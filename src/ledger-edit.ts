@@ -94,6 +94,28 @@ export function insertLines(lines: string[], at: number, added: string[]): strin
   return [...lines.slice(0, at - 1), ...added, ...lines.slice(at - 1)];
 }
 
+/**
+ * Insert a block (a body, an archive) at 1-indexed `at` so that exactly one
+ * blank line separates it from non-blank neighbours. `insertLines` alone left
+ * `### Issue N:` glued to the previous body when that body was the last thing
+ * in 正文 and ended without a blank line (dogfood #48).
+ */
+export function insertBlock(lines: string[], at: number, block: string[]): string[] {
+  let start = 0;
+  let end = block.length;
+  while (start < end && block[start]!.trim() === "") start++;
+  while (end > start && block[end - 1]!.trim() === "") end--;
+  const core = block.slice(start, end);
+  const before = lines[at - 2];
+  const after = lines[at - 1];
+  const padded = [
+    ...(before !== undefined && before.trim() !== "" ? [""] : []),
+    ...core,
+    ...(after !== undefined && after.trim() !== "" ? [""] : []),
+  ];
+  return insertLines(lines, at, padded);
+}
+
 /** Remove `count` lines starting at 1-indexed `at`. */
 export function removeLines(lines: string[], at: number, count: number): string[] {
   return [...lines.slice(0, at - 1), ...lines.slice(at - 1 + count)];

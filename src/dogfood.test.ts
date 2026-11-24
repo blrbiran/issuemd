@@ -373,3 +373,18 @@ describe("adopt recognises annotated canonical titles (real-ledger run)", () => 
     expect(result.stdout).toContain("正文（按编号） → 正文");
   });
 });
+
+describe("#48 new keeps a blank line before an appended body", () => {
+  const noAppendix = TEMPLATE.replace(/\n## 附录[\s\S]*$/, "\n");
+  test("after a hand-written last body that ends without a blank line", async () => {
+    const path = file(noAppendix.replace(/\n*$/, "\n\n### Issue 1: first\n\n**现象**\n\nx\n").replace(
+      "|---|---|---|---|\n", "|---|---|---|---|\n| 1 | 未决 | P2 | first |\n"));
+    for (const title of ["second", "third"]) {
+      expect((await run(["new", path, "--title", title, "--body-file", body("**现象**\n\ny\n")])).code).toBe(0);
+    }
+    const out = text(path);
+    expect(out).toContain("x\n\n### Issue 2: second");
+    expect(out).toContain("y\n\n### Issue 3: third");
+    expect(out).not.toContain("\n\n\n### Issue");
+  });
+});

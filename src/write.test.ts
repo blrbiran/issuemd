@@ -66,3 +66,36 @@ describe("unifiedDiff", () => {
     expect(diff.endsWith("\n")).toBe(true);
   });
 });
+
+describe("unifiedDiff: separate hunks for distant edits (dogfood #26)", () => {
+  const big = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`);
+
+  test("two distant one-line edits are two small hunks", () => {
+    const next = [...big];
+    next[9] = "changed 10";
+    next.splice(150, 1); // delete line 151
+    const diff = unifiedDiff(big, next, "f.md");
+    expect(diff.match(/^@@ /gm)?.length).toBe(2);
+    const changed = diff.split("\n").filter((line) => /^[-+](?![-+]{2} )/.test(line));
+    expect(changed).toEqual(["-line 10", "+changed 10", "-line 151"]);
+    expect(diff.split("\n").length).toBeLessThan(30);
+  });
+
+  test("a moved row (close: index → closed table) prints only the moved line", () => {
+    const next = [...big];
+    const [row] = next.splice(20, 1);
+    next.splice(120, 0, row!);
+    const diff = unifiedDiff(big, next, "f.md");
+    const changed = diff.split("\n").filter((line) => /^[-+](?![-+]{2} )/.test(line));
+    expect(changed).toEqual(["-line 21", "+line 21"]);
+  });
+
+  test("hunk headers are valid line ranges", () => {
+    const next = [...big];
+    next.splice(0, 0, "new first");
+    next.push("new last");
+    const diff = unifiedDiff(big, next, "f.md");
+    expect(diff).toContain("@@ -1,3 +1,4 @@");
+    expect(diff).toContain("@@ -198,3 +199,4 @@");
+  });
+});

@@ -3,17 +3,94 @@
  *
  * Originally lilmd's line-level mutation helpers (attribution in
  * THIRD_PARTY_NOTICES.md); the generic Markdown verbs were removed with the
- * ledger-only surface (ADR 0006), leaving only this diff renderer.
+ * ledger-only surface (ADR 0006), leaving only this diff renderer. The
+ * single-hunk prefix/suffix scan it started from was replaced: every ledger
+ * write except `status` touches two or three distant regions (索引, 已关闭,
+ * 正文, 附录), and one hunk spanning all of them printed thousands of
+ * unchanged lines as -/+ pairs (dogfood #26).
  */
 
+type Op = { kind: " " | "-" | "+"; text: string };
+
 /**
- * Produce a single-hunk unified diff for two versions of a file.
- * Returns "" if old and next are identical.
- *
- * Uses a simple prefix/suffix scan to find the changed region; works
- * correctly for all targeted single-region edits (`new`, `close`, `rename`, …).
- * An edit in two distant places (`close --keep-body` touching 正文 and 附录)
- * yields one hunk that also prints the unchanged lines in between.
+ * Shortest edit script between two line arrays (Myers, O((N+M)·D)). Common
+ * prefix and suffix are trimmed first, so a ledger write with a handful of
+ * changed lines costs almost nothing even on a multi-thousand-line file.
+ */
+function editScript(old: string[], next: string[]): Op[] {
+  let head = 0;
+  while (head < old.length && head < next.length && old[head] === next[head]) head++;
+  let tail = 0;
+  while (
+    tail < old.length - head && tail < next.length - head &&
+    old[old.length - 1 - tail] === next[next.length - 1 - tail]
+  ) tail++;
+  const a = old.slice(head, old.length - tail);
+  const b = next.slice(head, next.length - tail);
+
+  const n = a.length;
+  const m = b.length;
+  const max = n + m;
+  const offset = max + 1;
+  const v = new Int32Array(2 * max + 3);
+  const trace: Int32Array[] = [];
+  let found = n === 0 && m === 0;
+  for (let d = 0; d <= max && !found; d++) {
+    trace.push(v.slice());
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[offset + k - 1]! < v[offset + k + 1]!)
+        ? v[offset + k + 1]!
+        : v[offset + k - 1]! + 1;
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) {
+        x++;
+        y++;
+      }
+      v[offset + k] = x;
+      if (x >= n && y >= m) {
+        found = true;
+        break;
+      }
+    }
+  }
+  if (!found) throw new Error("diff: no edit script"); // unreachable
+
+  // Walk the trace backwards to recover the script.
+  const middle: Op[] = [];
+  let x = n;
+  let y = m;
+  for (let d = trace.length - 1; d >= 0 && (x > 0 || y > 0); d--) {
+    const vd = trace[d]!;
+    const k = x - y;
+    const down = k === -d || (k !== d && vd[offset + k - 1]! < vd[offset + k + 1]!);
+    const prevK = down ? k + 1 : k - 1;
+    const prevX = vd[offset + prevK]!;
+    const prevY = prevX - prevK;
+    while (x > prevX && y > prevY) {
+      middle.push({ kind: " ", text: a[--x]! });
+      y--;
+    }
+    if (d === 0) break;
+    if (down) middle.push({ kind: "+", text: b[--y]! });
+    else middle.push({ kind: "-", text: a[--x]! });
+  }
+  while (x > 0 && y > 0) {
+    middle.push({ kind: " ", text: a[--x]! });
+    y--;
+  }
+  middle.reverse();
+
+  return [
+    ...old.slice(0, head).map((text): Op => ({ kind: " ", text })),
+    ...middle,
+    ...old.slice(old.length - tail).map((text): Op => ({ kind: " ", text })),
+  ];
+}
+
+/**
+ * A unified diff of two versions of a file, one hunk per changed region
+ * with three lines of context (regions closer than that are merged, as in
+ * `diff -u`). Returns "" when the versions are identical.
  */
 export function unifiedDiff(
   old: string[],
@@ -21,45 +98,48 @@ export function unifiedDiff(
   path: string,
 ): string {
   const CONTEXT = 3;
+  const ops = editScript(old, next);
+  if (ops.every((op) => op.kind === " ")) return "";
 
-  // Find first differing index.
-  let lo = 0;
-  while (lo < old.length && lo < next.length && old[lo] === next[lo]) lo++;
-
-  if (lo === old.length && lo === next.length) return ""; // identical
-
-  // Find last differing index from the end.
-  let oldHi = old.length - 1;
-  let newHi = next.length - 1;
-  while (oldHi >= lo && newHi >= lo && old[oldHi] === next[newHi]) {
-    oldHi--;
-    newHi--;
+  // Line numbers (0-based) of each op on both sides.
+  const oldAt: number[] = [];
+  const newAt: number[] = [];
+  let o = 0;
+  let nn = 0;
+  for (const op of ops) {
+    oldAt.push(o);
+    newAt.push(nn);
+    if (op.kind !== "+") o++;
+    if (op.kind !== "-") nn++;
   }
 
-  const ctxLo = Math.max(0, lo - CONTEXT);
-  const ctxOldHi = Math.min(old.length - 1, oldHi + CONTEXT);
-
-  const ctxBefore = lo - ctxLo;
-  const removedCount = oldHi - lo + 1;
-  const addedCount = newHi - lo + 1;
-  const ctxAfter = ctxOldHi - oldHi;
-
-  const oldTotal = ctxBefore + removedCount + ctxAfter;
-  const newTotal = ctxBefore + addedCount + ctxAfter;
+  // Group changed ops into hunks: [first, last] op indices incl. context.
+  const hunks: [number, number][] = [];
+  for (let i = 0; i < ops.length; i++) {
+    if (ops[i]!.kind === " ") continue;
+    let j = i;
+    while (j + 1 < ops.length && ops[j + 1]!.kind !== " ") j++;
+    const start = Math.max(0, i - CONTEXT);
+    const end = Math.min(ops.length - 1, j + CONTEXT);
+    const last = hunks.at(-1);
+    if (last && start <= last[1] + 1) last[1] = end;
+    else hunks.push([start, end]);
+    i = j;
+  }
 
   // Absolute paths already start with `/`; a naive `a/` prefix would print
   // a confusing `a//tmp/...`.
   const label = (side: string) => (path.startsWith("/") ? `${side}${path}` : `${side}/${path}`);
-  const lines: string[] = [
-    `--- ${label("a")}`,
-    `+++ ${label("b")}`,
-    `@@ -${ctxLo + 1},${oldTotal} +${ctxLo + 1},${newTotal} @@`,
-  ];
-
-  for (let i = ctxLo; i < lo; i++) lines.push(` ${old[i]}`);
-  for (let i = lo; i <= oldHi; i++) lines.push(`-${old[i]!}`);
-  for (let i = lo; i <= newHi; i++) lines.push(`+${next[i]!}`);
-  for (let i = oldHi + 1; i <= ctxOldHi; i++) lines.push(` ${old[i]!}`);
-
-  return lines.join("\n") + "\n";
+  const out = [`--- ${label("a")}`, `+++ ${label("b")}`];
+  for (const [start, end] of hunks) {
+    const slice = ops.slice(start, end + 1);
+    const oldCount = slice.filter((op) => op.kind !== "+").length;
+    const newCount = slice.filter((op) => op.kind !== "-").length;
+    // `diff -u` convention: an empty side names the line *before* the hunk.
+    const oldStart = oldCount === 0 ? oldAt[start]! : oldAt[start]! + 1;
+    const newStart = newCount === 0 ? newAt[start]! : newAt[start]! + 1;
+    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
+    for (const op of slice) out.push(`${op.kind}${op.text}`);
+  }
+  return out.join("\n") + "\n";
 }

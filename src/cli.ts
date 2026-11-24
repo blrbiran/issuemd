@@ -35,6 +35,7 @@ import {
   extractCriteria,
   formatRow,
   guideBlockLines,
+  insertBlock,
   insertLines,
   markerPair,
   removeLines,
@@ -713,7 +714,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   if (!shiftedBody) return err("issuemd new: the 正文 section is missing\n", 3);
   const span = parseId(idText);
   if (!span) return err(`issuemd new: '${idText}' is not a valid issue id\n`, 2);
-  lines = insertLines(lines, bodyInsertAt(afterIndex, span, shiftedBody.line_end), body);
+  lines = insertBlock(lines, bodyInsertAt(afterIndex, span, shiftedBody.line_end), body);
 
   const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
   const warnings: string[] = [];
@@ -944,7 +945,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   const bodyLines = restored && restored.length > 0
     ? [`### Issue ${spanText(found.span)}: ${found.row.summary}`, "", ...restored, ""]
     : bodySkeleton(spanText(found.span), found.row.summary, criteria);
-  lines = insertLines(lines, bodyAt, bodyLines);
+  lines = insertBlock(lines, bodyAt, bodyLines);
 
   return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
