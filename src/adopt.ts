@@ -23,7 +23,7 @@ import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
 import { isTableSection, parseLedger, splitCells } from "./ledger.js";
 import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines } from "./ledger-edit.js";
-import { compareIds, parseId, parseIds } from "./issue-id.js";
+import { compareIds, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
 
 
@@ -749,45 +749,84 @@ export function adopt(src: string): AdoptResult {
   // Full ids, not the numeric part: `2` must precede `2a` (E105).
   const sortedOpen = [...open].sort((a, b) => compareIds(sortKey(a), sortKey(b)));
   const usedBodyIds = new Set<string>();
-  const bodyOut: string[] = [];
-  for (const row of sortedOpen) {
-    // An open *range* has no single id to hang a `### Issue N:` heading on;
-    // `### Issue 7–20` would be an invalid heading (E109). It becomes a
-    // decision instead of a body.
-    if (isMultiId(row)) {
+  // One body per id, sorted by full id across all rows (E105): an open row
+  // `2, 30` needs bodies #2 and #30 (E102), on either side of #10's.
+  const bodyEntries: { span: IdSpan; lines: string[] }[] = [];
+  const MAX_EXPANDED = 1000;
+  for (const row of open) {
+    const spans = parseIds(row.idText) ?? [];
+    const ids: IdSpan[] = [];
+    for (const span of spans) {
+      for (let n = span.start; n <= span.end && ids.length <= MAX_EXPANDED; n++) {
+        ids.push({ start: n, end: n, suffix: span.start === span.end ? span.suffix : "" });
+      }
+    }
+    if (ids.length === 0 || ids.length > MAX_EXPANDED) {
       decisions.push({
         kind: "id-range",
         id: row.idText,
         line: row.line,
-        message: `索引区间/多号行 ${row.idText} 无法生成正文标题；已留在索引，用 issuemd split 拆行后会补正文骨架`,
+        message: `开放的区间/多号行 ${row.idText} 超过 ${MAX_EXPANDED} 个编号，没有逐号生成正文；请先人工拆分或关闭`,
       });
       continue;
     }
-    const body = bodyById.get(fullId(row));
-    if (body) usedBodyIds.add(body.idText);
-    bodyOut.push(`### Issue ${row.idText}: ${row.summary}`, "");
-    // `body.line` is the heading itself; the slice starts one line later.
-    const content = body
-      ? trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, row.idText, body.line))
-      : ["**现象**：", "", "**根因**：", "", "**期望**：", "", `**验收判据**：${row.criteria}`];
-    // The index has no criteria column. Criteria (or extra columns) an open
-    // row carried in the old table go into its body instead of vanishing.
-    // Extra columns are never 验收判据: a later `close` would promote them.
-    const leftover = [
-      body && row.criteria !== "" && !content.some((line) => line.includes(row.criteria)) ? row.criteria : "",
-      row.extras,
-    ].filter((value) => value !== "").join("；");
-    if (leftover !== "") {
-      content.push("", `**原表格判据**：${leftover}`);
+    const multi = isMultiId(row);
+    const skeletonIds: string[] = [];
+    let leftoverReported = false;
+    for (const span of ids) {
+      const id = `${span.start}${span.suffix}`;
+      const body = bodyById.get(id);
+      if (body) usedBodyIds.add(body.idText);
+      else if (multi) skeletonIds.push(id);
+      if (multi && body && fold(body.title) !== fold(row.summary)) {
+        decisions.push({
+          kind: "open-title-conflict",
+          id,
+          line: body.line,
+          message: `多号行 ${row.idText} 的每条正文标题必须等于行摘要；#${id} 的正文标题已改为行摘要，原标题留在正文开头的 **原正文标题**`,
+          table: row.summary,
+          body: body.title,
+        });
+      }
+      const out = [`### Issue ${id}: ${row.summary}`, ""];
+      // The heading must carry the row summary; the old title stays as text.
+      const retitled = multi && body != null && fold(body.title) !== fold(row.summary);
+      if (retitled) out.push(`**原正文标题**：${body!.title}`, "");
+      // `body.line` is the heading itself; the slice starts one line later.
+      const content = body
+        ? trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, id, body.line))
+        : ["**现象**：", "", "**根因**：", "", "**期望**：", "", `**验收判据**：${row.criteria}`];
+      // The index has no criteria column. Criteria (or extra columns) an open
+      // row carried in the old table go into its body instead of vanishing.
+      // Extra columns are never 验收判据: a later `close` would promote them.
+      const leftover = [
+        body && row.criteria !== "" && !content.some((line) => line.includes(row.criteria)) ? row.criteria : "",
+        row.extras,
+      ].filter((value) => value !== "").join("；");
+      if (leftover !== "") {
+        content.push("", `**原表格判据**：${leftover}`);
+        if (!leftoverReported) {
+          decisions.push({
+            kind: "extra-columns",
+            id: row.idText,
+            line: row.line,
+            message: "开放项的表格里带有判据/附加列；已追加到正文末尾的 **原表格判据**，请人工合并",
+          });
+          leftoverReported = true;
+        }
+      }
+      bodyEntries.push({ span, lines: [...out, ...content, ""] });
+    }
+    if (skeletonIds.length > 0) {
       decisions.push({
-        kind: "extra-columns",
+        kind: "missing-body",
         id: row.idText,
         line: row.line,
-        message: "开放项的表格里带有判据/附加列；已追加到正文末尾的 **原表格判据**，请人工合并",
+        message: `多号行里 ${skeletonIds.map((id) => `#${id}`).join("、")} 没有正文块；已各补一个只有标签的骨架`,
       });
     }
-    bodyOut.push(...content, "");
   }
+  const bodyOut = bodyEntries.sort((a, b) => compareIds(a.span, b.span)).flatMap((entry) => entry.lines);
 
   const archived = closed.filter((row) => bodyById.has(fullId(row)));
   // Anything adopt does not recognize is kept verbatim in 附录 rather than

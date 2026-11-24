@@ -1050,3 +1050,39 @@ describe("probe: adopt never turns extra columns into criteria", () => {
     expect(text(path)).toContain("| 1 | 已修 |  | 一 | 修好了；负责人：bob |");
   });
 });
+
+describe("probe: adopt gives each id of an open multi-id row its body", () => {
+  test("existing bodies attach to the row; check passes; split works afterwards", async () => {
+    const path = file("# T\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 2, 30 | 未决 | 合并两条 |\n| 10 | 未决 | 十 |\n\n## 正文\n\n### Issue 2: 合并两条\n\na\n\n### Issue 30: 合并两条\n\nb\n");
+    const result = await run(["adopt", path]);
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    const out = text(path);
+    expect(out).toContain("| 2, 30 | 未决 |  | 合并两条 |");
+    expect(out).not.toContain("orphan-body");
+    const order = [...out.matchAll(/^### Issue (\d+):/gm)].map((m) => m[1]);
+    expect(order).toEqual(["2", "10", "30"]);
+    expect(out).toMatch(/### Issue 2: 合并两条\n\na\n/);
+    expect(out).toMatch(/### Issue 30: 合并两条\n\nb\n/);
+    expect((await run(["check", path])).code).toBe(0);
+    expect((await run(["split", path, "2"])).code).toBe(0);
+  });
+
+  test("ids without a body get skeletons, and the decision says which", async () => {
+    const path = file("# T\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 2, 3 | 未决 | 合并两条 |\n");
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    expect(text(path)).toContain("### Issue 2: 合并两条");
+    expect(text(path)).toContain("### Issue 3: 合并两条");
+    expect(result.stdout).not.toContain("无法生成正文标题");
+    expect((await run(["check", path])).code).toBe(0);
+  });
+});
+
+test("probe: a multi-id body with its own title keeps that title as text", async () => {
+  const path = file("# T\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 2, 3 | 未决 | 合并 |\n\n## 正文\n\n### Issue 3: 另一个标题\n\nb\n");
+  const result = await run(["adopt", path]);
+  expect(result.code).toBe(0);
+  expect(text(path)).toMatch(/### Issue 3: 合并\n\n\*\*原正文标题\*\*：另一个标题\n\nb\n/);
+  expect((await run(["check", path])).code).toBe(0);
+});
