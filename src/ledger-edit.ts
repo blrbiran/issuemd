@@ -17,7 +17,10 @@ import { STATUS_CLASSES } from "./ledger-check.js";
 export function escapeCell(text: string): string {
   // Escape only unescaped pipes: a title that already contains `\|` must not
   // become `\\|`, which would split the cell (E108).
-  return text.replace(/(?<!\\)\|/g, "\\|").replace(/[\r\n]+/g, " ");
+  // A pipe is already escaped only when an *odd* number of backslashes
+  // precede it: `\\|` is a literal backslash followed by a cell break.
+  return text.replace(/(\\*)\|/g, (_, slashes: string) => slashes.length % 2 === 1 ? `${slashes}|` : `${slashes}\\|`)
+    .replace(/[\r\n]+/g, " ");
 }
 
 /**
@@ -43,10 +46,18 @@ function rawCells(line: string): string[] {
   return cells;
 }
 
+/**
+ * Inverse of `escapeCell`, matching how `splitCells` reads a cell: a pipe
+ * after an odd number of backslashes loses one of them; `\\|` keeps both.
+ */
+export function unescapeCell(text: string): string {
+  return text.replace(/(\\+)\|/g, (_, slashes: string) => slashes.length % 2 === 1 ? `${slashes.slice(1)}|` : `${slashes}|`);
+}
+
 /** Unescaped text of data cell `index` (0 = `#`, 1 = `状态`, …). */
 export function cellAt(line: string, index: number): string {
   const raw = rawCells(line)[index + 1];
-  return (raw ?? "").trim().replace(/\\\|/g, "|");
+  return unescapeCell((raw ?? "").trim());
 }
 
 /** Offsets of the unescaped `|` characters in `text`. */

@@ -1295,3 +1295,11 @@ describe("probe: CLI surface (round nine)", () => {
     expect(result.stderr).toContain("snapshot: ");
   });
 });
+
+test("probe: a pipe after an escaped backslash is still escaped in cells", async () => {
+  const path = await withIssue("**验收判据**：x\\\\|y\n");
+  expect((await run(["rename", path, "1", "a \\\\| b"])).code).toBe(0);
+  expect((await run(["check", path])).code).toBe(0);
+  expect((await run(["close", path, "1"])).code).toBe(0);
+  expect((await run(["check", path])).code).toBe(0);
+});

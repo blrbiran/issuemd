@@ -34,6 +34,7 @@ import { checkLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-ch
 import {
   bodySkeleton,
   extractCriteria,
+  unescapeCell,
   formatRow,
   guideBlockLines,
   archiveHeading,
@@ -886,7 +887,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
     return err(`usage: ${COMMANDS.new.usage}\n`, 2);
   }
   if (v.title == null || v.title.trim() === "") return err("issuemd new: --title is required\n", 2);
-  const title = v.title.trim().replace(/\s+/g, " ").replace(/\\\|/g, "|");
+  const title = unescapeCell(v.title.trim().replace(/\s+/g, " "));
   const badTitle = titleEndsWithHash(title);
   if (badTitle) return err(`issuemd new: ${badTitle}\n`, 2);
   const status = v.status ?? "未决";
@@ -1295,7 +1296,7 @@ function cmdRename(rest: string[], v: Values): CliResult {
   if (file == null || idText == null || title == null || rest.length !== 3) {
     return err(`usage: ${COMMANDS.rename.usage}\n`, 2);
   }
-  const next = title.trim().replace(/\s+/g, " ").replace(/\\\|/g, "|");
+  const next = unescapeCell(title.trim().replace(/\s+/g, " "));
   if (next === "") return err("issuemd rename: title must not be empty\n", 2);
   const badTitle = titleEndsWithHash(next);
   if (badTitle) return err(`issuemd rename: ${badTitle}\n`, 2);
