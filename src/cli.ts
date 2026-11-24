@@ -485,32 +485,41 @@ function cmdShow(rest: string[], v: Values): CliResult {
     }
     return noMatch(`(no such issue: ${id})\n`);
   }
+  // The same id may also sit in a row show cannot read (an old 待处理 table,
+  // E124): this view is then only one of two conflicting records.
+  const twin = unreadableHolding(ledger, id);
+  const twinNote = twin
+    ? `warning: #${id} also appears in an unreadable table row (L${twin.line}: ${twin.reason}); ` +
+      "this view may be out of date (run 'issuemd check')\n"
+    : "";
+  const withNote = (result: CliResult): CliResult =>
+    twinNote === "" ? result : { ...result, stderr: twinNote + result.stderr };
 
   if (v.label != null) {
     const range = view.body ?? { line: view.line, end: view.line };
     const found = findLabel(ledger.lines, range.line, range.end, v.label);
     if (!found) {
       const known = labelsIn(ledger.lines, range.line, range.end);
-      return {
+      return withNote({
         code: 1,
         stdout: `(no label: ${v.label})\n`,
         stderr: known.length ? `labels in #${view.id}: ${known.join(", ")}\n` : "",
-      };
+      });
     }
     if (found.text === "") {
       // An empty label is not a successful read: `close --criteria-from-body`
       // would promote it as an empty cell.
-      return {
+      return withNote({
         code: 1,
         stdout: `(empty label: ${v.label})\n`,
         stderr: `label ${v.label} in #${view.id} exists but is empty (L${found.line})\n`,
-      };
+      });
     }
-    if (v.json) return ok(JSON.stringify({ ...view, paragraph: found.text, snapshot: snapshotOf(loaded.src) }, null, 2));
-    return ok(found.lines.join("\n"));
+    if (v.json) return withNote(ok(JSON.stringify({ ...view, paragraph: found.text, snapshot: snapshotOf(loaded.src) }, null, 2)));
+    return withNote(ok(found.lines.join("\n")));
   }
 
-  if (v.json) return ok(JSON.stringify({ ...view, snapshot: snapshotOf(loaded.src) }, null, 2));
+  if (v.json) return withNote(ok(JSON.stringify({ ...view, snapshot: snapshotOf(loaded.src) }, null, 2)));
 
   const lines = [`#${view.id}  ${view.status}  ${view.priority || "-"}  ${view.summary}`];
   lines.push(`L${view.body?.line ?? view.line}-${view.body?.end ?? view.end}`);
@@ -523,7 +532,7 @@ function cmdShow(rest: string[], v: Values): CliResult {
   } else {
     lines.push("(无正文块)");
   }
-  return ok(lines.join("\n"));
+  return withNote(ok(lines.join("\n")));
 }
 
 /**

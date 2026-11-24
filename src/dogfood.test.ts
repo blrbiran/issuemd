@@ -1138,3 +1138,15 @@ test("probe: adopt moves a body found under the H1 or in a foreign section, it d
   expect(out).toContain("别的笔记");
   expect((await run(["check", path, "--strict"])).code).toBe(0);
 });
+
+test("probe: show warns when the id also sits in an unreadable (E124) row", async () => {
+  const base = file();
+  expect((await run(["new", base, "--title", "第一条"])).code).toBe(0);
+  const path = file(text(base).replace("## 索引", "## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 部分解决 | 第一条（旧） |\n\n## 索引"));
+  for (const extra of [[], ["--json"]]) {
+    const shown = await run(["show", path, "1", ...extra]);
+    expect(shown.code).toBe(0);
+    expect(shown.stderr).toContain("unreadable");
+    expect(shown.stderr).toMatch(/L\d+/);
+  }
+});

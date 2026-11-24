@@ -509,7 +509,7 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 
 退出码：0 成功 / 1 没有这条 issue 或结果为空 / 2 用法或 I/O 错误 / **3 check 发现 error** / **4 文件在读取后被改动（E130），重读后重试**。`issuemd FILE` 不是命令简写，exit 2。
 
-每个命令只接受自己的选项（见 `issuemd <command> --help`）；给了别的命令的选项（`list --title`、`new --json`、`check --closed`）一律 exit 2，不静默忽略。`list --status` / `--priority` 的值不在词表、也不在台账里出现时 exit 2；关闭类状态用在开放表上会提示加 `--closed`。读命令遇到不可读的表行时在 stderr 说明结果不完整，`list --json` 附 `unreadableRows`；`list --json` 每项带 `ids` 与 `count`，顶层带 `rowCount` / `issueCount`（`issueCount` 与 `counts` 一致）。`show --json` 带 `labels`（所有标签块的单行形式）与 `criteria` + `criteriaSource`（`table` 或开放项的 `body`）。读命令的 `--json` 都带 `snapshot`；写命令都接受 `--if-unchanged S`（见 §7）。
+每个命令只接受自己的选项（见 `issuemd <command> --help`）；给了别的命令的选项（`list --title`、`new --json`、`check --closed`）一律 exit 2，不静默忽略。`list --status` / `--priority` 的值不在词表、也不在台账里出现时 exit 2；关闭类状态用在开放表上会提示加 `--closed`。读命令遇到不可读的表行时在 stderr 说明结果不完整，`list --json` 附 `unreadableRows`；`show` 查到的编号若还出现在某条不可读行（如 E124 的旧表）里，照常输出并在 stderr 点名那一行；`list --json` 每项带 `ids` 与 `count`，顶层带 `rowCount` / `issueCount`（`issueCount` 与 `counts` 一致）。`show --json` 带 `labels`（所有标签块的单行形式）与 `criteria` + `criteriaSource`（`table` 或开放项的 `body`）。读命令的 `--json` 都带 `snapshot`；写命令都接受 `--if-unchanged S`（见 §7）。
 
 ### 9.1 不要把这些命令加回来
 
