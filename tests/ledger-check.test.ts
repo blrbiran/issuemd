@@ -239,3 +239,17 @@ describe("third review round", () => {
     expect(check(source).report.errors).toEqual([]);
   });
 });
+
+describe("fourth review round", () => {
+  test("an indented Setext heading that starts a paragraph is still flagged", () => {
+    const source = canonical.replace("**根因**：宽度写死在 CSS 变量。", "说明：\n\n  Indented setext\n  ---");
+    expect(check(source).report.errors).toContainEqual(expect.objectContaining({ code: "E110" }));
+  });
+
+  test("W202 ignores a millisecond timestamp", () => {
+    const source = canonical.replace("### 2026-11-20 复核记录", "### 1732406400000 复核记录");
+    const warnings = check(source).report.warnings.filter((warning) =>
+      (warning as { message?: string }).message?.includes("1732406400000"));
+    expect(warnings).toEqual([]);
+  });
+});

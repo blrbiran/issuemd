@@ -814,3 +814,17 @@ describe("third review round", () => {
     expect((await run(["check", path])).code).not.toBe(2);
   });
 });
+
+describe("fourth review round", () => {
+  test("a title made only of hashes is refused with the explanation", async () => {
+    const path = ledger();
+    for (const title of ["#", "##"]) {
+      const result = await run(["new", path, "--title", title]);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("ends with '#'");
+    }
+    const renamed = await run(["rename", path, "2", "#"]);
+    expect(renamed.code).toBe(2);
+    expect(renamed.stderr).toContain("ends with '#'");
+  });
+});

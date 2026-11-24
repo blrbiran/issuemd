@@ -70,10 +70,14 @@ function checkHeadings(ledger: Ledger) {
     if (!ledger.visible.has(line) || !ledger.visible.has(line - 1) || headingLines.has(line - 1)) continue;
     const text = ledger.lines[line - 2];
     // A Setext underline follows a single-line paragraph on the immediately
-    // preceding line. An indented line is a list continuation (its `---` is a
-    // thematic break), and a blank line, ATX heading, or block starter ends
-    // the paragraph.
-    const paragraph = /^\S/.test(text) &&
+    // preceding line. An indented line only starts a paragraph when the line
+    // above it is blank; otherwise it is a list continuation (its `---` is a
+    // thematic break). A blank line, ATX heading, or block starter ends the
+    // paragraph.
+    const unindented = /^\S/.test(text);
+    const indented = /^ {1,3}\S/.test(text) &&
+      (line <= 2 || (ledger.lines[line - 3] ?? "").trim() === "");
+    const paragraph = (unindented || indented) &&
       !/^ {0,3}(?:[>|<]|[-*+]\s|\d+[.)]\s|(?:-+|=+|\*{3,}|_{3,})\s*$)/.test(text);
     if (paragraph && /^ {0,3}(?:-+|=+)[ \t]*$/.test(ledger.lines[line - 1])) {
       errors.push({ code: "E110", line: line - 1, message: "Setext headings are not allowed in 正文" });
@@ -236,10 +240,11 @@ function checkHashes(ledger: Ledger, file: string, verify: boolean) {
   ledger.lines.forEach((line, index) => {
     if (!ledger.visible.has(index + 1)) return;
     for (const match of line.matchAll(/\b[0-9a-f]{7,40}\b/g)) {
-      // Dates and plain numbers (`20261124`) are not pinned hashes. A short
-      // all-digit run is far more likely to be a number than a commit; a
-      // 12+ digit run, on the other hand, is implausible as anything else.
-      if (!/[a-f]/.test(match[0]) && match[0].length < 12) continue;
+      // Dates, millisecond timestamps and other plain numbers are not pinned
+      // hashes. An all-digit run is only treated as a commit at full SHA-1
+      // length; in between, `20261124` and `1732406400000` are far more
+      // common than an all-numeric short hash.
+      if (!/[a-f]/.test(match[0]) && match[0].length !== 40) continue;
       if (!hashes.has(match[0])) hashes.set(match[0], index + 1);
     }
   });

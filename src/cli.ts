@@ -576,9 +576,15 @@ function statusCategory(status: string): "open" | "closed" | undefined {
  * (E106). Refuse before writing, with a message that says why.
  */
 function titleEndsWithHash(title: string): string | null {
-  if (!/\s#+\s*$/.test(title)) return null;
+  const hashes = /#+\s*$/.exec(title);
+  if (!hashes) return null;
+  const before = title.slice(0, hashes.index);
+  // The heading template inserts `: ` before the title, so a title that is
+  // *only* hashes is also followed by a space in the rendered heading.
+  if (before !== "" && !/\s$/.test(before)) return null; // `C#` is fine
+  const stem = before.trim();
   return "the title ends with '#'; Markdown strips a trailing '#' as a heading's closing marker, " +
-    `so the body title would not match the summary. Rephrase it (e.g. '${title.replace(/\s*#+\s*$/, "")} # (hash)').`;
+    `so the body title would not match the summary. Rephrase it (e.g. '${stem ? `${stem} ` : ""}hash #').`;
 }
 
 /** `--body-file PATH|-` wins over the default skeleton; a bare `-` is stdin. */

@@ -310,3 +310,128 @@ describe("adopt: third review round", () => {
     expect(after(path)).toContain("**Use C#**");
   });
 });
+
+describe("adopt: third review round, part two", () => {
+  function custom(body: string): string {
+    const path = join(dir, `custom2-${counter++}.md`);
+    writeFileSync(path, body);
+    return path;
+  }
+  const after = (path: string) => readFileSync(path, "utf8");
+
+  test("prose in a section whose title only looks like a table section survives", async () => {
+    const path = custom([
+      "# Legacy",
+      "",
+      "## Issues",
+      "",
+      "| # | 状态 | 摘要 |",
+      "|---|---|---|",
+      "| 1 | 未决 | Alpha |",
+      "",
+      "## Open questions",
+      "",
+      "Should the build cache be shared?",
+      "",
+      "## 正文",
+      "",
+      "### Issue 1: Alpha",
+      "",
+      "**现象**：x。",
+    ].join("\n"));
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(after(path)).toContain("Should the build cache be shared?");
+    expect(after(path)).toContain("| 1 | 未决 |  | Alpha |");
+  });
+
+  test("front matter before the H1 and an extra H1 section survive", async () => {
+    const path = custom([
+      "---",
+      "owner: team",
+      "---",
+      "# Legacy",
+      "",
+      "## 索引",
+      "",
+      "| # | 状态 | 摘要 |",
+      "|---|---|---|",
+      "| 1 | 未决 | Alpha |",
+      "",
+      "# Archive",
+      "",
+      "Old notes live here.",
+      "",
+      "## 正文",
+      "",
+      "### Issue 1: Alpha",
+      "",
+      "**现象**：x。",
+    ].join("\n"));
+    expect((await run(["adopt", path])).code).toBe(0);
+    const out = after(path);
+    expect(out).toContain("owner: team");
+    expect(out).toContain("Old notes live here.");
+    expect((await run(["check", path])).code).toBe(0);
+  });
+
+  test("prose and non-Issue headings inside 正文 survive", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8")
+      .replace("## 正文\n\n", "## 正文\n\n介绍段落。\n\n### 背景\n\n背景说明。\n\n"));
+    expect((await run(["adopt", path])).code).toBe(0);
+    const out = after(path);
+    expect(out).toContain("介绍段落。");
+    expect(out).toContain("背景说明。");
+    expect((await run(["check", path])).code).toBe(0);
+  });
+
+  test("an Issue heading inside a preserved section is neutralised, not refused", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace(
+      "## 附录",
+      "## Design notes\n\n### Issue 9: example in notes\n\nSome example.\n\n## 附录",
+    ));
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    const out = after(path);
+    expect(out).toContain("\\### Issue 9: example in notes");
+    // The example body is copied exactly once.
+    expect(out.match(/Some example\./g)?.length).toBe(1);
+    expect((await run(["check", path])).code).toBe(0);
+  });
+
+  test("preserved sections come after the archived bodies, so they cannot swallow them", async () => {
+    const path = copy("cafe-shaped.md");
+    expect((await run(["adopt", path])).code).toBe(0);
+    const out = after(path);
+    expect(out.indexOf("### #4 ")).toBeLessThan(out.indexOf("## 复核记录"));
+  });
+
+  test("orphan-body and preamble decisions point at real output lines", async () => {
+    const path = custom([
+      "Intro paragraph.",
+      "# Legacy",
+      "",
+      "## 索引",
+      "",
+      "| # | 状态 | 摘要 |",
+      "|---|---|---|",
+      "| 1 | 未决 | Alpha |",
+      "",
+      "## 正文",
+      "",
+      "### Issue 1: Alpha",
+      "",
+      "**现象**：x。",
+      "",
+      "### Issue 40: orphan",
+      "",
+      "Orphan text.",
+    ].join("\n"));
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toMatch(/L0 #40/);
+    expect(result.stdout).not.toMatch(/L0 标题/);
+    expect(result.stdout).toMatch(/L\d+ #40/);
+  });
+});

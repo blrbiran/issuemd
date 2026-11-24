@@ -284,6 +284,21 @@ function dropStatusLabels(
   return kept;
 }
 
+/**
+ * Preserved text lands in 附录. `### Issue N:` there would be E123, and an
+ * extra H1 breaks the single-H1 rule (E112); escape the former and demote the
+ * latter so the text renders literally without losing its wording.
+ */
+function neutralizePreserved(content: string[]): string[] {
+  const fenced = fencedLines(content);
+  return content.map((line, index) => {
+    if (fenced[index]) return line;
+    return line
+      .replace(/^(#{1,6})([ \t]+Issue\b)/, "\\$1$2")
+      .replace(/^#([ \t])/, "##$1");
+  });
+}
+
 /** `#### 现象` inside a body becomes `**现象**`; H3 is the issue heading. */
 function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
   let count = 0;
@@ -599,40 +614,95 @@ export function adopt(src: string): AdoptResult {
   }
 
   const archived = closed.filter((row) => bodyById.has(fullId(row)));
+  // Anything adopt does not recognize is kept verbatim in 附录 rather than
+  // dropped: the tool may decline to decide, but it must not lose text.
+  // A section only counts as "converted" when it actually supplied rows — an
+  // H2 called `Open questions` is prose, not a table, despite the word.
+  const rowSections = new Set(rows.map((row) => row.section));
+  const preservedLines = new Set<number>();
+  const foreignOut: string[] = [];
+  const keep = (heading: string | undefined, content: string[], line: number, message: string) => {
+    const body = neutralizePreserved(content);
+    if (heading) foreignOut.push(...neutralizePreserved([heading]), "");
+    foreignOut.push(...body, "");
+    decisions.push(
+      heading
+        ? { kind: "foreign-section", line, anchor: heading, message }
+        : { kind: "foreign-section", line, anchor: body[0], message },
+    );
+  };
+  // A foreign H1's subtree contains the canonical H2s; copying them would
+  // duplicate 正文 or a converted table. Carve those out of the copy.
+  const excludedSections = sections.filter(
+    (section) => section.level === 2 &&
+      (KNOWN_SECTION.test(section.title) ||
+        (isTableSection(section.title) && rowSections.has(section.title))),
+  );
+  const excluded = (line: number) =>
+    excludedSections.some((section) => line >= section.line_start && line <= section.line_end);
+  let preservedSections = 0;
+  for (const section of sections) {
+    if (section.level !== 1 && section.level !== 2) continue;
+    if (section.line_start === h1?.line_start) continue; // the H1 is regenerated
+    if (section.level === 2 && KNOWN_SECTION.test(section.title)) continue;
+    if (section.level === 2 && isTableSection(section.title) && rowSections.has(section.title)) continue;
+    const heading = lines[section.line_start - 1]!;
+    const content: string[] = [];
+    for (let line = section.line_start + 1; line <= section.line_end; line++) {
+      if (excluded(line)) continue;
+      content.push(lines[line - 1]!);
+      preservedLines.add(line);
+    }
+    keep(heading, trimBlankEdges(content), section.line_start,
+      `未识别的小节「${section.title}」；原样移入附录`);
+    preservedSections++;
+  }
+  // Front matter and prose that sits directly under the H1 are not part of
+  // any section, so the loop above never sees them.
+  const firstTop = sections.find((section) => section.level <= 2);
+  const preambleEnd = firstTop ? firstTop.line_start - 1 : lines.length;
+  const preamble = trimBlankEdges(lines.slice(0, preambleEnd))
+    .filter((line) => !/^>\s*(?:唯一台账|读法：)/.test(line));
+  if (preamble.length > 0) {
+    foreignOut.push(...preamble, "");
+    decisions.push({
+      kind: "preamble",
+      line: 1,
+      anchor: preamble[0],
+      message: "标题之前或与标题并列的说明文字；原样移入附录",
+    });
+  }
+  // Prose directly inside 正文 (before/between issue bodies) and H3s that are
+  // not `Issue N:` would otherwise vanish with the rebuilt 正文 section.
+  if (bodySection) {
+    const h3 = sections.filter(
+      (section) => section.level === 3 && section.line_start > bodySection.line_start &&
+        section.line_start <= bodySection.line_end,
+    );
+    const claimed = new Set<number>();
+    for (const section of h3) {
+      for (let line = section.line_start; line <= section.line_end; line++) claimed.add(line);
+    }
+    for (const section of h3) {
+      if (/^Issue\s/.test(section.title)) continue;
+      const heading = lines[section.line_start - 1]!;
+      keep(heading, trimBlankEdges(lines.slice(section.line_start, section.line_end)), section.line_start,
+        `正文里的非 Issue 小节「${section.title}」；原样移入附录`);
+      for (let line = section.line_start + 1; line <= section.line_end; line++) preservedLines.add(line);
+    }
+    const prose: string[] = [];
+    for (let line = bodySection.line_start + 1; line <= bodySection.line_end; line++) {
+      if (!claimed.has(line)) prose.push(lines[line - 1]!);
+    }
+    const proseContent = trimBlankEdges(prose);
+    if (proseContent.some((line) => line.trim() !== "")) {
+      keep(undefined, proseContent, bodySection.line_start, "正文里不属于任何 Issue 的段落；原样移入附录");
+    }
+  }
   const appendixOut: string[] = [];
   if (appendix) {
     const existing = trimBlankEdges(lines.slice(appendix.line_start, appendix.line_end));
     if (existing.length > 0) appendixOut.push(...existing, "");
-  }
-  // Anything adopt does not recognize is kept verbatim in 附录 rather than
-  // dropped: the tool may decline to decide, but it must not lose text.
-  let preservedSections = 0;
-  for (const section of sections) {
-    if (section.level !== 2 || KNOWN_SECTION.test(section.title)) continue;
-    if (isTableSection(section.title)) continue;
-    const heading = lines[section.line_start - 1]!;
-    const content = trimBlankEdges(lines.slice(section.line_start, section.line_end));
-    appendixOut.push(heading, "", ...content, "");
-    decisions.push({
-      kind: "foreign-section",
-      line: section.line_start,
-      anchor: heading,
-      message: `未识别的顶层小节「${section.title}」；原样移入附录`,
-    });
-    preservedSections++;
-  }
-  const firstH2 = sections.find((section) => section.level === 2);
-  const preambleStart = h1?.line_start ?? 0;
-  const preambleEnd = firstH2 ? firstH2.line_start - 1 : lines.length;
-  const preamble = trimBlankEdges(lines.slice(preambleStart, preambleEnd))
-    .filter((line) => !/^>\s*(?:唯一台账|读法：)/.test(line));
-  if (preamble.length > 0) {
-    appendixOut.push(...preamble, "");
-    decisions.push({
-      kind: "preamble",
-      line: Math.max(1, preambleStart + 1),
-      message: "标题与第一个小节之间的说明文字；原样移入附录",
-    });
   }
   for (const row of archived) {
     const body = bodyById.get(fullId(row))!;
@@ -641,6 +711,11 @@ export function adopt(src: string): AdoptResult {
     const content = trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, row.idText, body.line));
     appendixOut.push(...(content.length ? content : ["（空）"]), "");
   }
+  // A body that lives inside preserved text is already copied with it; do not
+  // archive a second copy.
+  for (const body of bodies) {
+    if (preservedLines.has(body.line)) usedBodyIds.add(body.idText);
+  }
   const orphans = bodies.filter((body) => !usedBodyIds.has(body.idText));
   for (const body of orphans) {
     appendixOut.push(`### #${body.idText} ${body.title}（adopt 保留的孤立正文）`, "");
@@ -648,10 +723,14 @@ export function adopt(src: string): AdoptResult {
     appendixOut.push(...(content.length ? content : ["（空）"]), "");
     decisions.push({
       kind: "orphan-body",
+      id: body.idText,
       line: body.line,
       message: `正文块 #${body.idText} 在表格里没有对应行（或多号行无法挂载）；已原样移入附录`,
     });
   }
+  // Foreign sections go last: an H2 would otherwise end 附录 and swallow the
+  // archived bodies, preamble and orphan text that follow it.
+  appendixOut.push(...foreignOut);
   if (archived.length > 0) changes.push(`已关闭项的正文移入附录：${archived.length} 条`);
   if (preservedSections > 0) changes.push(`未识别的小节原样移入附录：${preservedSections} 处`);
   changes.push("重写「怎么用」与「状态口径」受控块");
