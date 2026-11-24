@@ -23,7 +23,7 @@ import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
 import { splitCells } from "./ledger.js";
 import { fencedLines, formatRow, guideBlockLines, statusBlockLines } from "./ledger-edit.js";
-import { parseIds } from "./issue-id.js";
+import { compareIds, parseId, parseIds } from "./issue-id.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
 
 
@@ -37,13 +37,19 @@ export type DecisionKind =
   | "id-range"
   | "unknown-group"
   | "duplicate-row"
-  | "missing-body";
+  | "missing-body"
+  | "foreign-section"
+  | "preamble"
+  | "orphan-body"
+  | "status-in-body";
 
 export type Decision = {
   kind: DecisionKind;
   id?: string;
   line: number;
   message: string;
+  /** Exact text of the output line this decision belongs to, when it has no id. */
+  anchor?: string;
   table?: string;
   body?: string;
 };
@@ -73,6 +79,15 @@ type Row = {
 const STATUS_WORDS = new Set(Object.keys(STATUS_CLASSES));
 /** A `## 已关闭`-style section, whatever it is exactly called. */
 const isClosedSection = (title: string) => /已关闭|closed/i.test(title);
+/**
+ * H2 titles whose tables are ledger data. Verified against the two real
+ * layouts: cafe uses `## 状态总览`, orca uses `## 待处理` / `## 已关闭`.
+ * A header-less block anywhere else (a body, 附录, an intro section) is prose
+ * that happens to use pipes, never a row.
+ */
+const isTableSection = (title: string) => /索引|总览|待处理|待办|已关闭|closed|open|issues?/i.test(title);
+/** Sections adopt regenerates itself; every other H2 is preserved verbatim. */
+const KNOWN_SECTION = /^(怎么用|状态口径|索引|已关闭|正文|附录)$/;
 const fold = (text: string) => text.trim().replace(/\s+/g, " ");
 const PROGRESS = /已落地|仍缺|仍无|仍逐|仍走/;
 const isSeparator = (cells: string[]) => cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
@@ -129,6 +144,13 @@ function pipeBlocks(lines: string[], sections: Section[]): Block[] {
     const mapping = mappingFor(header, width);
     if (mapping) {
       const h2 = sections.filter((s) => s.level === 2 && s.line_start < start).at(-1);
+      // Width-only mappings are a guess; only trust them inside a section that
+      // is known to hold ledger tables. A 3-column table inside an issue body
+      // or 附录 is content, and turning it into rows invents issues.
+      if (!header && !isTableSection(h2?.title ?? "")) {
+        block = undefined;
+        return;
+      }
       const h3 = sections
         .filter((s) => s.level === 3 && s.line_start < start && s.line_start > (h2?.line_start ?? 0))
         .at(-1);
@@ -226,13 +248,51 @@ function criteriaOf(bodyLines: string[]): string | undefined {
   return text || undefined;
 }
 
+/** Drop leading and trailing blank lines; internal blank lines are content. */
+function trimBlankEdges(lines: string[]): string[] {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && lines[start]!.trim() === "") start++;
+  while (end > start && lines[end - 1]!.trim() === "") end--;
+  return lines.slice(start, end);
+}
+
+/** A `**状态**：…` line belongs in the table, never in a body (E107). */
+function dropStatusLabels(
+  content: string[],
+  decisions: Decision[],
+  id: string,
+  line: number,
+): string[] {
+  const fenced = fencedLines(content);
+  let dropped = 0;
+  const kept = content.filter((text, index) => {
+    if (!fenced[index] && /^\s*\*\*状态\*\*\s*[:：]/.test(text)) {
+      dropped++;
+      return false;
+    }
+    return true;
+  });
+  if (dropped > 0) {
+    decisions.push({
+      kind: "status-in-body",
+      id,
+      line,
+      message: `正文里的 **状态** 标签已删除（状态只存在于表格）`,
+    });
+  }
+  return kept;
+}
+
 /** `#### 现象` inside a body becomes `**现象**`; H3 is the issue heading. */
 function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
   let count = 0;
   const fenced = fencedLines(lines);
   const out = lines.map((line, index) => {
     if (fenced[index]) return line;
-    const match = /^(#{4,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
+    // Closing `#`s are stripped only when whitespace separates them from the
+    // text, as in CommonMark — `#### Use C#` keeps its `#`.
+    const match = /^(#{4,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
     if (!match) return line;
     count++;
     return `**${match[2]}**`;
@@ -356,6 +416,17 @@ export function adopt(src: string): AdoptResult {
         line: group[0]!.line,
         message: `状态「${declared}」不在词表里；按 ${category} 处理，需人工确认`,
       });
+    } else if (status == null) {
+      // A row with no status column and no status-named group is the other way
+      // to invent a status by accident: say so instead of writing 已修/未决
+      // silently.
+      const assumed = category === "closed" ? "已修" : "未决";
+      decisions.push({
+        kind: "unknown-status",
+        id: idText,
+        line: group[0]!.line,
+        message: `这一行没有声明状态；暂按「${assumed}」处理，需人工确认`,
+      });
     }
     if (group.length > 1) {
       const declaredStatuses = [...new Set(group.map((row) => row.status).filter((value) => value != null))];
@@ -383,11 +454,15 @@ export function adopt(src: string): AdoptResult {
       // An older ledger may also carry an explicit row for an id inside the
       // range. That is E103 in the canonical format, so name it here rather
       // than letting the final check refuse the whole conversion blind.
-      const [low, high] = idText.split(/[–~-]/).map((part) => Number.parseInt(part, 10));
-      for (const [otherId, otherGroup] of groups) {
-        if (otherId === idText || /[–~-]/.test(otherId)) continue;
-        const n = Number.parseInt(otherId, 10);
-        if (Number.isNaN(n) || low === undefined || high === undefined || n < low || n > high) continue;
+      // Only a single numeric range counts, and only bare ids overlap it:
+      // `8a` is a different issue from `8`, and `3, 7–20` is not low = 3.
+      const idSpans = parseIds(idText);
+      const range = idSpans?.length === 1 && idSpans[0]!.start !== idSpans[0]!.end ? idSpans[0]! : undefined;
+      for (const [otherId, otherGroup] of range ? groups : []) {
+        if (otherId === idText) continue;
+        const other = parseId(otherId);
+        if (!other || other.suffix !== "") continue;
+        if (other.start < range!.start || other.start > range!.end) continue;
         decisions.push({
           kind: "id-range",
           id: otherId,
@@ -422,17 +497,23 @@ export function adopt(src: string): AdoptResult {
   const bodies = bodyHeadings(sections);
   // Keyed by the full id text (`2` vs `2a`), not the numeric part.
   const bodyById = new Map(bodies.map((body) => [body.idText, body]));
+  const isMultiId = (row: Row) => row.ids.length > 1 || /[–~-]/.test(row.idText);
   for (const row of open) {
     const body = bodyById.get(fullId(row));
     if (!body) {
-      decisions.push({
-        kind: "missing-body",
-        id: row.idText,
-        line: row.line,
-        message: "索引有行、没有正文块；已补一个只有标签的骨架",
-      });
+      // A multi-id row never gets a generated body (there is no single id to
+      // hang it on), so claiming a skeleton was added would be a lie.
+      if (!isMultiId(row)) {
+        decisions.push({
+          kind: "missing-body",
+          id: row.idText,
+          line: row.line,
+          message: "索引有行、没有正文块；已补一个只有标签的骨架",
+        });
+      }
       continue;
     }
+    if (isMultiId(row)) continue;
     if (fold(row.summary) !== fold(body.title)) {
       decisions.push({
         kind: "open-title-conflict",
@@ -489,46 +570,90 @@ export function adopt(src: string): AdoptResult {
   }
 
   // ---- assemble ------------------------------------------------------
-  const sortedOpen = [...open].sort((a, b) => a.firstId - b.firstId);
+  const sortKey = (row: Row) => parseId(row.idText) ?? { start: row.firstId, end: row.firstId, suffix: "" };
+  // Full ids, not the numeric part: `2` must precede `2a` (E105).
+  const sortedOpen = [...open].sort((a, b) => compareIds(sortKey(a), sortKey(b)));
+  const usedBodyIds = new Set<string>();
   const bodyOut: string[] = [];
   for (const row of sortedOpen) {
     // An open *range* has no single id to hang a `### Issue N:` heading on;
     // `### Issue 7–20` would be an invalid heading (E109). It becomes a
     // decision instead of a body.
-    if (row.ids.length > 1 || /[–~-]/.test(row.idText)) {
+    if (isMultiId(row)) {
       decisions.push({
         kind: "id-range",
         id: row.idText,
         line: row.line,
-        message: `索引区间行 ${row.idText} 无法生成正文标题；已留在索引，需人工拆行`,
+        message: `索引区间/多号行 ${row.idText} 无法生成正文标题；已留在索引，需人工拆行`,
       });
       continue;
     }
     const body = bodyById.get(fullId(row));
+    if (body) usedBodyIds.add(body.idText);
     bodyOut.push(`### Issue ${row.idText}: ${row.summary}`, "");
     // `body.line` is the heading itself; the slice starts one line later.
-    const slice = body ? lines.slice(body.line, body.end) : [];
-    while (slice.length > 0 && slice[0]!.trim() === "") slice.shift();
-    while (slice.length > 0 && slice.at(-1)!.trim() === "") slice.pop();
-    const content = body ? slice : ["**现象**：", "", "**根因**：", "", "**期望**：", "", "**验收判据**：", ""];
+    const content = body
+      ? trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, row.idText, body.line))
+      : ["**现象**：", "", "**根因**：", "", "**期望**：", "", "**验收判据**：", ""];
     bodyOut.push(...content, "");
   }
 
   const archived = closed.filter((row) => bodyById.has(fullId(row)));
   const appendixOut: string[] = [];
   if (appendix) {
-    const existing = lines.slice(appendix.line_start, appendix.line_end);
-    while (existing.length > 0 && existing[0]!.trim() === "") existing.shift();
-    while (existing.length > 0 && existing.at(-1)!.trim() === "") existing.pop();
+    const existing = trimBlankEdges(lines.slice(appendix.line_start, appendix.line_end));
     if (existing.length > 0) appendixOut.push(...existing, "");
+  }
+  // Anything adopt does not recognize is kept verbatim in 附录 rather than
+  // dropped: the tool may decline to decide, but it must not lose text.
+  let preservedSections = 0;
+  for (const section of sections) {
+    if (section.level !== 2 || KNOWN_SECTION.test(section.title)) continue;
+    if (isTableSection(section.title)) continue;
+    const heading = lines[section.line_start - 1]!;
+    const content = trimBlankEdges(lines.slice(section.line_start, section.line_end));
+    appendixOut.push(heading, "", ...content, "");
+    decisions.push({
+      kind: "foreign-section",
+      line: section.line_start,
+      anchor: heading,
+      message: `未识别的顶层小节「${section.title}」；原样移入附录`,
+    });
+    preservedSections++;
+  }
+  const firstH2 = sections.find((section) => section.level === 2);
+  const preambleStart = h1?.line_start ?? 0;
+  const preambleEnd = firstH2 ? firstH2.line_start - 1 : lines.length;
+  const preamble = trimBlankEdges(lines.slice(preambleStart, preambleEnd))
+    .filter((line) => !/^>\s*(?:唯一台账|读法：)/.test(line));
+  if (preamble.length > 0) {
+    appendixOut.push(...preamble, "");
+    decisions.push({
+      kind: "preamble",
+      line: Math.max(1, preambleStart + 1),
+      message: "标题与第一个小节之间的说明文字；原样移入附录",
+    });
   }
   for (const row of archived) {
     const body = bodyById.get(fullId(row))!;
+    usedBodyIds.add(body.idText);
     appendixOut.push(`### #${row.idText} ${row.summary}（adopt 保留的已关闭正文）`, "");
-    const content = lines.slice(body.line, body.end).filter((line) => line.trim() !== "");
+    const content = trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, row.idText, body.line));
     appendixOut.push(...(content.length ? content : ["（空）"]), "");
   }
+  const orphans = bodies.filter((body) => !usedBodyIds.has(body.idText));
+  for (const body of orphans) {
+    appendixOut.push(`### #${body.idText} ${body.title}（adopt 保留的孤立正文）`, "");
+    const content = trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, body.idText, body.line));
+    appendixOut.push(...(content.length ? content : ["（空）"]), "");
+    decisions.push({
+      kind: "orphan-body",
+      line: body.line,
+      message: `正文块 #${body.idText} 在表格里没有对应行（或多号行无法挂载）；已原样移入附录`,
+    });
+  }
   if (archived.length > 0) changes.push(`已关闭项的正文移入附录：${archived.length} 条`);
+  if (preservedSections > 0) changes.push(`未识别的小节原样移入附录：${preservedSections} 处`);
   changes.push("重写「怎么用」与「状态口径」受控块");
   if (bodySection) changes.push("正文块改为按编号升序");
 
@@ -576,18 +701,26 @@ export function adopt(src: string): AdoptResult {
     const hint = decision.body ?? decision.table ?? "";
     const id = decision.id ?? "";
     const pattern = id === "" ? undefined : new RegExp(`^\\|?\\s*${escapeRegExp(id)}\\s*\\|`);
-    const index = hint !== ""
-      ? out.findIndex((line) => line.includes(hint))
-      : pattern
-        ? out.findIndex((line) => pattern.test(line))
-        : -1;
+    // Prefer the id row: a summary hint can match an unrelated row with a
+    // similar title. The hint is only a fallback for decisions without an id.
+    const byRow = pattern ? out.findIndex((line) => pattern.test(line)) : -1;
+    const byAnchor = decision.anchor != null ? out.findIndex((line) => line === decision.anchor) : -1;
+    const index = byRow >= 0
+      ? byRow
+      : byAnchor >= 0
+        ? byAnchor
+        : hint !== ""
+          ? out.findIndex((line) => line.includes(hint))
+          : -1;
     // A conflict is best reported where the *body* heading now sits, not on
     // the table row that happens to hold the chosen string.
     // `pattern` was built for `| id |` table rows; a body heading is matched
     // by its own `### Issue <id>:` prefix instead.
     const bodyIndex = decision.kind.startsWith("open-title") && id !== ""
       ? out.findIndex((line) => line.startsWith(`### Issue ${id}:`))
-      : -1;
+      : decision.kind === "orphan-body" && id !== ""
+        ? out.findIndex((line) => line.startsWith(`### #${id} `))
+        : -1;
     const line = bodyIndex >= 0 ? bodyIndex : index;
     return line >= 0 ? { ...decision, line: line + 1 } : { ...decision, line: 0 };
   });

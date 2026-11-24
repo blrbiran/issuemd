@@ -187,3 +187,126 @@ describe("adopt: regressions found in review", () => {
     expect(readFileSync(path, "utf8").split("\n")[line - 1]).toContain("### Issue 1:");
   });
 });
+
+describe("adopt: third review round", () => {
+  function custom(body: string): string {
+    const path = join(dir, `custom-${counter++}.md`);
+    writeFileSync(path, body);
+    return path;
+  }
+  const after = (path: string) => readFileSync(path, "utf8");
+
+  test("a pipe table inside an issue body is content, not issue rows", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace(
+      "### Issue 2: 侧栏宽度不可调\n\n**现象**",
+      "### Issue 2: 侧栏宽度不可调\n\n| 步骤 | 输入 | 结果 |\n|---|---|---|\n| 5 | 空行 | 丢失 |\n\n**现象**",
+    ));
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    expect(after(path)).not.toContain("Issue 5");
+    expect(after(path)).toContain("| 5 | 空行 | 丢失 |");
+  });
+
+  test("an unrecognized top-level section survives the conversion", async () => {
+    const path = copy("cafe-shaped.md");
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(after(path)).toContain("复核记录");
+    expect(after(path)).toContain("此节包含独立于条目的复核记录");
+  });
+
+  test("a multi-id row keeps its existing body instead of dropping it", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8")
+      .replace("| 4 | 观察 | P3 | 长列表滚动掉帧 |", "| 4, 24 | 已修 | P3 | 合并行 | 判据 |")
+      .replace("### Issue 4: 长列表滚动掉帧", "### Issue 4: 合并行"));
+    // Move the row from 索引 to 已关闭 so the ledger is valid (an open
+    // multi-id row would need a body per id).
+    const source = readFileSync(path, "utf8");
+    const moved = source.replace("| 4, 24 | 已修 | P3 | 合并行 | 判据 |\n", "")
+      .replace("| 7–20 | 撤回 | | 无记录 | 早期关闭，编号已退休 |",
+        "| 4, 24 | 已修 | P3 | 合并行 | 判据 |\n| 7–20 | 撤回 | | 无记录 | 早期关闭，编号已退休 |");
+    writeFileSync(path, moved);
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("orphan-body");
+    const out = after(path);
+    expect(out).toContain("| 4, 24 |");
+    // The body that used to hang on #4 is preserved, not dropped.
+    expect(out).toContain("### #4 合并行（adopt 保留的孤立正文）");
+    expect(out).toContain("**现象**：2000 行列表滚动时降至 20fps。");
+  });
+
+  test("a row with no status word is assumed, and the assumption is reported", async () => {
+    const path = custom([
+      "# T",
+      "",
+      "## 状态口径",
+      "",
+      "| 状态 | 分类 |",
+      "|---|---|",
+      "| 未决 | open |",
+      "| 已修 | closed |",
+      "",
+      "## 已关闭",
+      "",
+      "| # | 摘要 | 判据 |",
+      "|---|---|---|",
+      "| 30 | 没有状态词 | 判据 |",
+    ].join("\n"));
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("unknown-status x1");
+    expect(result.stdout).toContain("#30");
+    expect(result.stdout).toContain("已修");
+  });
+
+  test("an archived closed body keeps its blank lines and fences", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8")
+      .replace("### Issue 2: 侧栏宽度不可调", "### Issue 1: 登录页闪烁\n\n```\nline1\n\nline3\n```\n\n**验收判据**：见上\n\n### Issue 2: 侧栏宽度不可调"));
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    const out = after(path);
+    expect(out).toContain("```\nline1\n\nline3\n```");
+    expect((await run(["check", path])).code).toBe(0);
+  });
+
+  test("2 and 2a are ordered by suffix, not only by number", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8")
+      .replace("| 2 | 未决 | P1 | 侧栏宽度不可调 |", "| 2a | 未决 | P2 | 后缀在先 |\n| 2 | 未决 | P1 | 侧栏宽度不可调 |")
+      .replace("### Issue 2: 侧栏宽度不可调", "### Issue 2a: 后缀在先\n\n**现象**：后缀。\n\n### Issue 2: 侧栏宽度不可调"));
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    const out = after(path);
+    expect(out.indexOf("### Issue 2:")).toBeLessThan(out.indexOf("### Issue 2a:"));
+  });
+
+  test("a **状态** label in a body is removed and reported", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8")
+      .replace("**现象**：侧栏固定 240px，无法拖拽。", "**状态**：未决\n**现象**：侧栏固定 240px，无法拖拽。"));
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("status-in-body");
+    await run(["adopt", path]);
+    expect(after(path)).not.toContain("**状态**：");
+  });
+
+  test("a suffixed id is not reported as covered by a numeric range", async () => {
+    const path = copy("canonical-clean.md");
+    writeFileSync(path, readFileSync(path, "utf8")
+      .replace("| 4 | 观察 | P3 | 长列表滚动掉帧 |", "| 8a | 观察 | P3 | 后缀八 |\n| 4 | 观察 | P3 | 长列表滚动掉帧 |")
+      .replace("### Issue 4: 长列表滚动掉帧", "### Issue 8a: 后缀八\n\n**现象**：八甲。\n\n### Issue 4: 长列表滚动掉帧"));
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.stdout).not.toContain("8a 已被区间");
+  });
+
+  test("demoting #### keeps a trailing C# intact", async () => {
+    const path = copy("cafe-shaped.md");
+    writeFileSync(path, readFileSync(path, "utf8").replace("#### 现象", "#### Use C#"));
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(after(path)).toContain("**Use C#**");
+  });
+});
