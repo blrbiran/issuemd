@@ -220,3 +220,22 @@ describe("issuemd check", () => {
     expect(report.errors).toEqual([]);
   });
 });
+
+describe("third review round", () => {
+  test("a thematic break after a list continuation is not a Setext heading", () => {
+    const source = canonical.replace("**根因**：宽度写死在 CSS 变量。", "- 项一\n  续行\n---");
+    expect(check(source).report.errors).toEqual([]);
+  });
+
+  test("W202 ignores a plain number, such as a date", () => {
+    const source = canonical.replace("### 2026-11-20 复核记录", "### 20261124 复核记录");
+    const warnings = check(source).report.warnings.filter((warning) =>
+      (warning as { message?: string }).message?.includes("20261124"));
+    expect(warnings).toEqual([]);
+  });
+
+  test("a lone prose line that starts with a pipe is not a table", () => {
+    const source = canonical.replace("**根因**：宽度写死在 CSS 变量。", "| 符号表示绝对值，这是一句普通段落。");
+    expect(check(source).report.errors).toEqual([]);
+  });
+});

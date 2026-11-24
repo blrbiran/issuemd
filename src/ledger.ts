@@ -162,8 +162,17 @@ export function parseLedger(src: string) {
   }
 
   const blocks = pipeBlocks(lines, visible);
+  const tableSections = h2s.filter((section) => section.title === "索引" || section.title === "已关闭");
+  const inTableSection = (line: number) =>
+    tableSections.some((section) => line > section.line_start && line <= section.line_end);
   for (const block of blocks) {
-    if (!block.separator) errors.push({ code: "E122", line: block.line, message: "Pipe block lacks a matching separator row" });
+    // A lone `|`-line outside the two tables is a prose paragraph in GFM, not
+    // a table: `| 符号表示绝对值` starts a sentence. Inside 索引/已关闭 the
+    // separator is mandatory even for a single row, so keep the error there.
+    const loneProse = block.rows.length === 1 && !inTableSection(block.line);
+    if (!block.separator && !loneProse) {
+      errors.push({ code: "E122", line: block.line, message: "Pipe block lacks a matching separator row" });
+    }
     if (block.header) {
       const width = block.rows[0].length;
       block.rows.slice(1).forEach((cells, index) => {

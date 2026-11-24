@@ -69,9 +69,11 @@ function checkHeadings(ledger: Ledger) {
   for (let line = body.line_start + 2; line <= body.line_end; line++) {
     if (!ledger.visible.has(line) || !ledger.visible.has(line - 1) || headingLines.has(line - 1)) continue;
     const text = ledger.lines[line - 2];
-    // A Setext underline follows a paragraph on the immediately preceding
-    // line. A blank line, an ATX heading, or another block starter ends it.
-    const paragraph = /^(?: {0,3}\S)/.test(text) &&
+    // A Setext underline follows a single-line paragraph on the immediately
+    // preceding line. An indented line is a list continuation (its `---` is a
+    // thematic break), and a blank line, ATX heading, or block starter ends
+    // the paragraph.
+    const paragraph = /^\S/.test(text) &&
       !/^ {0,3}(?:[>|<]|[-*+]\s|\d+[.)]\s|(?:-+|=+|\*{3,}|_{3,})\s*$)/.test(text);
     if (paragraph && /^ {0,3}(?:-+|=+)[ \t]*$/.test(ledger.lines[line - 1])) {
       errors.push({ code: "E110", line: line - 1, message: "Setext headings are not allowed in 正文" });
@@ -234,6 +236,10 @@ function checkHashes(ledger: Ledger, file: string, verify: boolean) {
   ledger.lines.forEach((line, index) => {
     if (!ledger.visible.has(index + 1)) return;
     for (const match of line.matchAll(/\b[0-9a-f]{7,40}\b/g)) {
+      // Dates and plain numbers (`20261124`) are not pinned hashes. A short
+      // all-digit run is far more likely to be a number than a commit; a
+      // 12+ digit run, on the other hand, is implausible as anything else.
+      if (!/[a-f]/.test(match[0]) && match[0].length < 12) continue;
       if (!hashes.has(match[0])) hashes.set(match[0], index + 1);
     }
   });
