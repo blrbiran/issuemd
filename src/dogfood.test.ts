@@ -1150,3 +1150,14 @@ test("probe: show warns when the id also sits in an unreadable (E124) row", asyn
     expect(shown.stderr).toMatch(/L\d+/);
   }
 });
+
+describe("probe: write verbs (round nine)", () => {
+  test("reopen keeps an empty priority empty; keep-body round trip stays byte-exact", async () => {
+    const path = file();
+    expect((await run(["new", path, "--title", "no prio", "--priority", ""])).code).toBe(0);
+    const before = text(path);
+    expect((await run(["close", path, "1", "--keep-body"])).code).toBe(0);
+    expect((await run(["reopen", path, "1"])).code).toBe(0);
+    expect(text(path)).toBe(before);
+  });
+});

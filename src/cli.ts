@@ -1097,7 +1097,8 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   if (refused) return refused;
   if (found.table === "open") return err(`issuemd reopen: #${idText} is already open\n`, 2);
 
-  const priority = found.row.priority || "P2";
+  // "" is a legal priority (most open rows in real ledgers have none).
+  const priority = found.row.priority;
   const criteria = found.row.criteria.trim();
   // `close --keep-body` archived the body in 附录 precisely so it could be
   // recovered. Restore it instead of leaving an empty skeleton and a W250
