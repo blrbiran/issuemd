@@ -10,4 +10,4 @@ lilmd 的写入路径有七个会静默改错文件的行为（BOM 吞标题、f
 
 **Consequences**
 
-issuemd 使用 MIT。P0 从 lilmd 的 `b557b02` 复制 Markdown 相关模块。该上游版本未附许可证，公开分发前需核实上游代码的授权。P0 裁掉向量、嵌入、banner 和 pretty 功能，运行时依赖为零。计划发布到 `@blrbiran/issuemd`，命令名仍是 `issuemd`。
+issuemd 使用 MIT。P0 从 lilmd 的 `b557b02` 复制 Markdown 相关模块。该上游版本未附许可证；2026-11-24 用户决定按 MIT 处理，署名与 MIT 全文记在仓库根的 `THIRD_PARTY_NOTICES.md`（随 npm 包发布）。P0 裁掉向量、嵌入、banner 和 pretty 功能，运行时依赖为零。计划发布到 `@blrbiran/issuemd`，命令名仍是 `issuemd`。

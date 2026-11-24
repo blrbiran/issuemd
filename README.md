@@ -79,10 +79,10 @@ There is exactly one command surface: `issuemd` is a ledger tool, not a general 
 
 P0–P5 are implemented: the Markdown baseline, byte-faithful atomic writes, the canonical parser and `check`, the read views, the ledger write verbs, `adopt`, and the agent skill (now packaged). `new`, `close`, `reopen`, `status`, `rename` and `sync` all share one gate that re-runs `check` in memory and refuses any change that introduces a new error.
 
-The two hand-written cross-check scripts (`check-issues.mjs`, `verify-facts.mjs`) that predated `check` have been removed. `skills/issuemd/SKILL.md` and `TEMPLATE.md` ship in the npm package; `files` is `dist` plus those two files, and `build` empties `dist` first so a deleted source can't linger in the tarball.
+The two hand-written cross-check scripts (`check-issues.mjs`, `verify-facts.mjs`) that predated `check` have been removed. `skills/issuemd/SKILL.md`, `TEMPLATE.md` and `THIRD_PARTY_NOTICES.md` ship in the npm package; `files` is `dist` plus those three files, and `build` empties `dist` first so a deleted source can't linger in the tarball.
 
-Not done yet: publishing to npm and the public release both wait on the lilmd licence confirmation below.
+Not done yet: publishing to npm and the public release.
 
 ## License
 
-issuemd uses MIT for its own code. The Markdown CLI baseline was copied from [`lilmd`](https://github.com/molefrog/lilmd) at `b557b02`. The upstream checkout has no license file. Confirm permission to redistribute that code before a public release.
+issuemd uses MIT for its own code — see `LICENSE`. The Markdown CLI baseline was copied from [`lilmd`](https://github.com/molefrog/lilmd) at `b557b02`; that project ships no license file, so `THIRD_PARTY_NOTICES.md` records the attribution and the MIT terms applied to the derived files (`src/scan.ts`, `src/write.ts`).

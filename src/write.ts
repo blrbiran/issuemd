@@ -1,5 +1,9 @@
 /**
- * Pure line-level mutations for lilmd write commands.
+ * Pure line-level mutations for the ledger write commands.
+ *
+ * Derived from lilmd (https://github.com/molefrog/lilmd @ b557b02, Alexey
+ * Taktarov); see THIRD_PARTY_NOTICES.md. Most generic commands that used to
+ * live here are gone — only `unifiedDiff` is still used by the CLI.
  *
  * Every function takes `srcLines` (the file split on "\n") and returns a new
  * string[] — nothing touches the disk here. The CLI layer owns I/O and the

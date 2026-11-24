@@ -7,7 +7,7 @@
   "bin": {
     "issuemd": "dist/bin/issuemd.js"
   },
-  "files": ["dist", "skills/issuemd/SKILL.md", "TEMPLATE.md"],
+  "files": ["dist", "skills/issuemd/SKILL.md", "TEMPLATE.md", "THIRD_PARTY_NOTICES.md"],
   "engines": {
     "node": ">=20"
   },

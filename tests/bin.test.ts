@@ -76,6 +76,7 @@ test("npm package ships the CLI, the ledger skill, and no removed modules", () =
   expect(paths).toContain(manifest.bin.issuemd);
   expect(paths).toContain("skills/issuemd/SKILL.md");
   expect(paths).toContain("TEMPLATE.md");
+  expect(paths).toContain("THIRD_PARTY_NOTICES.md");
   // Generic Markdown modules were deleted from src/; a stale dist/ must not
   // smuggle them back into the tarball.
   expect(paths).not.toContain("dist/src/render.js");
