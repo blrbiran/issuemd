@@ -899,6 +899,15 @@ export function adopt(src: string): AdoptResult {
   const bodyOut = bodyEntries.sort((a, b) => compareIds(a.span, b.span)).flatMap((entry) => entry.lines);
 
   const archived = closed.filter((row) => bodyById.has(fullId(row)));
+  // A body found outside 正文 and the table sections (under the H1, in a
+  // foreign H2) is moved, not copied: the verbatim copies of those places
+  // skip its lines, or the issue would exist twice.
+  const movedIds = new Set([...bodyEntries.map((entry) => `${entry.span.start}${entry.span.suffix}`), ...archived.map(fullId)]);
+  const movedBodyLines = new Set<number>();
+  for (const body of bodies) {
+    if (bodyById.get(body.idText) !== body || !movedIds.has(body.idText)) continue;
+    for (let line = body.line; line <= body.end; line++) movedBodyLines.add(line);
+  }
   // Anything adopt does not recognize is kept verbatim in 附录 rather than
   // dropped: the tool may decline to decide, but it must not lose text.
   // A section only counts as "converted" when it actually supplied rows — an
@@ -934,7 +943,7 @@ export function adopt(src: string): AdoptResult {
     const heading = lines[section.line_start - 1]!;
     const content: string[] = [];
     for (let line = section.line_start + 1; line <= section.line_end; line++) {
-      if (excluded(line)) continue;
+      if (excluded(line) || movedBodyLines.has(line)) continue;
       content.push(lines[line - 1]!);
       preservedLines.add(line);
     }
@@ -1073,7 +1082,8 @@ export function adopt(src: string): AdoptResult {
   // Up to the first H2: an H3 directly under the H1 is header prose too.
   const afterH1 = h1 ? sections.find((section) => section.line_start > h1.line_start && section.level <= 2) : undefined;
   const headerOwn = h1
-    ? trimBlankEdges(lines.slice(h1.line_start, (afterH1?.line_start ?? lines.length + 1) - 1))
+    ? trimBlankEdges(lines.slice(h1.line_start, (afterH1?.line_start ?? lines.length + 1) - 1)
+      .filter((_, at) => !movedBodyLines.has(h1.line_start + 1 + at)))
     : [];
   const header = headerOwn.length > 0
     ? neutralizePreserved(headerOwn)

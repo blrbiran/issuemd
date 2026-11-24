@@ -1127,3 +1127,14 @@ describe("probe: adopt names rows it cannot read as issues", () => {
     expect(result.stdout).toMatch(/#20 .*多 \d 格/);
   });
 });
+
+test("probe: adopt moves a body found under the H1 or in a foreign section, it does not copy it", async () => {
+  const path = file("# T\n\n### Issue 50: 五十\n\nstray\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 50 | 未决 | 五十 |\n| 51 | 未决 | 五十一 |\n\n## 笔记\n\n别的笔记\n\n### Issue 51: 五十一\n\nnotes body\n\n## 正文\n");
+  expect((await run(["adopt", path])).code).toBe(0);
+  const out = text(path);
+  expect(out.match(/stray/g)?.length).toBe(1);
+  expect(out.match(/notes body/g)?.length).toBe(1);
+  expect(out).not.toContain("\\### Issue");
+  expect(out).toContain("别的笔记");
+  expect((await run(["check", path, "--strict"])).code).toBe(0);
+});
