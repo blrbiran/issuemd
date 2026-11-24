@@ -934,7 +934,10 @@ function cmdNew(rest: string[], v: Values): CliResult {
   if (!shiftedBody) return err("issuemd new: the 正文 section is missing\n", 3);
   lines = insertBlock(lines, bodyInsertAt(afterIndex, span, shiftedBody.line_end), body);
 
-  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const committed = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  // A caller that let `new` pick the id must learn it from this reply:
+  // re-listing to guess "the newest row" races with other writers.
+  const result = committed.code === 0 && !v["dry-run"] ? { ...committed, stdout: `${idText}\n` } : committed;
   const warnings: string[] = [];
   if (reusedNumber) {
     warnings.push(`W211: id ${idText} is at or below the highest existing id ${max}; numbers are not recycled\n`);

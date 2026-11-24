@@ -79,6 +79,7 @@ Every one of these is atomic and supports `--dry-run` (a unified diff, one hunk 
 - **`--body-file`** (for `new` and `body`) is the text that goes *under* `### Issue N: <title>` — never include the heading yourself (it would be a second heading: E105). Minimal file: `printf '**现象**：…\n\n**验收判据**：…\n' > body.md`. To change one paragraph: take `show FILE ID --json` → `body.text`, drop the heading line, edit, pipe it back with `issuemd body FILE ID --body-file -`.
 - **A title starting with `-`** must be attached with `=`: `--title="--body-file 的语义"`; otherwise you get `Option '--title' argument is ambiguous`.
 - **Priorities are `P0`–`P3` or empty.** `new` refuses anything else; `check` warns `W221` about existing ones.
+- **`new` prints the id it filed** — one line on stdout (`ID=$(issuemd new FILE --title "…")`). Use that; don't re-`list` to guess the newest row while others may be writing.
 - `new` refuses (exit `2`) a summary that an **open** issue already has (compared after NFKC/case/space folding) and names that issue — after a timed-out retry, that usually means your first call landed. Add `--allow-duplicate-title` only when it really is a second issue; `check` then keeps reporting the pair as `W212`.
 
 ### 4. Prove it

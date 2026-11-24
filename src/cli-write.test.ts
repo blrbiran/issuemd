@@ -33,6 +33,21 @@ async function clean(path: string) {
 }
 
 describe("new", () => {
+  test("prints the id it filed, alone on stdout, so callers need not re-list", async () => {
+    const path = ledger();
+    const first = await run(["new", path, "--title", "缓存未失效"]);
+    expect(first.code).toBe(0);
+    const filed = first.stdout.trim();
+    expect(first.stdout).toBe(`${filed}\n`);
+    const shown = JSON.parse((await run(["show", path, filed, "--json"])).stdout);
+    expect(shown.summary).toBe("缓存未失效");
+    const explicit = await run(["new", path, "--title", "带后缀", "--id", "393b"]);
+    expect(explicit.stdout).toBe("393b\n");
+    // --dry-run keeps stdout for the diff only.
+    const dry = await run(["new", path, "--title", "预演", "--dry-run"]);
+    expect(dry.stdout).toStartWith("---");
+  });
+
   test("inserts an index row and a body block and keeps check at 0 errors", async () => {
     const path = ledger();
     const result = await run(["new", path, "--title", "缓存未失效", "--status", "未决", "--priority", "P1"]);
