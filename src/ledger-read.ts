@@ -8,7 +8,7 @@
 
 import type { IdSpan } from "./issue-id.js";
 import { bodyBlocks, parseLedger, type LedgerRow, type TableKind } from "./ledger.js";
-import { fencedLines, labelBlock, type LabelBlock } from "./ledger-edit.js";
+import { fencedLines, labelBlock, type LabelBlock, extractCriteria } from "./ledger-edit.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
 
 export type ListedIssue = {
@@ -224,8 +224,10 @@ export function viewIssue(
     view.labels = labels;
     // Open issues keep their criteria in the body; expose them the same way
     // a closed issue exposes its column, so consumers need not parse Markdown.
-    if (found.table === "open" && labels["验收判据"]) {
-      view.criteria = labels["验收判据"];
+    // Same text `close` would promote (every non-empty 验收判据 block).
+    const promoted = found.table === "open" ? extractCriteria(ledger.lines.slice(block.line - 1, block.end)) : undefined;
+    if (promoted) {
+      view.criteria = promoted;
       view.criteriaSource = "body";
     }
   }

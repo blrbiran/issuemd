@@ -963,6 +963,11 @@ function cmdClose(rest: string[], v: Values): CliResult {
   if (file == null || idText == null || rest.length !== 2) {
     return err("usage: issuemd close FILE ID [--criteria TEXT | --criteria-from-body] [--keep-body]\n", 2);
   }
+  // `--criteria "$CRIT"` with CRIT unset is the usual way to pass nothing;
+  // that is --no-criteria by accident, so say so instead of writing it.
+  if (v.criteria != null && v.criteria.trim() === "") {
+    return err("issuemd close: --criteria is empty; pass the criteria text, or --no-criteria to close without any\n", 2);
+  }
   const criteriaFlags = [v.criteria != null, !!v["criteria-from-body"], !!v["no-criteria"]].filter(Boolean).length;
   if (criteriaFlags > 1) {
     return err("issuemd close: choose one of --criteria, --criteria-from-body, --no-criteria\n", 2);
@@ -1010,6 +1015,12 @@ function cmdClose(rest: string[], v: Values): CliResult {
     criteria = fromBody; // the default: promote what the body already says
   } else if (keepBody) {
     criteria = ""; // nothing is lost: the whole body moves to 附录
+  } else if (v["keep-body"]) {
+    return err(
+      `issuemd close: #${idText} has no body to keep and no criteria to record; ` +
+        "pass --criteria TEXT, or --no-criteria to close it without criteria on purpose\n",
+      2,
+    );
   } else {
     return err(
       `issuemd close: #${idText} has no criteria to record (no --criteria and no **验收判据** in the body). ` +
@@ -1050,6 +1061,27 @@ function cmdClose(rest: string[], v: Values): CliResult {
     // case inserting first would shift the block we then delete.
     const afterRemoval = parseLedger(lines.join("\n"));
     const target = afterRemoval.sections.find((section) => section.level === 2 && section.title === "附录");
+    // An archive appended after an unclosed fence is code to every reader:
+    // check and reopen would never see it (the body is gone for good).
+    const insertAt = target ? target.line_end : lines.length;
+    if (endsInFence(lines.slice(0, insertAt))) {
+      return err(
+        `issuemd close: 附录 ends inside an unclosed code fence; close the fence first, ` +
+          "or the kept body would be swallowed by it\n",
+        3,
+      );
+    }
+    // A second archive for the same id (an old one without an end marker, a
+    // W252 leftover) would make reopen restore the wrong text.
+    const fencedNow = fencedLines(lines);
+    const existing = lines.findIndex((text, index) => !fencedNow[index] && ARCHIVE_HEADING.exec(text)?.[1] === idText);
+    if (existing >= 0) {
+      return err(
+        `issuemd close: 附录 already has an archive for #${idText} (L${existing + 1}); ` +
+          "merge or remove it first, then close --keep-body\n",
+        3,
+      );
+    }
     if (target) {
       lines = insertLines(lines, target.line_end + 1, ["", ...archive]);
     } else {

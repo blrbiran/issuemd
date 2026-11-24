@@ -301,8 +301,17 @@ export function labelBlock(
 
 /** The `**验收判据**` block of a body as one line; undefined when absent or empty. */
 export function extractCriteria(bodyLines: string[]): string | undefined {
-  const found = labelBlock(bodyLines, 1, bodyLines.length, "验收判据");
-  return found && found.text !== "" ? found.text : undefined;
+  // A body may repeat the label (W206); every distinct non-empty block counts,
+  // or close would drop the second one without a word.
+  const texts: string[] = [];
+  let from = 1;
+  for (;;) {
+    const found = labelBlock(bodyLines, from, bodyLines.length, "验收判据");
+    if (!found) break;
+    if (found.text !== "" && !texts.includes(found.text)) texts.push(found.text);
+    from = found.line + found.lines.length;
+  }
+  return texts.length > 0 ? texts.join("；") : undefined;
 }
 
 // ---- controlled blocks -------------------------------------------------

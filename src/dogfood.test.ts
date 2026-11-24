@@ -1160,4 +1160,48 @@ describe("probe: write verbs (round nine)", () => {
     expect((await run(["reopen", path, "1"])).code).toBe(0);
     expect(text(path)).toBe(before);
   });
+
+  test("close --criteria with an empty or blank value is refused, not a silent --no-criteria", async () => {
+    const path = await withIssue("**验收判据**：重启后保持宽度\n");
+    const before = text(path);
+    for (const value of ["", "   "]) {
+      const result = await run(["close", path, "1", "--criteria", value]);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("--no-criteria");
+    }
+    expect(text(path)).toBe(before);
+  });
+
+  test("every non-empty 验收判据 block is promoted, not only the first", async () => {
+    const path = await withIssue("**验收判据**：A\n\n**验收判据**：B\n");
+    expect((await run(["close", path, "1"])).code).toBe(0);
+    expect(await closedCriteria(path)).toBe("A；B");
+  });
+
+  test("close --keep-body without a body names the real problem", async () => {
+    const path = file(TEMPLATE.replace("|---|---|---|---|\n", "|---|---|---|---|\n| 1 | 未决 | P2 | 无正文 |\n"));
+    const result = await run(["close", path, "1", "--keep-body"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("no body");
+  });
+
+  test("close --keep-body refuses when 附录 ends inside an unclosed fence", async () => {
+    const base = await withIssue("**现象**：keep me\n\n**验收判据**：x\n");
+    const path = file(text(base) + "\n```\nlog\n");
+    const before = text(path);
+    const result = await run(["close", path, "1", "--keep-body"]);
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain("fence");
+    expect(text(path)).toBe(before);
+  });
+
+  test("close --keep-body refuses when 附录 already holds an archive for that id", async () => {
+    const base = await withIssue("**现象**：fresh\n\n**验收判据**：x\n");
+    const path = file(text(base) + "\n### #1 甲（已关闭，正文保留）\n\nhand-written note\n");
+    const before = text(path);
+    const result = await run(["close", path, "1", "--keep-body"]);
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain("archive");
+    expect(text(path)).toBe(before);
+  });
 });
