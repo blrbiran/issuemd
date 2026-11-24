@@ -19,7 +19,7 @@
 - lilmd 授权按 MIT 落地（`THIRD_PARTY_NOTICES.md`，随包发布）；
 - npm 元数据补全，新增可用的库入口（`exports` + `.d.ts`）；
 - spec §14 Q4 的 >10k 行性能基准测了并加了守卫测试；
-- 两个独立 subagent 全量审了 `src/`（写路径、parser+adopt），另有第三个复审本轮 diff；**所有 Important 与大部分 Minor 已修复并有回归测试**。
+- 两个独立 subagent 全量审了 `src/`（写路径、parser+adopt），第三个 subagent 又复审了本轮 diff 并找出修复里的漏洞，这些漏洞也已补上。**所有 Important 与 Minor 都已修复并有回归测试**，接受的少数项见「已完成的独立审查」。
 
 测试全绿（数量以 `npm test` 末行为准，不要写死）。**本轮工作都在 `docs/license-attribution` 分支上，尚未合入 `main`、未 push、未发布 npm。**
 
@@ -86,10 +86,10 @@ issuemd adopt   FILE [--dry-run] [--report PATH]
   - 写前 `loadWritable()` 还会拒绝：非 UTF-8 文件、同时含 LF 与 CRLF 的文件（两者都会在重写时损坏字节）。
   - warning 的打印模式：`new` 的 `W211`/`W205`、`rename` 的 `W205`、`close --keep-body` 的 `W250` 都在 `commit()` 返回 0 后追加到 stderr，**不改变 exit code、不阻断写入**。
 - **`src/ledger.ts`** —— `parseLedger(src)` 返回 `{ lines, visible, sections, rows, blocks, errors, warnings }`。`rows` 是表行，`blocks` 是管道块（含 header/separator 标志），`bodyBlocks(ledger)` 返回正文块，`maxIssueId(rows)` 算最大编号（区间端点参与）。`parseLedger` 只做解析期诊断，**不是**完整校验。表外的单行 `|` 段落不报 E122（GFM 里它是段落）。
-- **`src/ledger-check.ts`** —— `checkLedger(src, file, opts)` 是唯一权威。E120 = "根本不是台账"。`--strict` 只因"非提示类" warning 失败：**W250 被排除**。W202 忽略短的全数字串（日期不是 hash）。E110 只在无缩进的段落行后识别 Setext。
+- **`src/ledger-check.ts`** —— `checkLedger(src, file, opts)` 是唯一权威。E120 = "根本不是台账"。`--strict` 只因"非提示类" warning 失败：**W250 被排除**。W202 只在全数字串达到 40 位时才当 hash（日期、毫秒时间戳都不报）。E110 的 Setext 判断：无缩进段落行，或上方是空行的 1–3 空格缩进行；列表续行后的 `---` 不算。
 - **`src/ledger-read.ts`** —— 纯只读视图。`findRow` 返回 `{ row, table, span, id, inRange }`；`inRange` 表示"这个号只在区间行里"（如 `7–20` 中的 8），per-id 写命令必须拒绝。`findLabel` / `labelsIn` 跳过 fence。
 - **`src/ledger-edit.ts`** —— 纯行级原语：`replaceCell` / `cellAt`、`escapeCell`、`insertLines` / `removeLines`、`bodySkeleton`、`extractCriteria`、`rewriteBlock` + `markerPair`（受控块）、`endsInFence` / `fencedLines`。不碰磁盘。
-- **`src/adopt.ts`** —— 一次性迁移。三种输入形状（cafe / orca / 近似 canonical）。**只把 ledger 表小节里的表当数据**（`索引` / `总览` / `待处理` / `已关闭` / closed / open）；看不懂的 H2 小节、H1 与首个小节之间的前言、没有对应行的 `Issue N` 正文，都**原样搬进附录**并各出一条 decision，不静默丢弃。
+- **`src/adopt.ts`** —— 一次性迁移。三种输入形状（cafe / orca / 近似 canonical）。**只把 ledger 表小节里的表当数据**（`索引` / `总览` / `待处理` / `已关闭` / closed / open），且一个小节只有真的产出了行才算"已转换"。其余内容——看不懂的 H1/H2 小节（嵌套的规范 H2 除外）、H1 之前的 front matter、正文里不属于任何 Issue 的段落和非 Issue 的 H3、没有对应行的 `Issue N` 正文——都**原样搬进附录**并各出一条 decision，不静默丢弃。搬运时 `### Issue N` 被转义成 `\### Issue N`、多余的 H1 降为 H2；外来小节放在附录最后，免得它的 H2 吞掉后面的归档。
 - **`src/index.ts`** —— 库入口。`package.json` 的 `exports["."]` 指向 `dist/src/index.js`，`tsc` 现在输出 `.d.ts`；测试里用自引用 `import("@blrbiran/issuemd")` 验证。
 - **`src/write.ts`** —— 只剩 `unifiedDiff`（`--dry-run` 渲染）。旧的 lilmd 行级辅助函数已在本轮删除。
 
@@ -109,8 +109,10 @@ issuemd adopt   FILE [--dry-run] [--report PATH]
 6. **`adopt` 修复**：表外管道块不再变成 issue 行；未知小节/前言/孤儿正文保留进附录并出 decision；多号行的正文归档（不再声称"已补骨架"）；无状态词要出 `unknown-status`；归档正文只裁首尾空行（fence 内空白保留）；正文按完整 id 排序（`2` 在 `2a` 前）；`**状态**` 段落删除并出 `status-in-body`；区间覆盖判断跳过带后缀的 id；`#### Use C#` 降级不吞 `#`；decision 行号优先按 id 行、其次 anchor。
 7. **`check` 误报**：列表续行后的 `---` 不再算 Setext（E110）；短纯数字不再算 hash（W202）；表外单行 `|` 段落不再算表格（E122）。
 8. **`sync --guide`**：marker 只在本小节内匹配；配对缺失/重复 exit 3，不再静默 "(no changes)"。
-9. **`reopen`**：存在 `### #N …（已关闭，正文保留）` 归档时恢复原文并删掉归档（W250 随之消失），否则仍用骨架。
-10. **文档同步**：spec §7 / §14 Q1、SKILL.md、README 更新到实际行为。
+9. **`reopen`**：存在 `### #N …（已关闭，正文保留）` 归档时恢复原文并删掉归档（W250 随之消失），否则仍用骨架。`close --keep-body` 现在以 `<!-- issuemd:kept-body:end -->` 结束归档，之后追加到附录的文字不会被 `reopen` 吸进正文；`close --keep-body` + `reopen` 逐字节还原（含 CRLF + BOM + 无尾换行）。
+10. **删死代码**：`src/write.ts` 只留 `unifiedDiff`。
+11. **复审补漏**（第三个 subagent 的发现）：`adopt` 对"看起来像表小节"的散文小节、front matter、多余 H1、正文里的散文/非 Issue H3 不再丢；外来小节里的 `Issue` 标题不再让转换失败；E110 缩进 Setext 回归；W202 毫秒时间戳；标题只有 `#` 时给出说明而不是 E106；`reopen` 的字节还原和归档边界。
+12. **文档同步**：spec §7 / §14 Q1、SKILL.md、README 更新到实际行为。
 
 ## 实现时踩过的决定（照旧设计或直觉改会出错）
 
@@ -125,18 +127,21 @@ issuemd adopt   FILE [--dry-run] [--report PATH]
 9. **`status` 对未声明状态词**（如 `未觉`）用语所在表推断分类，可以修复；跨表移动仍拒绝。
 10. **`--body-file` 用 `endsInFence()` 判断围栏是否还开着**；同时用 `fencedLines()` 跳过 fence 内的 `#` 标题。
 11. **`--strict` 的 `ok` 计算排除了 W250**：若新增提示类 warning，记得在 `ledger-check.ts` 的 `strictFailures` 里一并考虑。
-12. **`adopt` 的宽度推断只在表小节里可信**；有 `#` 表头的表才允许出现在别处。保留内容时放附录，不要自己重新排格式。
+12. **`adopt` 的宽度推断只在表小节里可信**；有 `#` 表头的表才允许出现在别处。保留内容时放附录，不要自己重新排格式（只做必要的转义/降级）。
+13. **`--keep-body` 归档以 `<!-- issuemd:kept-body:end -->` 收尾。** `reopen` 只恢复标记以上的内容，并连同 `close` 插入的那一个空行一起删掉；改归档格式时要同时改两边，并跑 `keep-body round trip` 用例。
 
 ## 已完成的独立审查
 
-本轮之前的三轮审查用例集中在 `src/cli-write.test.ts` 的 `regressions found in review` / `second review round`、`src/adopt.test.ts` 的同类 describe。**本轮新增 `third review round` describe（cli-write / adopt / ledger-check 三个文件），记录了这一轮修掉的全部 bug 形态——改这些模块前先看那些用例。**
+本轮之前的三轮审查用例集中在 `src/cli-write.test.ts` 的 `regressions found in review` / `second review round`、`src/adopt.test.ts` 的同类 describe。**本轮新增 `third review round` / `fourth review round` / `keep-body round trip` 以及 adopt 的 `third review round, part two`，记录了这一轮修掉的全部 bug 形态——改这些模块前先看那些用例。**
 
 仍然接受的已知项（非 bug）：
 
 - 原子替换最后一步 `lstat` 与 `rename` 之间仍有极小竞态窗口（见「已知的坑」第 3 条）。
 - `--dry-run` 的 diff 是单 hunk：两处不相邻改动会把中间未变的行也标成删除/新增。输出正确但可读性一般。
 - 读命令仍会把非法 UTF-8 解码成 U+FFFD（只影响屏幕输出，不落盘）；写命令已拒绝。
-- `adopt` 保留「未识别小节」时原样搬运；若其中含 `### Issue N` 标题，最终 `check` 会以 E123 拒绝，报告里能看出原因。
+- W202 不再把 7–39 位的全数字串当 hash：真实短 hash 约 3.7% 全是数字，这些会漏报（`--verify-commits` 也不查）。这是有意的取舍，换来日期/时间戳不误报。
+- 库入口的测试是仓库内自引用 import；真实安装路径（tarball → 干净项目 → `import` / `tsc` NodeNext / `bin`）已手动验证，未自动化。
+- `adopt` 再跑一次会对已搬进附录的外来小节重复报 `foreign-section`（输出字节不变）。
 
 ## 还没做 / 仅供参考
 

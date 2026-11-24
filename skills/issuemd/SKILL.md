@@ -66,7 +66,7 @@ issuemd check FILE                # exit 0 ok / 1 no match / 2 usage / 3 found e
 issuemd check FILE --json         # machine-readable
 ```
 
-Exit code **3** means structural errors. Fix them before reporting anything as done. `check` also reports `W250` for an appendix entry left by `close --keep-body` (a `### #N <summary>（已关闭，正文保留）` heading) — that's intentional, not drift.
+Exit code **3** means structural errors. Fix them before reporting anything as done. `check` also reports `W250` for an appendix entry left by `close --keep-body` (a `### #N <summary>（已关闭，正文保留）` heading, ended by `<!-- issuemd:kept-body:end -->`) — that's intentional, not drift. Leave the marker alone: `reopen` restores exactly the text above it.
 
 ### 5. Fix drift mechanically
 
