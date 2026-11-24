@@ -8,7 +8,7 @@
 
 import type { IdSpan } from "./issue-id.js";
 import { bodyBlocks, parseLedger, type LedgerRow, type TableKind } from "./ledger.js";
-import { fencedLines } from "./ledger-edit.js";
+import { fencedLines, labelBlock, type LabelBlock } from "./ledger-edit.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
 
 export type ListedIssue = {
@@ -104,31 +104,20 @@ export function findRow(
   return undefined;
 }
 
-export type LabeledParagraph = { label: string; text: string; line: number };
+export type LabeledParagraph = LabelBlock;
 
-/** Find a `**label**：` paragraph inside `lines[start-1..end)` (1-indexed). */
+/**
+ * Find a `**label**` block inside `lines[start-1..end]` (1-indexed). The block
+ * runs to the next label or heading, so `**验收判据**：` + blank line + list is
+ * read in full (see `labelBlock`). A fenced lookalike is an example, not a label.
+ */
 export function findLabel(
   lines: string[],
   start: number,
   end: number,
   label: string,
 ): LabeledParagraph | undefined {
-  const canonical = (text: string) => text.trim().replace(/\s+/g, " ");
-  // A `**验收判据**` quoted inside a fence is an example, not the paragraph.
-  const fenced = fencedLines(lines);
-  for (let line = start; line <= end && line <= lines.length; line++) {
-    if (fenced[line - 1]) continue;
-    const match = /^ {0,3}\*\*([^*]+)\*\*\s*[:：]?\s*(.*)$/.exec(lines[line - 1]!);
-    if (!match || match[1]!.trim() !== label) continue;
-    const parts = [match[2]!.trim()];
-    for (let next = line + 1; next <= end && next <= lines.length; next++) {
-      const text = lines[next - 1]!;
-      if (fenced[next - 1] || text.trim() === "" || /^ {0,3}\*\*[^*]+\*\*/.test(text)) break;
-      parts.push(text.trim());
-    }
-    return { label, text: canonical(parts.filter(Boolean).join(" ")), line };
-  }
-  return undefined;
+  return labelBlock(lines, start, end, label);
 }
 
 /** Every distinct `**label**` in a line range, in document order. */

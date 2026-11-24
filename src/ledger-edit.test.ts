@@ -62,9 +62,11 @@ describe("bodies", () => {
     expect(lines).toContain("**验收判据**：c");
   });
 
-  test("extractCriteria returns the criteria paragraph only", () => {
+  test("extractCriteria returns the criteria block only, across blank lines (#29)", () => {
     const body = ["**现象**：x。", "**验收判据**：重启后", "保持上次宽度。", "", "末尾"];
-    expect(extractCriteria(body)).toBe("重启后 保持上次宽度。");
+    expect(extractCriteria(body)).toBe("重启后 保持上次宽度。；末尾");
+    expect(extractCriteria(["**验收判据**：", "", "1. a", "2. b", "", "- c"])).toBe("1. a；2. b；c");
+    expect(extractCriteria(["**验收判据**：", "", "```", "npm test", "```"])).toBe("npm test");
     expect(extractCriteria(["**现象**：x。"])).toBeUndefined();
     expect(extractCriteria(["**验收判据**：", ""])).toBeUndefined();
   });

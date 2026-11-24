@@ -184,26 +184,90 @@ export function bodySkeleton(id: string, title: string, criteria = ""): string[]
   ];
 }
 
+/** `**label**：rest` at the start of a line (up to three spaces of indent). */
+const LABEL_LINE = /^ {0,3}\*\*([^*]+)\*\*\s*[:：]?\s*(.*)$/;
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
+const UNORDERED_MARKER = /^\s*[-*+]\s+/;
+
+export type LabelBlock = {
+  label: string;
+  /** 1-indexed line of the `**label**` line, in the coordinates passed in. */
+  line: number;
+  /** The label line and everything that belongs to it, verbatim. */
+  lines: string[];
+  /**
+   * One-line form for a table cell or JSON: paragraphs and list items are
+   * joined with `；`, soft wraps with a space, unordered markers dropped.
+   */
+  text: string;
+};
+
 /**
- * The `**验收判据**` paragraph of a body, whitespace-folded: the text from
- * the label to the next blank line or `**label**`, with soft wraps joined.
+ * The block a `**label**` owns inside `lines[start-1..end]` (1-indexed): from
+ * the label to the next label line, heading, or the end of the range. Blank
+ * lines do not end it — `**验收判据**：` followed by a blank line and a list is
+ * the most common way to write criteria, and what `new`'s skeleton invites.
+ * Fenced lines are content (never a label or a boundary), minus the fences.
  */
-export function extractCriteria(bodyLines: string[]): string | undefined {
-  const fenced = fencedLines(bodyLines);
-  const start = bodyLines.findIndex(
-    (line, index) => !fenced[index] && /^ {0,3}\*\*验收判据\*\*\s*[:：]?\s*/.test(line),
-  );
-  if (start < 0) return undefined;
-  const first = bodyLines[start]!.replace(/^ {0,3}\*\*验收判据\*\*\s*[:：]?\s*/, "").trim();
-  const parts = [first];
-  for (let index = start + 1; index < bodyLines.length; index++) {
-    const line = bodyLines[index]!;
-    // A fence ends the paragraph: its contents are an example, not criteria.
-    if (fenced[index] || line.trim() === "" || /^ {0,3}\*\*[^*]+\*\*/.test(line)) break;
-    parts.push(line.trim());
+export function labelBlock(
+  lines: string[],
+  start: number,
+  end: number,
+  label: string,
+): LabelBlock | undefined {
+  const fenced = fencedLines(lines);
+  const last = Math.min(end, lines.length);
+  for (let line = start; line <= last; line++) {
+    if (fenced[line - 1]) continue;
+    const match = LABEL_LINE.exec(lines[line - 1]!);
+    if (!match || match[1]!.trim() !== label) continue;
+    let stop = line + 1;
+    while (stop <= last) {
+      const text = lines[stop - 1]!;
+      if (!fenced[stop - 1] && (/^ {0,3}\*\*[^*]+\*\*/.test(text) || /^ {0,3}#{1,6}(?:\s|$)/.test(text))) break;
+      stop++;
+    }
+    const own = lines.slice(line - 1, stop - 1);
+    while (own.length > 1 && own.at(-1)!.trim() === "") own.pop();
+
+    const segments: string[] = [];
+    let current: string[] = [];
+    let blank = false;
+    const flush = () => {
+      if (current.length) segments.push(current.join(" "));
+      current = [];
+    };
+    const first = match[2]!.trim();
+    if (first) current.push(first);
+    const ownFenced = fencedLines(own);
+    for (let index = 1; index < own.length; index++) {
+      const raw = own[index]!;
+      if (raw.trim() === "") {
+        blank = true;
+        continue;
+      }
+      // Fence delimiters are markup; the code inside is kept, one line each.
+      if (ownFenced[index] && /^ {0,3}(`{3,}|~{3,})/.test(raw)) {
+        flush();
+        blank = false;
+        continue;
+      }
+      if (blank || LIST_ITEM.test(raw) || ownFenced[index]) flush();
+      blank = false;
+      current.push(raw.replace(UNORDERED_MARKER, "").trim());
+      if (ownFenced[index]) flush();
+    }
+    flush();
+    const text = segments.join("；").replace(/[ \t]+/g, " ").trim();
+    return { label, line, lines: own, text };
   }
-  const text = parts.filter(Boolean).join(" ").replace(/\s+/g, " ");
-  return text === "" ? undefined : text;
+  return undefined;
+}
+
+/** The `**验收判据**` block of a body as one line; undefined when absent or empty. */
+export function extractCriteria(bodyLines: string[]): string | undefined {
+  const found = labelBlock(bodyLines, 1, bodyLines.length, "验收判据");
+  return found && found.text !== "" ? found.text : undefined;
 }
 
 // ---- controlled blocks -------------------------------------------------

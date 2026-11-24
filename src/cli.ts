@@ -20,7 +20,8 @@
  */
 
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
 import { scan } from "./scan.js";
@@ -89,7 +90,9 @@ Options:
   --id <N>                  new: explicit issue id
   --body-file <path|->      new: body from a file, or '-' for stdin
   --criteria <TEXT>         close: criteria column text
-  --criteria-from-body      close: lift the **验收判据** paragraph into the column
+  --criteria-from-body      close: lift the **验收判据** block into the column (the default
+                            when the body has one); refuses if it is missing or empty
+  --no-criteria             close: close with an empty criteria cell on purpose
   --keep-body               close: move the body into 附录 instead of deleting it
   --guide                   sync: rewrite the controlled guide and status blocks
   --fix-tables              sync: add missing table separator rows
@@ -135,6 +138,7 @@ const OPTIONS = {
   // close
   criteria: { type: "string" },
   "criteria-from-body": { type: "boolean" },
+  "no-criteria": { type: "boolean" },
   "keep-body": { type: "boolean" },
   // sync
   guide: { type: "boolean" },
@@ -348,8 +352,17 @@ function cmdShow(rest: string[], v: Values): CliResult {
         stderr: known.length ? `labels in #${view.id}: ${known.join(", ")}\n` : "",
       };
     }
+    if (found.text === "") {
+      // An empty label is not a successful read: `close --criteria-from-body`
+      // would promote it as an empty cell.
+      return {
+        code: 1,
+        stdout: `(empty label: ${v.label})\n`,
+        stderr: `label ${v.label} in #${view.id} exists but is empty (L${found.line})\n`,
+      };
+    }
     if (v.json) return ok(JSON.stringify({ ...view, paragraph: found.text }, null, 2));
-    return ok(`**${found.label}**：${found.text}`);
+    return ok(found.lines.join("\n"));
   }
 
   if (v.json) return ok(JSON.stringify(view, null, 2));
@@ -635,7 +648,13 @@ function cmdNew(rest: string[], v: Values): CliResult {
   const priority = v.priority ?? "P2";
   const category = statusCategory(status);
   if (!category) return err(`issuemd new: unknown status '${status}'\n`, 2);
-  if (category === "closed") return err(`issuemd new: '${status}' is a closed status; use '\''issuemd close'\''\n`, 2);
+  if (category === "closed") {
+    return err(
+      `issuemd new: '${status}' is a closed status; create the issue open, then run ` +
+        `'issuemd close FILE ID --status ${status} --criteria "…"'\n`,
+      2,
+    );
+  }
 
   const opened = openLedger(file);
   if ("code" in opened) return opened;
@@ -643,6 +662,12 @@ function cmdNew(rest: string[], v: Values): CliResult {
 
   const max = maxIssueId(ledger.rows);
   let idText = String(max + 1);
+  if (v.id == null && !Number.isSafeInteger(max + 1)) {
+    return err(
+      `issuemd new: the next id after ${max} is outside the supported integer range; pass --id explicitly\n`,
+      2,
+    );
+  }
   // Ids are never recycled (spec §4.4). An explicit `--id` at or below the
   // historical maximum is the only place a "new number" can be a reused one,
   // so W211 is raised here rather than by the history-free `check`.
@@ -686,7 +711,9 @@ function cmdNew(rest: string[], v: Values): CliResult {
   const afterIndex = parseLedger(lines.join("\n"));
   const shiftedBody = afterIndex.sections.find((section) => section.level === 2 && section.title === "正文");
   if (!shiftedBody) return err("issuemd new: the 正文 section is missing\n", 3);
-  lines = insertLines(lines, bodyInsertAt(afterIndex, parseId(idText)!, shiftedBody.line_end), body);
+  const span = parseId(idText);
+  if (!span) return err(`issuemd new: '${idText}' is not a valid issue id\n`, 2);
+  lines = insertLines(lines, bodyInsertAt(afterIndex, span, shiftedBody.line_end), body);
 
   const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
   const warnings: string[] = [];
@@ -705,8 +732,9 @@ function cmdClose(rest: string[], v: Values): CliResult {
   if (file == null || idText == null || rest.length !== 2) {
     return err("usage: issuemd close FILE ID [--criteria TEXT | --criteria-from-body] [--keep-body]\n", 2);
   }
-  if (v.criteria != null && v["criteria-from-body"]) {
-    return err("issuemd close: choose --criteria or --criteria-from-body, not both\n", 2);
+  const criteriaFlags = [v.criteria != null, !!v["criteria-from-body"], !!v["no-criteria"]].filter(Boolean).length;
+  if (criteriaFlags > 1) {
+    return err("issuemd close: choose one of --criteria, --criteria-from-body, --no-criteria\n", 2);
   }
   const opened = openLedger(file);
   if ("code" in opened) return opened;
@@ -738,12 +766,38 @@ function cmdClose(rest: string[], v: Values): CliResult {
     (candidate) => `${candidate.id.start}${candidate.id.suffix}` === idText,
   );
   const bodyText = block ? ledger.lines.slice(block.line - 1, block.end) : [];
-  const criteria = v.criteria ?? (v["criteria-from-body"] ? extractCriteria(bodyText) ?? "" : "");
+  const keepBody = !!v["keep-body"] && block != null;
+  // Criteria are stored once and must not vanish silently (spec §7.2): the
+  // body is deleted by close, so whatever it says has to land somewhere.
+  const fromBody = extractCriteria(bodyText);
+  let criteria: string;
+  if (v.criteria != null) {
+    criteria = v.criteria;
+  } else if (v["no-criteria"]) {
+    criteria = "";
+  } else if (v["criteria-from-body"]) {
+    if (fromBody == null) {
+      return err(
+        `issuemd close: #${idText} has no non-empty **验收判据** in its body (fenced examples do not count); ` +
+          "pass --criteria TEXT or --no-criteria\n",
+        2,
+      );
+    }
+    criteria = fromBody;
+  } else if (fromBody != null) {
+    criteria = fromBody; // the default: promote what the body already says
+  } else if (keepBody) {
+    criteria = ""; // nothing is lost: the whole body moves to 附录
+  } else {
+    return err(
+      `issuemd close: #${idText} has no criteria to record (no --criteria and no **验收判据** in the body). ` +
+        "Pass --criteria TEXT, --keep-body, or --no-criteria to close it without criteria on purpose\n",
+      2,
+    );
+  }
 
   // Highest line number first so earlier coordinates stay valid.
   let lines = loaded.lines;
-
-  const keepBody = !!v["keep-body"] && block != null;
 
   // The archived heading is deliberately not an `Issue N:` heading: 附录
   // must not contain issue headings (E123), so the id moves into the text.
@@ -986,6 +1040,10 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
   }
   const loaded = loadWritable(file);
   if ("code" in loaded) return loaded;
+  if (v.report != null) {
+    const refused = reportTargetProblem(file, v.report);
+    if (refused) return err(`issuemd adopt: refusing --report '${v.report}': ${refused}\n`, 2);
+  }
 
   let result;
   try {
@@ -1006,14 +1064,20 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
       3,
     );
   }
-  if (v.report) {
+  const writeReport = (): CliResult | null => {
+    if (v.report == null) return null;
     try {
       writeFileSync(v.report, report);
+      return null;
     } catch (error) {
       return err(`issuemd adopt: cannot write --report: ${(error as Error).message}\n`, 2);
     }
-  }
+  };
   if (v["dry-run"]) {
+    // The report is the point of a dry run (review the decisions first); it
+    // is never the ledger and never someone else's file (checked above).
+    const failed = writeReport();
+    if (failed) return failed;
     const diff = unifiedDiff(loaded.lines, result.lines, file);
     return ok((diff || "(no changes)\n") + "\n" + report);
   }
@@ -1023,7 +1087,35 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
   } catch (error) {
     return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
   }
+  // Written after the ledger so a failed conversion never leaves a report
+  // that describes a write that did not happen.
+  const failed = writeReport();
+  if (failed) return failed;
   return ok(report);
+}
+
+/**
+ * `--report` used to be a bare `writeFileSync`: pointed at the ledger it
+ * replaced the ledger with the report (even under --dry-run), and it truncated
+ * any existing file. Only a new path, or a previous adopt report, is allowed.
+ */
+function reportTargetProblem(ledgerPath: string, reportPath: string): string | null {
+  const real = (path: string) => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return resolve(path);
+    }
+  };
+  if (real(reportPath) === real(ledgerPath)) return "it is the ledger being adopted";
+  let existing: string;
+  try {
+    existing = readFileSync(reportPath, "utf8");
+  } catch {
+    return null; // a new file
+  }
+  if (existing.startsWith("adopt: ")) return null; // our own previous report
+  return "the file exists and is not an earlier adopt report; choose a new path or remove it first";
 }
 
 function renderAdoptReport(file: string, changes: string[], decisions: Decision[]): string {

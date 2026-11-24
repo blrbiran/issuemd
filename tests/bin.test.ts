@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -105,4 +105,10 @@ test("the omitted pretty formatter is reported as an unknown option", () => {
   const result = run("list", fixture, "--pretty");
   expect(result.status).toBe(2);
   expect(result.stderr).toContain("--pretty");
+});
+test("the built bin is executable, so npm link keeps working after a rebuild (#20)", () => {
+  expect(statSync(bin).mode & 0o111).toBe(0o111);
+  // Executed directly, not through `node`: the shebang plus the mode bit.
+  const result = spawnSync(bin, ["--help"], { cwd, encoding: "utf8" });
+  expect(result.status).toBe(0);
 });
