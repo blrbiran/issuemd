@@ -53,7 +53,17 @@ issuemd list fixtures/canonical-clean.md
 issuemd check fixtures/canonical-clean.md
 ```
 
-With Bun available, run `npm test` to build the CLI and run its tests. The planned npm package name is `@blrbiran/issuemd`.
+With Bun available, run `npm test` to build the CLI and run its tests. The npm package name is `@blrbiran/issuemd`.
+
+### As a library
+
+The same package exposes its parser, checker and reader with TypeScript declarations — `scan`, `parseLedger`, `bodyBlocks`, `checkLedger`, `findRow`, `viewIssue`, `readDocument`, `writeAtomically`, the id helpers and their types:
+
+```ts
+import { checkLedger, parseLedger } from "@blrbiran/issuemd";
+const report = checkLedger(source, "ledger.md");
+const ledger = parseLedger(source);
+```
 
 ## Design
 
