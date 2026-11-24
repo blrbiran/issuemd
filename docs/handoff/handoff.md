@@ -91,7 +91,7 @@ issuemd adopt   FILE [--dry-run] [--report PATH]
 - **`src/ledger-edit.ts`** —— 纯行级原语：`replaceCell` / `cellAt`、`escapeCell`、`insertLines` / `removeLines`、`bodySkeleton`、`extractCriteria`、`rewriteBlock` + `markerPair`（受控块）、`endsInFence` / `fencedLines`。不碰磁盘。
 - **`src/adopt.ts`** —— 一次性迁移。三种输入形状（cafe / orca / 近似 canonical）。**只把 ledger 表小节里的表当数据**（`索引` / `总览` / `待处理` / `已关闭` / closed / open）；看不懂的 H2 小节、H1 与首个小节之间的前言、没有对应行的 `Issue N` 正文，都**原样搬进附录**并各出一条 decision，不静默丢弃。
 - **`src/index.ts`** —— 库入口。`package.json` 的 `exports["."]` 指向 `dist/src/index.js`，`tsc` 现在输出 `.d.ts`；测试里用自引用 `import("@blrbiran/issuemd")` 验证。
-- **`src/write.ts`** —— 只剩 `unifiedDiff` 被 CLI 使用，其余旧 lilmd 辅助函数（`setSection` 等）只有自己的测试在用，属可删的死代码。
+- **`src/write.ts`** —— 只剩 `unifiedDiff`（`--dry-run` 渲染）。旧的 lilmd 行级辅助函数已在本轮删除。
 
 ## 本轮（第五轮）完成的改动
 
@@ -135,7 +135,6 @@ issuemd adopt   FILE [--dry-run] [--report PATH]
 
 - 原子替换最后一步 `lstat` 与 `rename` 之间仍有极小竞态窗口（见「已知的坑」第 3 条）。
 - `--dry-run` 的 diff 是单 hunk：两处不相邻改动会把中间未变的行也标成删除/新增。输出正确但可读性一般。
-- `src/write.ts` 里的旧 lilmd 辅助函数是死代码（除 `unifiedDiff` 外无人引用）。
 - 读命令仍会把非法 UTF-8 解码成 U+FFFD（只影响屏幕输出，不落盘）；写命令已拒绝。
 - `adopt` 保留「未识别小节」时原样搬运；若其中含 `### Issue N` 标题，最终 `check` 会以 E123 拒绝，报告里能看出原因。
 
@@ -195,8 +194,7 @@ T=$(mktemp -d) && npm pack --ignore-scripts --pack-destination "$T" && cd "$T" \
 7. **`adopt` 的决策行号指向转换后的文档**，不是输入；`decision.line === 0` 表示无法定位。
 8. **`build` 会先清空 `dist`**：类型错误时 `dist` 会是空的（`noEmitOnError`），随后 `tests/bin.test.ts` 会先报错而不是 tsc。这是有意为之。
 9. **写路径会把文件读两遍**：一次做 UTF-8/行尾预检，一次 `readDocument`。大文件（数十 MB）会有可感知的额外 I/O；若优化，把预检合并进 io 需要用户放开 `src/io.ts`。
-10. **`src/write.ts` 有死代码**：除 `unifiedDiff` 外都是旧 lilmd 函数，只被自己的测试使用。删除时要同步删 `src/write.test.ts` 的对应 describe（保留 `unifiedDiff` 部分）。
-11. **`--dry-run` diff 是单 hunk**（见「已完成的独立审查」）。
+10. **`--dry-run` diff 是单 hunk**（见「已完成的独立审查」）。
 
 ## 建议调用这些 skill
 
