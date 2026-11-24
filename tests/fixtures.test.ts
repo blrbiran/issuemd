@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { checkLedger } from "../src/ledger-check.js";
+import { run } from "../src/cli.js";
 
 function fixture(name: string) {
   return readFileSync(new URL(`../fixtures/${name}`, import.meta.url));
@@ -56,4 +60,29 @@ test("encoding fixture has a UTF-8 BOM, only CRLF line endings, and no final new
   expect(text).toContain("\r\n");
   expect(text.replaceAll("\r\n", "")).not.toMatch(/[\r\n]/);
   expect(text.endsWith("\n")).toBe(false);
+});
+
+test("TEMPLATE.md is an empty ledger that already passes check", async () => {
+  const template = readFileSync(new URL("../TEMPLATE.md", import.meta.url), "utf8");
+  // A fresh ledger must have the skeleton but no issues and no errors.
+  const report = checkLedger(template, "TEMPLATE.md");
+  expect(report.errors).toEqual([]);
+  expect(report.counts).toMatchObject({ open: 0, closed: 0 });
+  // It must be usable as a base: `new` should work against it untouched.
+  expect(template).toContain("## 索引");
+  expect(template).toContain("## 正文");
+  expect(template).toContain("<!-- issuemd:statuses:begin -->");
+
+  const dir = mkdtempSync(join(tmpdir(), "issuemd-template-"));
+  try {
+    const path = join(dir, "ledger.md");
+    writeFileSync(path, template);
+    const added = await run(["new", path, "--title", "first", "--status", "未决", "--priority", "P1"]);
+    expect(added.code).toBe(0);
+    const after = readFileSync(path, "utf8");
+    expect(after).toContain("| 1 | 未决 | P1 | first |");
+    expect(checkLedger(after, path).errors).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

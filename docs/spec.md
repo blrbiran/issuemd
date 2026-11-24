@@ -1,7 +1,7 @@
 # issuemd 规格（v2）
 
 > **一句话**：`lilmd` 让 agent 便宜地读一节；`issuemd` 让「状态表、正文、判据」三处在**结构上不可能对不上**。
-> **形态**：CLI（lilmd 的超集）+ skill。单文件、纯 Markdown、零运行时依赖。
+> **形态**：CLI（只做台账，**不是** lilmd 的超集，见 ADR 0006）+ skill。单文件、纯 Markdown、零运行时依赖。
 > **参考现场**：`orca_archived_files/issue-20261023.md`（2108 行）与 `cafe_dogfooding/issue-20261119.md`（2701 行），均为真实台账，仅作设计参考，**不进入测试夹具**。
 > 本文所有数字均为本机实测，命令见附录 A。
 
@@ -118,7 +118,7 @@ cafe 的 13 条孤儿正文（#56–#60、#65–#70、#75、#76）不是手误�
 | **S3** | **计数不出现在任何标题里**；`## 索引`、`## 已关闭` 是固定标题 | 2.2 |
 | **S4** | 表摘要写**稳定标签**（是什么），进展写正文；判据只存一处 | 2.1 |
 | **S5** | 所有表格必须有 `\|---\|`；`sync --fix-tables` 可修 | 2.4 |
-| **S6** | 正文块内**不得出现任何 Markdown 标题**，一律用 `**标签**`；只读取段用 `show --label` | 层级唯一，`mv/promote` 不再腐化正文 |
+| **S6** | 正文块内**不得出现任何 Markdown 标题**，一律用 `**标签**`；只读取段用 `show --label` | 层级唯一；通用命令已删（ADR 0006），正文由台账写命令维护 |
 
 ### 3.2 骨架
 
@@ -312,10 +312,10 @@ Ledger
 | W205 | 单元格含未转义 `\|` 或换行 |
 | W206 | 同一条正文内标签重复 |
 | W210 | 已关闭表的 `并入` 目标编号不存在 |
-| W211 | 新编号 ≤ 历史最大编号（疑似复用） |
+| W211 | 新编号 ≤ **当前表中**最大编号（疑似复用）。带后缀的号（`20a`、`393b`）是独立 issue，从不触发。**只在 `new --id` 时打到 stderr**；`check` 是静态扫描、无「新编号」概念，不报 |
 | W220 | 状态词未在状态口径块声明 |
 | W240 | `--verify-commits` 时 commit 不存在 |
-| W250 | `close --keep-body` 把正文搬进附录 |
+| W250 | `close --keep-body` 把正文搬进附录。写命令当场打 stderr；`check` 也识别附录里的 `### #N <摘要>（已关闭，正文保留）` 归档标题并报告。**属提示类，`--strict` 不因它失败** |
 | W260 | 索引摘要含进展词（`已落地/仍缺/仍无/仍逐/仍走`），应移入正文 |
 
 ### 6.3 `--verify-commits`（默认关）
@@ -448,45 +448,34 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 
 ## 9. 命令参考
 
+> 见 ADR 0006：`issuemd` 只有一个入口、只做台账。lilmd 的读命令与通用写命令（`toc` / `ls` / `grep` / `set` / `rm` / `promote` / `mv` …）**已删除**，本表是唯一权威，须与 `issuemd --help` 一致。
+
 ```text
-读取（与 lilmd 兼容）
-  issuemd FILE                             TOC + 行号
-  issuemd toc|read|ls|grep|code|links …    同 lilmd，选择器语法不变
-
-通用写（修复 D1–D7，台账上受约束）
-  issuemd set|append|insert|rm|rename|promote|demote|mv … --body '…' [--dry-run]
-
 台账读
   issuemd check   FILE [--json] [--strict] [--verify-commits]
   issuemd list    FILE [--status S] [--priority P] [--closed] [--json]
-  issuemd show    FILE ID [--json] [--label NAME] [--max-lines N]
+  issuemd show    FILE ID [--json] [--label NAME]
   issuemd counts  FILE [--json]
+  issuemd read    FILE <H2 标题>          # 精确匹配顶层标题，无选择器/正则
 
-台账写（全部 --dry-run）
-  issuemd new     FILE --title "T" [--id N] [--status S] [--priority P] [--body-file PATH|-]
-  issuemd close   FILE ID [--criteria "…" | --criteria-from-body] [--keep-body]
+台账写（全部 --dry-run，原子写且保持 BOM/行尾/模式位）
+  issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]
+  issuemd close   FILE ID [--criteria TEXT | --criteria-from-body] [--keep-body]
   issuemd reopen  FILE ID
   issuemd status  FILE ID NEW_STATUS
-  issuemd rename  FILE ID "T"
-  issuemd sync    FILE [--titles] [--fix-tables] [--guide] [--prefer body|table] [--move-progress|--drop-progress]
+  issuemd rename  FILE ID "NEW TITLE"
+  issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
+                        [--move-progress | --drop-progress]]
 
 迁移（一次性，不进运行时）
   issuemd adopt   FILE [--dry-run] [--report PATH]
-
-全局
-  --no-color      CI 默认
 ```
 
-退出码：0 成功 / 1 没匹配到 / 2 用法错误 / **3 check 发现 error**。
+退出码：0 成功 / 1 没有这条 issue / 2 用法错误 / **3 check 发现 error**。`issuemd FILE` 不是命令简写，exit 2。
 
-### 9.1 台账上的通用写命令约束
+### 9.1 不要把这些命令加回来
 
-| 命令 | 台账上的行为 |
-|---|---|
-| `set` / `append` / `insert` | 只在 `## 正文` 区内允许（改一条的文字是合法操作）；命中索引/已关闭/受控块 → exit 2 并提示用 `rename` / `close` / `sync` |
-| `rm` | 拒绝并提示：正文块要删请用 `close`（保留判据）或显式 `--force` |
-| `mv` / `promote` / `demote` | 在台账上拒绝（会破坏层级唯一） |
-| `rename` | 通用版本只改 H3，不改表；台账版本（`issuemd rename FILE ID "T"`）两处同改 |
+`toc` / `read`（除台账版 H2 读取外）/ `ls` / `grep` / `code` / `links` / `set` / `append` / `insert` / `rm` / `promote` / `demote` / `mv` 以及选择器语法都不存在。要读普通 Markdown 的某一节，用 `issuemd read FILE <H2 标题>`；要编辑普通 Markdown，用编辑器或 lilmd。原因见 ADR 0006，不重复。
 
 ---
 
@@ -534,7 +523,7 @@ issuemd adopt old.md --dry-run --report decisions.md
 骨架（沿用 lilmd 的节奏：探测 → loop → 写作规则 → 陷阱）：
 
 1. **探测**：`command -v issuemd`。
-2. **survey**：`issuemd FILE` → `issuemd list FILE`。
+2. **survey**：`issuemd list FILE`（`issuemd FILE` 不是命令简写，exit 2）。
 3. **读一条**：`issuemd show FILE 65`（要单段用 `--label 验收判据`）。
 4. **改状态的唯一姿势**：`new` / `close` / `status` / `rename` / `reopen`。**禁止**用 `set` 手改状态表。
 5. **改完必跑** `issuemd check FILE`；exit 3 就是没拉齐。
@@ -545,7 +534,7 @@ issuemd adopt old.md --dry-run --report decisions.md
    - 正文块内不许有标题（`E110`），用 `**标签**`。
    - 已关闭项不能留正文（`E111`）。
    - 单元格里的 `|` 写 `\|`（`E108`/`W205`）。
-   - 编号 `\d+[a-z]?`，不回收旧号。
+   - 编号 `\d+[a-z]?`，不回收旧号（显式 `--id` 落在历史最大号以内时 `new` 打 `W211`）。
    - `--body` 首尾各留一个空行。
    - 状态只在表里（`E107`）。
 7. **交给 owner 的写法**：结论必须带 `file:line` + 可复制命令 + 原始输出；不写死 HEAD，给查法（`git log --oneline -3`）。
@@ -556,12 +545,12 @@ issuemd adopt old.md --dry-run --report decisions.md
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| **P0 脚手架** | 拷贝 lilmd `src/` + `bin/`，改包名为 `@blrbiran/issuemd`，MIT LICENSE，裁掉 vector/embed/banner/pretty | `npm test` 全绿；`issuemd FILE` 与 `lilmd FILE` 对同一输入逐字节相同 |
+| **P0 脚手架** ✅ | 拷贝 lilmd `src/` + `bin/`，改包名为 `@blrbiran/issuemd`，MIT LICENSE，裁掉 vector/embed/banner/pretty | `npm test` 全绿；`issuemd FILE` 与 `lilmd FILE` 对同一输入逐字节相同 |
 | **P1 修 7 缺陷** ✅ | D1–D7，每条先写 RED（直接取附录 A.1 探针），再实现原子写与行级拼接 | 13 个用例红→绿；真实 shell 下复验七个缺陷；模式位/E130 覆盖 |
-| **P2 台账模型** | 管道块、多编号与区间、规范骨架和 `issuemd check FILE --json` | 合规样本 3 条开放、17 个关闭编号、0 个错误。坏例逐条报告 13 个 `E111`，带原文件行号 |
-| **P3 台账写** | `new`/`close`/`status`/`rename`/`reopen`/`sync`/`counts`；原子写 + `--dry-run` | 每个命令的 diff 与预期行数逐字相符 |
-| **P4 `adopt`** | 机械改动 + 待决清单 + `--report` | 对 cafe 形状的 mock 输出清单条目数与预期一致 |
-| **P5 skill + 文档 + 清理** | SKILL.md、README、`--help`、TEMPLATE.md；删 `check-issues.mjs` 与 `verify-facts.mjs` | 无上下文 subagent 只读 SKILL.md 能完成三件事 |
+| **P2 台账模型** ✅ | 管道块、多编号与区间、规范骨架和 `issuemd check FILE --json` | 合规样本 3 条开放、17 个关闭编号、0 个错误。坏例逐条报告 13 个 `E111`，带原文件行号 |
+| **P3 台账写** ✅ | `new`/`close`/`status`/`rename`/`reopen`/`sync`/`counts`；原子写 + `--dry-run` | 每个命令的 diff 与预期行数逐字相符 |
+| **P4 `adopt`** ✅ | 机械改动 + 待决清单 + `--report` | 对 cafe 形状的 mock 输出清单条目数与预期一致 |
+| **P5 skill + 文档 + 清理** ✅ | SKILL.md、README、`--help`、TEMPLATE.md；删 `check-issues.mjs` 与 `verify-facts.mjs`；`SKILL.md` 打进 npm 包 | 无上下文 subagent 只读 SKILL.md 能完成三件事 |
 
 依赖：P0 → P1 → P2 → {P3, P4} → P5。
 

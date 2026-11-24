@@ -44,7 +44,7 @@ A maximal run of consecutive lines starting with `|`. The **parsing unit** of a 
 
 ## Id
 
-An issue number matching `^[0-9]+[a-z]?$` (`393b` is real). Ids ascend, are never recycled, and `new` takes `max + 1`. A single cell may hold several ids (`20, 24, 29`) or a retired range (`1–199`).
+An issue number matching `^[0-9]+[a-z]?$` (`393b` is real). Ids ascend, are never recycled, and `new` takes `max + 1`. A single cell may hold several ids (`20, 24, 29`) or a retired range (`1–199`). Only `new` can observe reuse: an explicit `new --id N` with `N` at or below the highest existing id still writes but warns `W211`. A static `check` has no notion of "new", so it cannot.
 
 ## Retired range
 
@@ -52,7 +52,7 @@ A closed-table row whose id cell is a range, asserting that every id inside it w
 
 ## Appendix
 
-A free-format `##` section after the body — dated review logs, evidence transcripts. issuemd does not parse, check, or write it, except to forbid `### Issue` headings inside it, so no ledger data can hide there.
+A free-format `##` section after the body — dated review logs, evidence transcripts. issuemd leaves its general content alone, but two things touch it: it forbids `### Issue` headings inside it (`E123`), so no ledger data can hide there; and `close --keep-body` archives a body as a plain `### #N <summary>（已关闭，正文保留）` heading, which `check` reports as `W250`. Any other heading or prose is untouched.
 
 ## Adopt
 

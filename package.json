@@ -7,12 +7,13 @@
   "bin": {
     "issuemd": "dist/bin/issuemd.js"
   },
-  "files": ["dist"],
+  "files": ["dist", "skills/issuemd/SKILL.md", "TEMPLATE.md"],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && bun test src tests",
     "prepack": "npm run build"

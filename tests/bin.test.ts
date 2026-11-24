@@ -64,7 +64,7 @@ test("a consumer can close stdout after the first chunk of a large read", async 
   expect(stderr).toBe("");
 });
 
-test("npm package includes the CLI and keeps the draft ledger skill out", () => {
+test("npm package ships the CLI, the ledger skill, and no removed modules", () => {
   const root = fileURLToPath(new URL("../", import.meta.url));
   const result = spawnSync("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], {
     cwd: root,
@@ -74,7 +74,12 @@ test("npm package includes the CLI and keeps the draft ledger skill out", () => 
   const [pack] = JSON.parse(result.stdout);
   const paths = pack.files.map(({ path }: { path: string }) => path);
   expect(paths).toContain(manifest.bin.issuemd);
-  expect(paths).not.toContain("skills/issuemd/SKILL.md");
+  expect(paths).toContain("skills/issuemd/SKILL.md");
+  expect(paths).toContain("TEMPLATE.md");
+  // Generic Markdown modules were deleted from src/; a stale dist/ must not
+  // smuggle them back into the tarball.
+  expect(paths).not.toContain("dist/src/render.js");
+  expect(paths).not.toContain("dist/src/select.js");
 });
 
 test("the omitted pretty formatter is reported as an unknown option", () => {

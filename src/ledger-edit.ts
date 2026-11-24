@@ -15,7 +15,9 @@ import { STATUS_CLASSES } from "./ledger-check.js";
 
 /** GFM requires a literal pipe inside a cell to be escaped; a newline breaks the row. */
 export function escapeCell(text: string): string {
-  return text.replace(/\|/g, "\\|").replace(/[\r\n]+/g, " ");
+  // Escape only unescaped pipes: a title that already contains `\|` must not
+  // become `\\|`, which would split the cell (E108).
+  return text.replace(/(?<!\\)\|/g, "\\|").replace(/[\r\n]+/g, " ");
 }
 
 /**

@@ -107,6 +107,43 @@ describe("issuemd check", () => {
     expect(check(withRule).report.errors).toEqual([]);
   });
 
+  test("warns W250 when 附录 holds a body archived by close --keep-body", () => {
+    const source = canonical.replace(
+      "### 2026-11-20 复核记录",
+      "### #1 登录页闪烁（已关闭，正文保留）\n\n> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。\n\n**现象**：保留的正文。\n\n### 2026-11-20 复核记录",
+    );
+    const { code, report } = check(source);
+    expect(code).toBe(0);
+    expect(report.errors).toEqual([]);
+    expect(report.warnings).toContainEqual(expect.objectContaining({
+      code: "W250", id: "1", line: lineOf(source, "### #1 登录页闪烁"),
+    }));
+  });
+
+  test("a fenced lookalike of the archive heading is not W250", () => {
+    const source = canonical.replace(
+      "### 2026-11-20 复核记录",
+      "```md\n### #1 登录页闪烁（已关闭，正文保留）\n```\n\n### 2026-11-20 复核记录",
+    );
+    const { report } = check(source);
+    expect(report.warnings).not.toContainEqual(expect.objectContaining({ code: "W250" }));
+  });
+
+  test("W250 is informational and does not fail --strict", () => {
+    // `--keep-body` is the escape hatch spec §7.5 recommends; a ledger that
+    // used it must not stay permanently red under `check --strict`.
+    // Strip the fixture's pinned hash so W250 is the only warning left.
+    const source = canonical
+      .replace("`a1b2c3d`：连续 3 轮 12/12", "连续 3 轮 12/12")
+      .replace(
+        "### 2026-11-20 复核记录",
+        "### #1 登录页闪烁（已关闭，正文保留）\n\n> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。\n\n### 2026-11-20 复核记录",
+      );
+    const strict = check(source, "--strict");
+    expect(strict.code).toBe(0);
+    expect(strict.report.warnings).toContainEqual(expect.objectContaining({ code: "W250" }));
+  });
+
   test("requires the ledger H1 and both guide markers", () => {
     for (const source of [canonical.replace(/^# .*\n/, ""), canonical.replace(/^<!-- issuemd:guide:begin -->\n/m, "")]) {
       expect(check(source).report.errors).toContainEqual(expect.objectContaining({ code: "E112" }));
@@ -138,5 +175,48 @@ describe("issuemd check", () => {
     expect(strict.report.ok).toBe(false);
     expect(strict.report.errors).toEqual([]);
     expect(strict.report.warnings).toContainEqual(expect.objectContaining({ code: "W210", id: "6" }));
+  });
+
+  test("W220 fires for a status word outside the vocabulary", () => {
+    const source = canonical.replace("| 4 | 观察 | P3 |", "| 4 | 未觉 | P3 |");
+    const { report } = check(source);
+    expect(report.warnings).toContainEqual(expect.objectContaining({ code: "W220", id: "4" }));
+    expect(report.errors).toEqual([]);
+  });
+
+  test("W260 fires for progress text in an open summary", () => {
+    const source = canonical.replace("| 2 | 未决 | P1 | 侧栏宽度不可调 |", "| 2 | 未决 | P1 | 侧栏宽度仍缺记忆 |");
+    const { report } = check(source);
+    expect(report.warnings).toContainEqual(expect.objectContaining({ code: "W260", id: "2" }));
+  });
+
+  test("W206 fires for a duplicated body label", () => {
+    const source = canonical.replace(
+      "**现象**：侧栏固定 240px，无法拖拽。",
+      "**现象**：侧栏固定 240px，无法拖拽。\n**现象**：重复的标签。",
+    );
+    const { report } = check(source);
+    expect(report.warnings).toContainEqual(expect.objectContaining({ code: "W206", id: "2" }));
+  });
+
+  test("W203 fires when the guide names a heading that is missing", () => {
+    const source = canonical.replace("`issuemd list FILE`", "`## 不存在的标题`");
+    const { report } = check(source);
+    expect(report.warnings).toContainEqual(expect.objectContaining({ code: "W203" }));
+  });
+
+  test("W202 fires for a short pinned hash and W240 for a missing commit with --verify-commits", () => {
+    const verified = check(canonical, "--verify-commits");
+    expect(verified.report.warnings).toContainEqual(expect.objectContaining({ code: "W202" }));
+    // a1b2c3d is a synthetic hash that does not exist in this repo.
+    expect(verified.report.warnings).toContainEqual(expect.objectContaining({ code: "W240" }));
+  });
+
+  test("W201 fires for a body over 300 lines", () => {
+    const filler = Array.from({ length: 320 }, () => "补充说明。").join("\n");
+    const source = canonical.replace("**验收判据**：重启后保持上次宽度。", `**验收判据**：重启后保持上次宽度。\n${filler}`);
+    const { report } = check(source);
+    expect(report.warnings).toContainEqual(expect.objectContaining({ code: "W201", id: "2" }));
+    expect(report.errors).toEqual([]);
   });
 });

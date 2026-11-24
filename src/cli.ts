@@ -476,15 +476,6 @@ function openLedger(file: string): { loaded: Loaded; ledger: ReturnType<typeof p
   return { loaded, ledger, errors: checkLedger(loaded.doc.text, file).errors };
 }
 
-function parseIntArg(v: string | undefined, flag: string): { value: number } | CliResult {
-  if (v == null) return err(`issuemd: ${flag} expects a value\n`, 2);
-  const n = Number.parseInt(v, 10);
-  if (Number.isNaN(n) || String(n) !== v.trim()) {
-    return err(`issuemd: ${flag} expects an integer, got '${v}'\n`, 2);
-  }
-  return { value: n };
-}
-
 // ---- write commands ---------------------------------------------------
 
 /**
@@ -534,7 +525,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
     return err("usage: issuemd new FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]\n", 2);
   }
   if (v.title == null || v.title.trim() === "") return err("issuemd new: --title is required\n", 2);
-  const title = v.title.trim().replace(/\s+/g, " ");
+  const title = v.title.trim().replace(/\s+/g, " ").replace(/\\\|/g, "|");
   const status = v.status ?? "未决";
   const priority = v.priority ?? "P2";
   const category = statusCategory(status);
@@ -547,12 +538,19 @@ function cmdNew(rest: string[], v: Values): CliResult {
 
   const max = maxIssueId(ledger.rows);
   let idText = String(max + 1);
+  // Ids are never recycled (spec §4.4). An explicit `--id` at or below the
+  // historical maximum is the only place a "new number" can be a reused one,
+  // so W211 is raised here rather than by the history-free `check`.
+  let reusedNumber = false;
   if (v.id != null) {
     // Ids are `\d+[a-z]?` (the real ledgers contain `393b`), not plain ints.
     if (!/^[1-9]\d*[a-z]?$/.test(v.id)) {
       return err(`issuemd new: --id expects a positive id like 42 or 393b, got '${v.id}'\n`, 2);
     }
     idText = v.id;
+    // `2` and `2a` are distinct issues, so a suffixed id is always genuinely
+    // new; only a bare number at or below the current max can be a reuse.
+    reusedNumber = /^\d+$/.test(idText) && Number.parseInt(idText, 10) <= max;
     if (findRow(ledger, idText)) return err(`issuemd new: id ${idText} already exists\n`, 2);
   }
   const id = Number.parseInt(idText, 10);
@@ -585,7 +583,15 @@ function cmdNew(rest: string[], v: Values): CliResult {
   if (!shiftedBody) return err("issuemd new: the 正文 section is missing\n", 3);
   lines = insertLines(lines, bodyInsertAt(afterIndex, parseId(idText)!, shiftedBody.line_end), body);
 
-  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const warnings: string[] = [];
+  if (reusedNumber) {
+    warnings.push(`W211: id ${idText} is at or below the highest existing id ${max}; numbers are not recycled\n`);
+  }
+  if (title.includes("|")) {
+    warnings.push("W205: the title contains a pipe; it was escaped in the table cell\n");
+  }
+  return result.code === 0 && warnings.length > 0 ? { ...result, stderr: result.stderr + warnings.join("") } : result;
 }
 
 function cmdClose(rest: string[], v: Values): CliResult {
@@ -785,7 +791,7 @@ function cmdRename(rest: string[], v: Values): CliResult {
   if (file == null || idText == null || title == null || rest.length !== 3) {
     return err("usage: issuemd rename FILE ID \"NEW TITLE\"\n", 2);
   }
-  const next = title.trim().replace(/\s+/g, " ");
+  const next = title.trim().replace(/\s+/g, " ").replace(/\\\|/g, "|");
   if (next === "") return err("issuemd rename: title must not be empty\n", 2);
   const opened = openLedger(file);
   if ("code" in opened) return opened;
@@ -810,7 +816,11 @@ function cmdRename(rest: string[], v: Values): CliResult {
     (candidate) => `${candidate.id.start}${candidate.id.suffix}` === idText,
   );
   if (block) lines[block.line - 1] = `### Issue ${idText}: ${next}`;
-  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  if (next.includes("|") && result.code === 0) {
+    return { ...result, stderr: result.stderr + "W205: the new title contains a pipe; it was escaped in the table cell\n" };
+  }
+  return result;
 }
 
 function cmdAdopt(rest: string[], v: Values): CliResult {

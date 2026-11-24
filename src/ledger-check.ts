@@ -196,6 +196,26 @@ function checkRows(ledger: Ledger, ids: Record<TableKind, IdSet>) {
   }
 }
 
+/**
+ * `close --keep-body` archives a body under `## 附录` as a plain heading
+ * `### #N <summary>（已关闭，正文保留）`. That keeps 附录 free of `Issue N:`
+ * headings (E123) while still recording where the text came from. The archive
+ * heading is the only way `check` can tell a kept body apart from prose, so it
+ * is what W250 keys on. Fenced lookalikes are not data.
+ */
+const ARCHIVED_BODY = /^ {0,3}###\s+#([1-9]\d*[a-z]?)\s+.*（已关闭，正文保留）\s*$/;
+
+function checkAppendix(ledger: Ledger) {
+  const { lines, visible, sections, warnings } = ledger;
+  const appendix = sections.find((section) => section.level === 2 && section.title === "附录");
+  if (!appendix) return;
+  for (let line = appendix.line_start + 1; line <= appendix.line_end; line++) {
+    if (!visible.has(line)) continue;
+    const match = ARCHIVED_BODY.exec(lines[line - 1]);
+    if (match) warnings.push({ code: "W250", line, id: match[1], message: "Issue body kept in 附录 by close --keep-body" });
+  }
+}
+
 function checkGuide(ledger: Ledger) {
   const { lines, visible, sections, warnings } = ledger;
   const guide = sections.find((section) => section.level === 2 && section.title === "怎么用");
@@ -275,11 +295,16 @@ export function checkLedger(src: string, file: string, options: Options = {}) {
     }
     checkBodies(ledger, open, ids);
     checkRows(ledger, ids);
+    checkAppendix(ledger);
     checkGuide(ledger);
     checkHashes(ledger, file, options.verifyCommits ?? false);
   }
   const compare = (a: Diagnostic, b: Diagnostic) => a.line - b.line || a.code.localeCompare(b.code);
   errors.sort(compare);
   warnings.sort(compare);
-  return { file, counts, errors, warnings, ok: errors.length === 0 && (!options.strict || warnings.length === 0) };
+  // W250 records a deliberate `--keep-body` archive, not a defect. Failing
+  // `--strict` on it would leave every ledger that used the escape hatch
+  // permanently red, so it is reported but does not affect `ok`.
+  const strictFailures = warnings.filter(({ code }) => code !== "W250");
+  return { file, counts, errors, warnings, ok: errors.length === 0 && (!options.strict || strictFailures.length === 0) };
 }

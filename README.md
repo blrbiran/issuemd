@@ -11,12 +11,13 @@ issuemd show    FILE ID [--json] [--label 验收判据]
 issuemd counts  FILE [--json]
 issuemd read    FILE <H2 heading>
 
-issuemd new     FILE --title T [--id N] [--status S] [--priority P]
+issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]
 issuemd close   FILE ID [--criteria TEXT | --criteria-from-body] [--keep-body]
 issuemd reopen  FILE ID
 issuemd status  FILE ID NEW_STATUS
 issuemd rename  FILE ID "NEW TITLE"
-issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]]
+issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
+                      [--move-progress | --drop-progress]]
 issuemd adopt   FILE [--dry-run] [--report PATH]
 ```
 
@@ -59,7 +60,8 @@ With Bun available, run `npm test` to build the CLI and run its tests. The plann
 - [`/docs/spec.md`](docs/spec.md) — the full specification: measured problems, canonical format, invariants, command surface, implementation plan, acceptance criteria on synthetic fixtures.
 - [`/docs/adr/`](docs/adr/) — the decisions that would look arbitrary without context (why no compatibility layer, why closing deletes the body, why the summary equals the body title).
 - [`/GLOSSARY.md`](GLOSSARY.md) — the vocabulary: ledger, index, closed table, body block, pipe block, criteria, progress text, drift.
-- [`/skills/issuemd/SKILL.md`](skills/issuemd/SKILL.md) — the agent-facing skill (drop into `~/.agents/skills/issuemd/`).
+- [`/TEMPLATE.md`](TEMPLATE.md) — an empty ledger that already passes `check`; copy it and run `issuemd new` to start.
+- [`/skills/issuemd/SKILL.md`](skills/issuemd/SKILL.md) — the agent-facing skill, shipped inside the npm package (`files` includes it) and droppable into `~/.agents/skills/issuemd/`.
 
 Three principles run through all of them:
 
@@ -75,9 +77,11 @@ There is exactly one command surface: `issuemd` is a ledger tool, not a general 
 
 ## Status
 
-P0–P4 are implemented: the Markdown baseline, byte-faithful atomic writes, the canonical parser and `check`, the read views, the ledger write verbs, and `adopt`. `new`, `close`, `reopen`, `status`, `rename` and `sync` all share one gate that re-runs `check` in memory and refuses any change that introduces a new error.
+P0–P5 are implemented: the Markdown baseline, byte-faithful atomic writes, the canonical parser and `check`, the read views, the ledger write verbs, `adopt`, and the agent skill (now packaged). `new`, `close`, `reopen`, `status`, `rename` and `sync` all share one gate that re-runs `check` in memory and refuses any change that introduces a new error.
 
-The two hand-written cross-check scripts (`check-issues.mjs`, `verify-facts.mjs`) that predated `check` have been removed. What remains from P5 is a packaging decision: whether to ship `skills/issuemd/SKILL.md` in the npm package (today `files` is `dist` only, and a test pins that).
+The two hand-written cross-check scripts (`check-issues.mjs`, `verify-facts.mjs`) that predated `check` have been removed. `skills/issuemd/SKILL.md` and `TEMPLATE.md` ship in the npm package; `files` is `dist` plus those two files, and `build` empties `dist` first so a deleted source can't linger in the tarball.
+
+Not done yet: publishing to npm and the public release both wait on the lilmd licence confirmation below.
 
 ## License
 

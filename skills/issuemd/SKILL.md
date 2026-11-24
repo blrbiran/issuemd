@@ -16,6 +16,8 @@ The rule that matters: **never hand-edit a status table.** A ledger has structur
 command -v issuemd || npm install -g @blrbiran/issuemd
 ```
 
+Starting a brand-new ledger? Copy the packaged `TEMPLATE.md` (it already passes `check`) and add the first issue with `issuemd new`.
+
 If `issuemd` is unavailable and cannot be installed, fall back to `lilmd` + a manual consistency pass, and say so once. Don't burn turns reinstalling.
 
 ## The loop
@@ -64,7 +66,7 @@ issuemd check FILE                # exit 0 ok / 1 no match / 2 usage / 3 found e
 issuemd check FILE --json         # machine-readable
 ```
 
-Exit code **3** means structural errors. Fix them before reporting anything as done.
+Exit code **3** means structural errors. Fix them before reporting anything as done. `check` also reports `W250` for an appendix entry left by `close --keep-body` (a `### #N <summary>（已关闭，正文保留）` heading) — that's intentional, not drift.
 
 ### 5. Fix drift mechanically
 
@@ -88,7 +90,7 @@ If `--titles` reports W260 (a table summary carries progress text the body title
 - **Status lives only in the table.** A `**状态**` line in a body is an error (`E107`).
 - **The summary and the body title are the same string.** Don't shorten one; `rename` changes both.
 - **Escape pipes inside cells** as `\|` (`E108` / `W205`).
-- **Ids are `\d+[a-z]?`** (`393b` is real) and are never recycled.
+- **Ids are `\d+[a-z]?`** (`393b` is real) and are never recycled. `new FILE --id N` with `N` at or below the highest existing id still writes, but prints `W211` — don't reuse a number just because its row is gone.
 - **`--body-file` replaces the whole body**; without it, `new` writes the four-label skeleton (`现象` / `根因` / `期望` / `验收判据`).
 - **`read` matches a top-level `##` heading exactly** — no regex, no substring, no chain. A duplicate or missing title exits `2` and lists the candidates.
 - **A row that holds several ids is read-only for per-id verbs.** `close`/`rename`/`status` on `| 20, 24, 29 |` refuse; split the row first.

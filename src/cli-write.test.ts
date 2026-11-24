@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { run } from "../src/cli.js";
 
 const fixture = new URL("../fixtures/canonical-clean.md", import.meta.url);
+const TEMPLATE = readFileSync(new URL("../TEMPLATE.md", import.meta.url), "utf8");
 const bin = fileURLToPath(new URL("../dist/bin/issuemd.js", import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "issuemd-write-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -66,6 +67,13 @@ describe("new", () => {
     expect((await clean(path)).code).toBe(0);
   });
 
+  test("a piped title warns W205 on new as well", async () => {
+    const path = ledger();
+    const result = await run(["new", path, "--title", "a | b"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("W205");
+  });
+
   test("a taken --id exits 2 and writes nothing", async () => {
     const path = ledger();
     const before = readFileSync(path);
@@ -103,6 +111,32 @@ describe("new", () => {
     for (const bad of ["0", "abc", "1.5", "-3"]) {
       expect((await run(["new", path, "--title", "x", "--id", bad])).code).toBe(2);
     }
+  });
+
+  test("--id below the historical max warns W211 about a reused number", async () => {
+    const path = join(dir, "gap.md");
+    // Remove the closed row for #5 so the number below max 20 is free.
+    writeFileSync(path, readFileSync(fixture, "utf8").replace("| 5 | 决定不改 | | 支持 IE11 | 产品裁决：只支持常青浏览器 |\n", ""));
+    const result = await run(["new", path, "--title", "旧号复用", "--id", "5"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("W211");
+    expect(text(path)).toContain("| 5 | 未决 | P2 | 旧号复用 |");
+    expect((await clean(path)).code).toBe(0);
+  });
+
+  test("--id above the historical max does not warn", async () => {
+    const path = ledger();
+    const result = await run(["new", path, "--title", "新号", "--id", "21"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+  });
+
+  test("a suffixed --id is a distinct issue, not a reused number", async () => {
+    const path = join(dir, "suffix.md");
+    writeFileSync(path, TEMPLATE);
+    await run(["new", path, "--title", "base", "--id", "1"]);
+    // `1a` shares a base with `1` but is its own issue; it must not trip W211.
+    expect((await run(["new", path, "--title", "child", "--id", "1a"])).stderr).toBe("");
   });
 
   test("a non-ledger is refused with exit 3 and no write", async () => {
@@ -274,6 +308,29 @@ describe("rename", () => {
   test("a title with a pipe stays one escaped cell", async () => {
     const path = ledger();
     expect((await run(["rename", path, "2", "a | b"])).code).toBe(0);
+    expect(text(path)).toContain("| 2 | 未决 | P1 | a \\| b |");
+    expect((await clean(path)).code).toBe(0);
+  });
+
+  test("a piped title warns W205 on stderr but still writes", async () => {
+    const path = ledger();
+    const result = await run(["rename", path, "2", "a | b"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("W205");
+    expect(text(path)).toContain("| 2 | 未决 | P1 | a \\| b |");
+  });
+
+  test("a plain title does not warn", async () => {
+    const path = ledger();
+    expect((await run(["rename", path, "2", "普通标题"])).stderr).toBe("");
+  });
+
+  test("an already-escaped pipe is not escaped twice", async () => {
+    const path = ledger();
+    // The title arrives pre-escaped; escaping it again would produce `\\|`
+    // and split the cell (E108). Accept it as a single literal pipe.
+    const result = await run(["rename", path, "2", "a \\| b"]);
+    expect(result.code).toBe(0);
     expect(text(path)).toContain("| 2 | 未决 | P1 | a \\| b |");
     expect((await clean(path)).code).toBe(0);
   });
