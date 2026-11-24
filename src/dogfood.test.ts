@@ -1024,3 +1024,29 @@ describe("probe: adopt keeps every row's summary visible", () => {
     expect(result.stdout).toContain("乙");
   });
 });
+
+describe("probe: adopt never turns extra columns into criteria", () => {
+  test("an open row without a body: extras go to 原表格判据 with a decision, not 验收判据", async () => {
+    const path = file("# T\n\n## 待处理\n\n| # | 状态 | 优先级 | 摘要 | 负责人 |\n|---|---|---|---|---|\n| 1 | 未决 | P1 | 一 | alice |\n");
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    expect(text(path)).not.toMatch(/\*\*验收判据\*\*：负责人/);
+    expect(text(path)).toContain("**原表格判据**：负责人：alice");
+    expect(result.stdout).toContain("extra-columns");
+    // A plain close must not promote the owner column as criteria.
+    expect((await run(["close", path, "1"])).code).toBe(2);
+  });
+
+  test("a real criteria column still fills the skeleton's 验收判据", async () => {
+    const path = file("# T\n\n## 待处理\n\n| # | 状态 | 摘要 | 判据 | 负责人 |\n|---|---|---|---|---|\n| 1 | 未决 | 一 | 能登录 | bob |\n");
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toContain("**验收判据**：能登录");
+    expect(text(path)).toContain("**原表格判据**：负责人：bob");
+  });
+
+  test("closed rows keep criteria then extras in the 判据 cell", async () => {
+    const path = file("# T\n\n## 已关闭\n\n| # | 状态 | 摘要 | 判据 | 负责人 |\n|---|---|---|---|---|\n| 1 | 已修 | 一 | 修好了 | bob |\n");
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toContain("| 1 | 已修 |  | 一 | 修好了；负责人：bob |");
+  });
+});

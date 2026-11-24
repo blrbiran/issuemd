@@ -91,6 +91,11 @@ type Row = {
   priority: string;
   summary: string;
   criteria: string;
+  /**
+   * Text from columns that are not criteria (`负责人：alice`, overflow cells).
+   * Kept apart so it is never mistaken for an open issue's 验收判据.
+   */
+  extras: string;
   /** The H2 section the row was found in, used to infer its table. */
   section: string;
 };
@@ -253,9 +258,10 @@ function rowsOf(blocks: Block[]): Row[] {
       const verdict = /^([^：:\s]+)\s*[：:]\s*(.*)$/.exec(criteria);
       const fromCell = !declared && verdict && STATUS_WORDS.has(verdict[1]!) ? verdict[1] : undefined;
       if (fromCell) criteria = verdict![2]!.trim();
+      const extras: string[] = [];
       for (const { index: at, name } of mapping.extra ?? []) {
         const value = (cells[at] ?? "").trim();
-        if (value) criteria = criteria ? `${criteria}；${name}：${value}` : `${name}：${value}`;
+        if (value) extras.push(`${name}：${value}`);
       }
       // Cells past the mapped columns (a row wider than its header, usually
       // an unescaped pipe) are text too; they must not vanish with the row.
@@ -264,7 +270,7 @@ function rowsOf(blocks: Block[]): Row[] {
       cells.forEach((cell, at) => {
         const value = cell.trim();
         if (mapped.has(at) || value === "") return;
-        criteria = criteria ? `${criteria}；${value}` : value;
+        extras.push(value);
       });
       // Keep the declared string even when it is not in the vocabulary, so
       // the decision report can name what the ledger actually said. A group
@@ -279,6 +285,7 @@ function rowsOf(blocks: Block[]): Row[] {
         priority: (mapping.priority != null ? cells[mapping.priority] : "")?.trim() ?? "",
         summary: (cells[mapping.summary] ?? "").trim(),
         criteria,
+        extras: extras.join("；"),
         section: block.section,
       });
     });
@@ -548,6 +555,7 @@ export function adopt(src: string): AdoptResult {
       // where criteria live), then the others.
       criteria: [...new Set([closedSection, ...group].filter((row): row is Row => row != null)
         .map((row) => row.criteria).filter((value) => value !== ""))].join("；"),
+      extras: [...new Set(group.map((row) => row.extras).filter((value) => value !== ""))].join("；"),
       priority: indexCopy?.priority || (group.find((row) => row.priority !== "")?.priority ?? ""),
     };
     const priorities = [...new Set(group.map((row) => row.priority).filter((value) => value !== ""))];
@@ -761,11 +769,16 @@ export function adopt(src: string): AdoptResult {
     // `body.line` is the heading itself; the slice starts one line later.
     const content = body
       ? trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, row.idText, body.line))
-      : ["**现象**：", "", "**根因**：", "", "**期望**：", "", `**验收判据**：${row.criteria}`, ""];
+      : ["**现象**：", "", "**根因**：", "", "**期望**：", "", `**验收判据**：${row.criteria}`];
     // The index has no criteria column. Criteria (or extra columns) an open
     // row carried in the old table go into its body instead of vanishing.
-    if (body && row.criteria !== "" && !content.some((line) => line.includes(row.criteria))) {
-      content.push("", `**原表格判据**：${row.criteria}`);
+    // Extra columns are never 验收判据: a later `close` would promote them.
+    const leftover = [
+      body && row.criteria !== "" && !content.some((line) => line.includes(row.criteria)) ? row.criteria : "",
+      row.extras,
+    ].filter((value) => value !== "").join("；");
+    if (leftover !== "") {
+      content.push("", `**原表格判据**：${leftover}`);
       decisions.push({
         kind: "extra-columns",
         id: row.idText,
@@ -1028,7 +1041,8 @@ export function adopt(src: string): AdoptResult {
     "",
     formatRow(["#", "状态", "P", "摘要", "判据"]),
     "|---|---|---|---|---|",
-    ...closed.map((row) => formatRow([row.idText, row.status ?? "未分类", row.priority, row.summary, row.criteria])),
+    ...closed.map((row) => formatRow([row.idText, row.status ?? "未分类", row.priority, row.summary,
+      [row.criteria, row.extras].filter((value) => value !== "").join("；")])),
     "",
     "## 正文",
     "",
