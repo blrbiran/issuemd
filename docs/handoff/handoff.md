@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-24（第六轮：dogfooding 反馈）。写给下一位接手者。
+更新于 2026-11-24（第七轮：合入台账动词 + 测试者复测 #50/#51）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -16,9 +16,9 @@
 
 `issuemd` P0–P5 早已完成；第五轮（发布准备）已 ff 合入 `main`。第六轮按测试者的 dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`，49 条，**不在本仓库、不要改它**）逐条复现并修复：
 
-- **已在 `main`**：阶段 1（静默丢数据/破坏）+ 阶段 2（读写体验）+ 文档。测试全绿（数量以 `npm test` 末行为准）。
-- **在 `feat/ledger-verbs`、未合入**：阶段 3 新命令 `body` / `priority` / `split` / `reopen --status`。命令面扩大是用户要拍板的事，故意留在分支上等复核（见「等待用户」第 1 条）。
-- 未 push、未发布 npm。
+- **已在 `main`**：阶段 1（静默丢数据/破坏）+ 阶段 2（读写体验）+ 阶段 3 新命令 `body` / `priority` / `split` / `reopen --status`（第七轮用户裁定合入，`feat/ledger-verbs` 已 ff 并删除）+ 文档。测试全绿（数量以 `npm test` 末行为准）。
+- 第七轮：测试者在台账追加 #50（adopt 把表格小节内的正文存两份）与 #51（复测：40 条已修、7 条未达标）。#50、#41 判据 4、#46 判据 1、#30 判据 4 已修；#10/#16/#30/#44 随合入达标。#51 说的「分支丢失」是因为分支从未 push，合入后由用户 push 即可。
+- 第六轮之前的提交用户已 push；第七轮提交未 push。未发布 npm。
 
 ## 工作流约定（用户明确要求）
 
@@ -31,12 +31,22 @@
 
 ## 等待用户决策 / 动作
 
-1. **复核 `feat/ledger-verbs` 并决定是否合入**（推荐合）。设计：`docs/superpowers/specs/2026-11-24-ledger-verbs-design.md`。分支基于本文档之前的 `main`，若 main 有新提交需先 `git rebase main` 再 ff。
-2. **push `main`**（用户手动）。
-3. **npm 发布**（用户自己定时机）。发布前：`npm pack` → 临时目录安装 → 跑 `check`/`new`，并 `import('@blrbiran/issuemd')`。
-4. dogfooding 台账里的 49 条要不要回写状态（例如用 issuemd 自己把已修的条目 `close`）——那是测试者的文件，本轮没动。
+1. **push `main`**（用户手动）。
+2. **npm 发布**（用户之后决定）。发布前：`npm pack` → 临时目录安装 → 跑 `check`/`new`，并 `import('@blrbiran/issuemd')`。
+3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。
+4. 第七轮待决 Q1–Q4（推荐都是「不做」，见「第七轮待决」）。
+5. `.cafe`（cafe 工具的本地配置）随 `feat/ledger-verbs` 被提交进了仓库；是否应该进 `.gitignore` 并移出版本库，由用户决定。
 
-## 本轮裁定（用户 2026-11-24「按推荐」）
+## 第七轮待决（未拍板，推荐都是「不做」）
+
+| Q | 问题 | 推荐与理由 |
+|---|---|---|
+| Q1 | #22 判据 3：check 对「已关闭行判据为空」报 warning | 不做。close 已拒绝产生空判据；迁移来的旧已关闭行大量合法为空，warning 会让 `--strict` 不可用。可选替代：只读的 `list --closed` 空判据过滤 |
+| Q2 | #18：写命令 `--json` 冲突输出；dry-run 校验快照 | 不做。exit 4 已可机器识别；dry-run 只读一次，没有可比的旧快照（第六轮 Q3 裁定） |
+| Q3 | #46 判据 2/3：`adopt --verify=原文件`；check 报「200 字以上段落重复」 | 不做。改为 W253（按 id 精确）+ 报告守恒行；泛段落去重在真实台账里误报多 |
+| Q4 | #48 判据 4：check 报「`### Issue` 前无空行」 | 不做。CommonMark 不要求空行，解析正确；写命令已不再产生 |
+
+## 第六轮裁定（用户 2026-11-24「按推荐」）
 
 | Q | 裁定 | 落地 |
 |---|---|---|
@@ -83,6 +93,8 @@
 | #46 迁移守恒 | 修：adopt 内置「每行输入都在输出里」自检，否则拒写；未做独立 `--verify` 命令 |
 | #47 `'''` | 修 |
 | #48 追加空行 | 修：`insertBlock` |
+| #50 adopt 正文双份 | 第七轮修：表格小节内的 `### Issue N:` 只走正文/归档一条路；check 新增 W253（附录里同一正文的第二份） |
+| #51 复测 | 7 条未达标中：#10/#16/#30/#44 随合入达标（#30 判据 4 补了 help 文案）；#41 判据 4 改了拒绝文案；#46 判据 1 加了报告守恒行与编号守恒拒写；#46 判据 2/3、#48 判据 4、#22 判据 3、#18 json 见「第七轮待决」 |
 
 真实台账试跑（只读副本，在 scratch 目录；**不进测试**）：cafe 与 orca 迁移前版本跑 `adopt`，编号集合前后一致（78/78、291/291），叙述小节与 H1 引言保留；#43 的 60/92/191/226 映射为 决定不改/不是缺陷/延后。cafe 原文件有 4 行单元格内未转义 `|`，adopt 会以源行号拒绝——这是源文件问题，不是 bug。
 
@@ -116,7 +128,7 @@ issuemd adopt   FILE [--dry-run] [--report PATH]
 issuemd <command> --help
 ```
 
-分支上另有：`body FILE ID --body-file`、`priority FILE ID P`、`split FILE ID`、`reopen --status S`。
+另有：`body FILE ID --body-file`、`priority FILE ID P`、`split FILE ID`、`reopen --status S`（第七轮合入）。
 
 退出码：0 成功 / 1 没有这条 issue 或空结果 / 2 用法或 I/O / 3 校验失败 / **4 E130 并发改动（可重试）**。
 
@@ -134,7 +146,7 @@ issuemd <command> --help
   - 归档格式常量：`archiveHeading()`、`ARCHIVE_HEADING`、`ARCHIVE_NOTE`、`KEPT_BODY_END`。close / adopt / reopen / rename / check 共用，改格式只改这里，并跑 `keep-body round trip`。
   - 注意 `ledger-edit` 与 `ledger-check` 互相 import（只在函数里用对方，模块初始化时不能用）。
 - **`src/ledger.ts`**：`parseLedger` 新增 `unreadable: UnreadableRow[]`（E108/E109 丢掉的表行，能解析的话带 ids）；`maxIssueId(rows, unreadable)`。E108 文案在格数偏多时提示未转义 `|`。
-- **`src/ledger-check.ts`**：`PRIORITIES`、`summaryKey`（W212 的 NFKC/大小写/空白折叠）；`checkHashes` 区分 pinned（W202）与仅校验（判据列，给 W240 用）；`checkAppendix` 出 W250/W251/W252。`--strict` 仍只豁免 W250。
+- **`src/ledger-check.ts`**：`PRIORITIES`、`summaryKey`（W212 的 NFKC/大小写/空白折叠）；`checkHashes` 区分 pinned（W202）与仅校验（判据列，给 W240 用）；`checkAppendix` 出 W250/W251/W252/W253。`--strict` 仍只豁免 W250。
 - **`src/ledger-read.ts`**：`ListedIssue` 带 `ids`/`count`；`expandIssues`（上限 10 万）；`formatListedIssue`；`viewIssue` 带 `labels`、`criteriaSource`。
 - **`src/adopt.ts`**（大改，改前读完它）：
   - 开头：输入 `check` 0 error 且无 W220 → 原样返回。
@@ -183,9 +195,8 @@ issuemd <command> --help
 
 ## 还没做 / 仅供参考
 
-- 阶段 3 合入（等用户）。合入后把 SKILL「never hand-edit a ledger」那句与 `body` 命令一起生效（分支上已改好）。
 - spec §14 的 Q2（`adopt --prefer` 信息丢失）与 Q5（第二套状态词）：用户明确不做，需要时先 brainstorming。
-- #46 的独立 `adopt --verify=<原文件>` 与 `check` 的「附录重复段落」warning：未做（adopt 内置守卫已覆盖丢失；重复未检测）。
+- #46 的独立 `adopt --verify=<原文件>` 与 `check` 的「附录重复段落」warning：未做（见第七轮 Q3；同 id 重复由 W253 检测）。
 - #18 的锁文件方案：未做。
 
 ## 验收与命令
