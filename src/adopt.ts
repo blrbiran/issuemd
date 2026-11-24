@@ -133,38 +133,50 @@ function mappingFor(header: string[] | undefined, width: number): Mapping | unde
   if (header) {
     const index = (...names: string[]) => header.findIndex((cell) => names.includes(cell));
     const id = index("#", "编号", "ID", "Id", "id");
-    if (id >= 0) {
-      const status = index("状态");
-      const priority = index("P", "优先级");
-      const named = index("摘要", "标题");
-      const used = new Set([id, status, priority, named].filter((at) => at >= 0));
-      const summary = named;
-      if (summary >= 0) {
-        used.add(summary);
-        let criteria = index("判据");
-        if (criteria < 0) criteria = header.findIndex((cell, at) => !used.has(at) && VERDICT_COLUMNS.includes(cell));
-        if (criteria >= 0) used.add(criteria);
-        const extra = header.flatMap((name, at) => (used.has(at) ? [] : [{ index: at, name }]));
-        return {
-          id,
-          status: status >= 0 ? status : undefined,
-          priority: priority >= 0 ? priority : undefined,
-          summary,
-          criteria: criteria >= 0 ? criteria : undefined,
-          extra: extra.length ? extra : undefined,
-        };
+    if (id < 0) return undefined; // a header that names no id column is not an issue table
+    const status = index("状态");
+    const priority = index("P", "优先级");
+    const named = index("摘要", "标题");
+    let criteria = index("判据");
+    const taken = new Set([id, status, priority, named, criteria].filter((at) => at >= 0));
+    if (criteria < 0) criteria = header.findIndex((cell, at) => !taken.has(at) && VERDICT_COLUMNS.includes(cell));
+    if (criteria >= 0) taken.add(criteria);
+    // Without 摘要/标题 the summary is the first column the header does not
+    // name otherwise — but only when the header names something else we know
+    // (`| # | 状态 | 说明 |`) or is just `| # | X |`. Reading an unknown wide
+    // header by position turned 状态 into the summary; such tables are kept
+    // verbatim instead.
+    let summary = named;
+    if (summary < 0) {
+      const knows = status >= 0 || priority >= 0 || criteria >= 0;
+      if (!knows && width !== 2) return undefined;
+      summary = header.findIndex((_, at) => !taken.has(at));
+      if (summary < 0 && criteria >= 0) {
+        // `| # | 判据 |`: the only text there is is the summary.
+        summary = criteria;
+        criteria = -1;
       }
+      if (summary < 0) return undefined;
     }
+    const used = new Set([id, status, priority, summary, criteria].filter((at) => at >= 0));
+    const extra = header.flatMap((name, at) => (used.has(at) ? [] : [{ index: at, name }]));
+    return {
+      id,
+      status: status >= 0 ? status : undefined,
+      priority: priority >= 0 ? priority : undefined,
+      summary,
+      criteria: criteria >= 0 ? criteria : undefined,
+      extra: extra.length ? extra : undefined,
+      guess: named < 0,
+    };
   }
-  // Width decides for header-less blocks, and for headers that name no
-  // 摘要/标题 (`| # | 说明 |`, `| # | 摘要 | 裁决 |` is handled above). Either
-  // way it is a guess, trusted only inside a ledger table section. Wider
-  // tables are not guessed at: they are kept verbatim instead.
-  const guess = header !== undefined;
-  if (width === 2) return { id: 0, summary: 1, guess };
-  if (width === 3) return { id: 0, summary: 1, criteria: 2, guess };
-  if (width === 5) return { id: 0, status: 1, priority: 2, summary: 3, criteria: 4, guess };
-  if (width === 4) return { id: 0, status: 1, priority: 2, summary: 3, guess };
+  // Header-less blocks: width decides (`# | 摘要 | 判据` is the orca shape).
+  // A guess, trusted only inside a ledger table section; wider blocks are
+  // kept verbatim.
+  if (width === 2) return { id: 0, summary: 1 };
+  if (width === 3) return { id: 0, summary: 1, criteria: 2 };
+  if (width === 5) return { id: 0, status: 1, priority: 2, summary: 3, criteria: 4 };
+  if (width === 4) return { id: 0, status: 1, priority: 2, summary: 3 };
   return undefined;
 }
 
@@ -252,6 +264,15 @@ function rowsOf(blocks: Block[]): Row[] {
         const value = (cells[at] ?? "").trim();
         if (value) criteria = criteria ? `${criteria}；${name}：${value}` : `${name}：${value}`;
       }
+      // Cells past the mapped columns (a row wider than its header, usually
+      // an unescaped pipe) are text too; they must not vanish with the row.
+      const mapped = new Set([mapping.id, mapping.status, mapping.priority, mapping.summary, mapping.criteria,
+        ...(mapping.extra ?? []).map(({ index: at }) => at)].filter((at) => at != null));
+      cells.forEach((cell, at) => {
+        const value = cell.trim();
+        if (mapped.has(at) || value === "") return;
+        criteria = criteria ? `${criteria}；${value}` : value;
+      });
       // Keep the declared string even when it is not in the vocabulary, so
       // the decision report can name what the ledger actually said. A group
       // heading wins only when the row itself declares nothing.
@@ -516,9 +537,13 @@ export function adopt(src: string): AdoptResult {
       idText,
       status,
       summary: (closedSection ?? group[0]!).summary || group[0]!.summary,
-      criteria: group.reduce((best, row) => (row.criteria.length > best.length ? row.criteria : best), ""),
-      priority: group.find((row) => row.priority !== "")?.priority ?? "",
+      // Every distinct criterion survives: closed-table copy first (that is
+      // where criteria live), then the others.
+      criteria: [...new Set([closedSection, ...group].filter((row): row is Row => row != null)
+        .map((row) => row.criteria).filter((value) => value !== ""))].join("；"),
+      priority: indexCopy?.priority || (group.find((row) => row.priority !== "")?.priority ?? ""),
     };
+    const priorities = [...new Set(group.map((row) => row.priority).filter((value) => value !== ""))];
 
     const declared = group.find((row) => row.status != null && !STATUS_WORDS.has(row.status))?.status;
     if (declared != null) {
@@ -549,10 +574,11 @@ export function adopt(src: string): AdoptResult {
         id: idText,
         line: group[1]!.line,
         message:
-          `#${idText} 在多张表里各有一行；已按字段合并（状态取索引，判据取已关闭表）` +
+          `#${idText} 在多张表里各有一行；已按字段合并（状态与优先级取索引，各处不同的判据都保留，以「；」连接）` +
           (declaredStatuses.length > 1
             ? `；两处状态矛盾（${declaredStatuses.join(" / ")}），需人工确认`
-            : ""),
+            : "") +
+          (priorities.length > 1 ? `；优先级不一致（${priorities.join(" / ")}），采用 ${merged.priority}` : ""),
       });
     }
     if (merged.ids.length > 1) {
@@ -895,7 +921,8 @@ export function adopt(src: string): AdoptResult {
 
   // The H1's own prose (scope notes, criteria conventions) stays where it
   // was; the template blurb is only a default for a ledger without one.
-  const afterH1 = h1 ? sections.find((section) => section.line_start > h1.line_start) : undefined;
+  // Up to the first H2: an H3 directly under the H1 is header prose too.
+  const afterH1 = h1 ? sections.find((section) => section.line_start > h1.line_start && section.level <= 2) : undefined;
   const headerOwn = h1
     ? trimBlankEdges(lines.slice(h1.line_start, (afterH1?.line_start ?? lines.length + 1) - 1))
     : [];

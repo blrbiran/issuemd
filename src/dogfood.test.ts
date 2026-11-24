@@ -639,3 +639,97 @@ describe("#19 links", () => {
     expect(result.stderr).toContain("hard link");
   });
 });
+
+// ---- independent review of round six -------------------------------------
+
+const ledgerSkeleton = (index: string, closed = "| # | 状态 | P | 摘要 | 判据 |\n|---|---|---|---|---|\n", body = "") =>
+  `# 台账\n\n## 索引\n\n${index}\n## 已关闭\n\n${closed}\n## 正文\n\n${body}`;
+
+describe("review: adopt keeps every cell and reads named columns", () => {
+  test("a header without 摘要 still uses its named 状态 column", async () => {
+    const { result, path } = await adopted(ledgerSkeleton("| # | 状态 | 说明 |\n|---|---|---|\n| 1 | 未决 | do the thing |\n| 2 | 已修 | done thing |\n"));
+    expect(result.code).toBe(0);
+    const open = JSON.parse((await run(["list", path, "--json"])).stdout).issues;
+    expect(open.map((i: { id: string; summary: string }) => [i.id, i.summary])).toEqual([["1", "do the thing"]]);
+    const closed = JSON.parse((await run(["list", path, "--closed", "--json"])).stdout).issues;
+    expect(closed[0].id).toBe("2");
+    expect(closed[0].status).toBe("已修");
+  });
+
+  test("an unknown wide header is kept verbatim, not read by position", async () => {
+    const source = ledgerSkeleton("| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 1 | 未决 | P1 | 已知 |\n\n### 杂表\n\n| # | 描述 | 负责人 | 日期 |\n|---|---|---|---|\n| 9 | 某事 | bob | 11-20 |\n", undefined, "### Issue 1: 已知\n\n**验收判据**：y\n");
+    const { result, out } = await adopted(source);
+    expect(result.code).toBe(0);
+    expect(out).toContain("| 9 | 某事 | bob | 11-20 |");
+  });
+
+  test("cells beyond the header width are not dropped", async () => {
+    const { result, out } = await adopted(ledgerSkeleton("| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 1 | 已修 | P1 | foo | extra cell |\n"));
+    expect(result.code).toBe(0);
+    expect(out).toContain("extra cell");
+  });
+
+  test("merging duplicate rows keeps both criteria and reports differing priorities", async () => {
+    const source = ledgerSkeleton(
+      "| # | 状态 | P | 摘要 | 判据 |\n|---|---|---|---|---|\n| 1 | 已修 | P1 | foo | index criteria long text here |\n",
+      "| # | 状态 | P | 摘要 | 判据 |\n|---|---|---|---|---|\n| 1 | 已修 | P0 | foo | closed crit |\n");
+    const { result, out } = await adopted(source);
+    expect(result.code).toBe(0);
+    expect(out).toContain("index criteria long text here");
+    expect(out).toContain("closed crit");
+    expect(result.stdout).toMatch(/P1.*P0|P0.*P1/);
+  });
+
+  test("an H3 directly under the H1 is kept, not refused", async () => {
+    const source = "# 台账\n\n### Background\n\n背景说明。\n\n" + ledgerSkeleton("| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 1 | 已修 | P1 | foo |\n").replace("# 台账\n\n", "");
+    const { result, out } = await adopted(source);
+    expect(result.code).toBe(0);
+    expect(out).toContain("背景说明。");
+  });
+});
+
+describe("review: write verbs", () => {
+  test("reopen of a kept body keeps the criteria the close recorded", async () => {
+    const path = await withIssue("**现象**：a\n");
+    await run(["close", path, "1", "--keep-body", "--criteria", "manual X"]);
+    expect((await run(["reopen", path, "1"])).code).toBe(0);
+    expect(text(path)).toContain("manual X");
+  });
+
+  test("close does not leave extra blank lines at EOF when 正文 is last", async () => {
+    // The source ends with exactly one newline; no write may add blank lines at EOF.
+    const path = file(TEMPLATE.replace(/\n## 附录[\s\S]*$/, "\n").replace(/\n+$/, "\n"));
+    expect((await run(["new", path, "--title", "甲", "--body-file", body("**现象**：a\n\n**验收判据**：x\n")])).code).toBe(0);
+    expect(text(path).endsWith("\n\n")).toBe(false);
+    expect((await run(["close", path, "1"])).code).toBe(0);
+    expect(text(path).endsWith("\n\n")).toBe(false);
+  });
+
+  test("reopen keeps 2 before 2a in the index", async () => {
+    const path = file();
+    for (const id of ["2", "2a"]) await run(["new", path, "--id", id, "--title", `t${id}`, "--body-file", body("**验收判据**：x\n")]);
+    await run(["close", path, "2"]);
+    await run(["reopen", path, "2"]);
+    const ids = JSON.parse((await run(["list", path, "--json"])).stdout).issues.map((i: { id: string }) => i.id);
+    expect(ids).toEqual(["2", "2a"]);
+  });
+
+  test("W212 ignores a duplicate that was already closed as 并入", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    await run(["new", path, "--title", "甲", "--body-file", body("**验收判据**：y\n")]);
+    await run(["close", path, "2", "--status", "并入", "--criteria", "dup of #1"]);
+    expect((await run(["check", path, "--strict"])).code).toBe(0);
+  });
+});
+
+describe("review: dry-run diff stays bounded on huge rewrites", () => {
+  test("10k fully changed lines diff quickly", async () => {
+    const { unifiedDiff } = await import("./write.js");
+    const old = Array.from({ length: 10000 }, (_, i) => `old ${i}`);
+    const next = Array.from({ length: 10000 }, (_, i) => `new ${i}`);
+    const started = performance.now();
+    const diff = unifiedDiff(old, next, "f.md");
+    expect(performance.now() - started).toBeLessThan(2000);
+    expect(diff.split("\n").filter((l) => l.startsWith("-old")).length).toBe(10000);
+  });
+});

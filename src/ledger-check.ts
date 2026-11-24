@@ -263,7 +263,9 @@ export const summaryKey = (text: string) => text.normalize("NFKC").toLowerCase()
  */
 function checkDuplicateSummaries(ledger: Ledger) {
   const seen = new Map<string, LedgerRow>();
-  for (const row of [...ledger.rows.open, ...ledger.rows.closed].sort((a, b) => a.line - b.line)) {
+  // Open rows only: a duplicate that was closed (并入, 撤回…) is resolved,
+  // and closed history legitimately repeats summaries.
+  for (const row of [...ledger.rows.open].sort((a, b) => a.line - b.line)) {
     if (row.ids.length !== 1 || row.ids[0].start !== row.ids[0].end) continue;
     const key = summaryKey(row.summary);
     if (key === "") continue;

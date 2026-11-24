@@ -31,12 +31,16 @@ function editScript(old: string[], next: string[]): Op[] {
   const n = a.length;
   const m = b.length;
   const max = n + m;
+  // Each step keeps only its own window of V (k in -d..d), so memory is
+  // O(D²) rather than O(D·(N+M)); past MAX_D edits the middle falls back to
+  // one block of deletions and insertions (still correct, just coarse).
+  const MAX_D = 2000;
   const offset = max + 1;
   const v = new Int32Array(2 * max + 3);
   const trace: Int32Array[] = [];
   let found = n === 0 && m === 0;
-  for (let d = 0; d <= max && !found; d++) {
-    trace.push(v.slice());
+  for (let d = 0; d <= Math.min(max, MAX_D) && !found; d++) {
+    trace.push(v.slice(offset - d - 1, offset + d + 2));
     for (let k = -d; k <= d; k += 2) {
       let x = k === -d || (k !== d && v[offset + k - 1]! < v[offset + k + 1]!)
         ? v[offset + k + 1]!
@@ -53,18 +57,27 @@ function editScript(old: string[], next: string[]): Op[] {
       }
     }
   }
-  if (!found) throw new Error("diff: no edit script"); // unreachable
+  if (!found) {
+    return [
+      ...old.slice(0, head).map((text): Op => ({ kind: " ", text })),
+      ...a.map((text): Op => ({ kind: "-", text })),
+      ...b.map((text): Op => ({ kind: "+", text })),
+      ...old.slice(old.length - tail).map((text): Op => ({ kind: " ", text })),
+    ];
+  }
 
-  // Walk the trace backwards to recover the script.
+  // Walk the trace backwards to recover the script. trace[d] holds V for
+  // k in -(d+1)..(d+1), stored at index k + d + 1.
   const middle: Op[] = [];
   let x = n;
   let y = m;
   for (let d = trace.length - 1; d >= 0 && (x > 0 || y > 0); d--) {
     const vd = trace[d]!;
+    const at = (k: number) => vd[k + d + 1]!;
     const k = x - y;
-    const down = k === -d || (k !== d && vd[offset + k - 1]! < vd[offset + k + 1]!);
+    const down = k === -d || (k !== d && at(k - 1) < at(k + 1));
     const prevK = down ? k + 1 : k - 1;
-    const prevX = vd[offset + prevK]!;
+    const prevX = at(prevK);
     const prevY = prevX - prevK;
     while (x > prevX && y > prevY) {
       middle.push({ kind: " ", text: a[--x]! });

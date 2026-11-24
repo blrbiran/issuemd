@@ -608,11 +608,16 @@ function loadWritable(file: string): Loaded | CliResult {
  * that blank into a trailing newline — so drop trailing blank lines whenever
  * the source had none.
  */
-function terminate(lines: string[], doc: Document): string[] {
-  if (doc.finalNewline) return lines;
+function terminate(lines: string[], doc: Document, original: string[] = []): string[] {
   let end = lines.length;
   while (end > 0 && lines[end - 1] === "") end--;
-  return end === lines.length ? lines : lines.slice(0, end);
+  if (!doc.finalNewline) return end === lines.length ? lines : lines.slice(0, end);
+  // A write never adds blank lines at the end of the file: removing the last
+  // body of 正文 used to leave its separating blank line dangling at EOF.
+  let kept = 0;
+  while (kept < original.length && original[original.length - 1 - kept] === "") kept++;
+  const allowed = Math.min(lines.length - end, kept);
+  return end + allowed === lines.length ? lines : lines.slice(0, end + allowed);
 }
 
 /** `code|id|message` — the identity used to decide whether a diagnostic is new. */
@@ -632,7 +637,7 @@ function commit(
   candidate: string[],
   dryRun: boolean,
 ): CliResult {
-  const newLines = terminate(candidate, loaded.doc);
+  const newLines = terminate(candidate, loaded.doc, loaded.lines);
   const content = joinDocument(newLines, loaded.doc);
   const after = checkLedger(content, file).errors;
   // Count, don't set: several codes (E110, E108, E122, …) carry no id, so a
@@ -824,7 +829,8 @@ function cmdNew(rest: string[], v: Values): CliResult {
     const bad = unreadableHolding(ledger, idText);
     if (bad) return err(`issuemd new: id ${idText} already exists in an unreadable row (L${bad.line}); fix that row first\n`, 2);
   }
-  const id = Number.parseInt(idText, 10);
+  const span = parseId(idText);
+  if (!span) return err(`issuemd new: '${idText}' is not a valid issue id\n`, 2);
 
   let body: string[];
   if (v["body-file"] != null) {
@@ -841,7 +847,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   // Keep the index ascending: insert before the first row with a larger id.
   const insertAt = (() => {
     for (const row of ledger.rows.open) {
-      if (row.ids[0]!.start > id) return row.line;
+      if (compareIds(row.ids[0]!, span) > 0) return row.line;
     }
     return index.end + 1;
   })();
@@ -852,8 +858,6 @@ function cmdNew(rest: string[], v: Values): CliResult {
   const afterIndex = parseLedger(lines.join("\n"));
   const shiftedBody = afterIndex.sections.find((section) => section.level === 2 && section.title === "正文");
   if (!shiftedBody) return err("issuemd new: the 正文 section is missing\n", 3);
-  const span = parseId(idText);
-  if (!span) return err(`issuemd new: '${idText}' is not a valid issue id\n`, 2);
   lines = insertBlock(lines, bodyInsertAt(afterIndex, span, shiftedBody.line_end), body);
 
   const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
@@ -864,7 +868,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   if (title.includes("|")) {
     warnings.push("W205: the title contains a pipe; it was escaped in the table cell\n");
   }
-  const twin = [...ledger.rows.open, ...ledger.rows.closed].find((row) => summaryKey(row.summary) === summaryKey(title));
+  const twin = ledger.rows.open.find((row) => summaryKey(row.summary) === summaryKey(title));
   if (twin) {
     warnings.push(
       `W212: #${twin.ids.map(spanText).join(", ")} already has this summary; if this is a retry, the issue may now exist twice\n`,
@@ -1052,6 +1056,11 @@ function cmdReopen(rest: string[], v: Values): CliResult {
     while (end > archived.line_start && loaded.lines[end - 1]!.trim() === "") end--;
     restored = trimBlank(loaded.lines.slice(archived.line_start, end)
       .filter((line) => line.trim() !== KEPT_BODY_END && !ARCHIVE_NOTE.test(line)));
+    // The closed row's criteria may have been given on the command line and
+    // exist nowhere in the archived text; reopening must not lose them.
+    if (criteria !== "" && extractCriteria(restored) !== criteria && !restored.some((line) => line.includes(criteria))) {
+      restored.push("", `**关闭时判据**：${criteria}`);
+    }
     // `close` inserted one blank line before the archive; take it back.
     const start = archived.line_start > 1 && loaded.lines[archived.line_start - 2]!.trim() === ""
       ? archived.line_start - 1
@@ -1072,7 +1081,8 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   if (!index) return err("issuemd reopen: the 索引 table is missing\n", 3);
   const insertAt = (() => {
     for (const row of fresh.rows.open) {
-      if (row.ids[0]!.start > found.span.start) return row.line;
+      // Full ids: `2` sorts before `2a`.
+      if (compareIds(row.ids[0]!, found.span) > 0) return row.line;
     }
     return index.end + 1;
   })();

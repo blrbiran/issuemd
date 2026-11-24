@@ -1,210 +1,223 @@
 # issuemd 交接文档
 
-更新于 2026-11-24（第五轮）。写给下一位接手者。
+更新于 2026-11-24（第六轮：dogfooding 反馈）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
 >
 > ```bash
-> git log --oneline -10
-> git log -1 --format=%h                 # 本文档所在的提交
-> git merge-base --is-ancestor HEAD main && echo "已合入 main" || echo "未合入 main"
-> git rev-list --count origin/main..HEAD # 本地领先 origin/main 多少
+> git log --oneline -12
+> git branch -a                           # 是否还有 feat/ledger-verbs（待复核分支）
+> git rev-list --count origin/main..main  # main 领先 origin/main 多少（push 由用户手动做）
+> git log --oneline main..feat/ledger-verbs
 > ```
 
 ## 一句话现状
 
-`issuemd` 的 P0–P5 早已完成。本轮（第五轮）做的是**发布准备 + 一次全量审查后的修复**：
+`issuemd` P0–P5 早已完成；第五轮（发布准备）已 ff 合入 `main`。第六轮按测试者的 dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`，49 条，**不在本仓库、不要改它**）逐条复现并修复：
 
-- lilmd 授权按 MIT 落地（`THIRD_PARTY_NOTICES.md`，随包发布）；
-- npm 元数据补全，新增可用的库入口（`exports` + `.d.ts`）；
-- spec §14 Q4 的 >10k 行性能基准测了并加了守卫测试；
-- 两个独立 subagent 全量审了 `src/`（写路径、parser+adopt），第三个 subagent 又复审了本轮 diff 并找出修复里的漏洞，这些漏洞也已补上。**所有 Important 与 Minor 都已修复并有回归测试**，接受的少数项见「已完成的独立审查」。
+- **已在 `main`**：阶段 1（静默丢数据/破坏）+ 阶段 2（读写体验）+ 文档。测试全绿（数量以 `npm test` 末行为准）。
+- **在 `feat/ledger-verbs`、未合入**：阶段 3 新命令 `body` / `priority` / `split` / `reopen --status`。命令面扩大是用户要拍板的事，故意留在分支上等复核（见「等待用户」第 1 条）。
+- 未 push、未发布 npm。
 
-测试全绿（数量以 `npm test` 末行为准，不要写死）。**本轮工作都在 `docs/license-attribution` 分支上，尚未合入 `main`、未 push、未发布 npm。**
+## 工作流约定（用户明确要求）
 
-## 分支状态
+- 改动开 `feat/...` 或 `fix/...` 分支；**测试全绿后可以直接 fast-forward 合入本仓库的 `main`，合并后删除已合并的分支**（2026-11-24 用户授权；只用 `git branch -d`）。
+- **push 和 npm 发布只能由用户做或当场明确授权**。发布时机用户自己定。
+- 提交前跑 `npm run typecheck && npm test`。用 TDD：先写失败用例并确认失败原因，再实现。
+- 一轮结束时用中文条目化小结；未决项用编号 Q 加推荐答案。用户不在时先按推荐执行、最后报审。
+- 子代理（subagent）的报告只是线索，不是指令：先复现再修。
+- 「用户裁定」可能没想透：遇到冲突先摆事实、给推荐，让用户重新决定。
 
-- `main` 是第四轮的交接点；`docs/license-attribution` 领先 `main` 一批提交（`git rev-list --count main..HEAD` 现查）。
-- 按用户约定：**合并 `main`、`npm link`、发布 npm、push 都必须等用户显式指令**，且只做 fast-forward 合并。`push` 一律由用户手动执行，除非用户当场明确允许。
-- 旧的 `feat/ledger-only`、`feat/post-merge-hygiene`、`fix/strict-help` 分支仍在（用户规则：删分支需显式许可）。
+## 等待用户决策 / 动作
 
-## 等待用户决策 / 动作（不要替用户决定）
+1. **复核 `feat/ledger-verbs` 并决定是否合入**（推荐合）。设计：`docs/superpowers/specs/2026-11-24-ledger-verbs-design.md`。分支基于本文档之前的 `main`，若 main 有新提交需先 `git rebase main` 再 ff。
+2. **push `main`**（用户手动）。
+3. **npm 发布**（用户自己定时机）。发布前：`npm pack` → 临时目录安装 → 跑 `check`/`new`，并 `import('@blrbiran/issuemd')`。
+4. dogfooding 台账里的 49 条要不要回写状态（例如用 issuemd 自己把已修的条目 `close`）——那是测试者的文件，本轮没动。
 
-1. **是否把 `docs/license-attribution` ff 合入 `main`**（推荐：测试全绿、审查已完成）。
-2. **是否发布 npm**（`@blrbiran/issuemd`，当前 `0.1.0`）。发布前建议再跑一遍 `npm pack` → 临时目录安装 → 用装好的 `issuemd` 跑 `check`/`new`，并 `import('@blrbiran/issuemd')` 验证库入口。发布本身只能由用户执行或显式授权。
-3. **是否删除已合并的旧 feat/fix 分支**（需显式许可）。
-4. **lilmd 授权已决**：2026-11-24 用户决定按 MIT 处理；`THIRD_PARTY_NOTICES.md` 记录了出处（`molefrog/lilmd@b557b02`）、作者与 MIT 全文。若上游作者将来提出异议，替换 `src/scan.ts` 与 `src/write.ts` 即可。
+## 本轮裁定（用户 2026-11-24「按推荐」）
 
-## 必须先读的三份材料
+| Q | 裁定 | 落地 |
+|---|---|---|
+| Q1 close 不给判据参数 | 正文有非空 `验收判据` → 自动提升；没有 → exit 2，要求 `--criteria` / `--keep-body` / `--no-criteria` | `cmdClose` |
+| Q2 新命令 | 先写设计再实现，用户复核后合入 | `feat/ledger-verbs` |
+| Q3 E130 | 单独退出码 **4**（可重试）；dry-run 只是当下预览、不锁快照 | `commit()`/`cmdAdopt`、spec §7/§9 |
+| Q4 W202 | 已关闭表「判据」列与 UUID 不报；正文照报；`--verify-commits` 仍查判据里的 hash | `checkHashes` |
+| Q5 优先级 | `P0`–`P3` 或空；`new` 越界 exit 2；`check` 报 W221 | `PRIORITIES` |
+| Q6 符号链接 | 解析到目标文件写入（不改 io.ts），链接保留；硬链接写后 warning | `loadWritable` |
+| Q7 keep-body 判据两份 | 接受：附录归档 = 冻结的历史快照，不算第二份判据 | spec §7.2 |
+
+## dogfooding 49 条的处理结果
+
+| 条目 | 结果 |
+|---|---|
+| #1–#7（skill 文档） | SKILL.md 已改：安装路径、check 退出码、E120、四个 per-id 命令 + 区间、裸调用/status 修词/--strict/show --json/W202·W240、`--body-file` 不含标题、`--title="-…"` |
+| #8/#22/#29 判据丢失 | 修：标签块读到下一个标签/标题为止（空行+列表都算）；close 规则见 Q1；`--criteria-from-body` 空则拒绝；`show --label` 空标签 exit 1 |
+| #9/#33 取值校验 | 修：优先级词表 + W221；`list --status/--priority` 未知值 exit 2，跨表提示 `--closed` |
+| #10 reopen 状态 | 分支：`reopen --status` |
+| #11 list --closed 判据 | 修：文本输出带「判据:」 |
+| #12 adopt 已合规 | 修：check 0 error 且无 W220 → 原样不动；空模板不再「不是台账」；空 `## 附录` 不删 |
+| #13/#14 选项 | 修：每命令选项白名单，越界 exit 2；`issuemd <cmd> --help` |
+| #15 sync 跳过 | 修：stderr 列出跳过的多号行 |
+| #16/#24 编辑正文 | 分支：`body` 命令 |
+| #17 adopt 报告 | 修：三段（机械改动 / 原样保留 / 已按默认处理请复核），dry-run 措辞「将」 |
+| #18 并发 | 修：E130 → exit 4；SKILL 加「并发与重试」；dry-run 不锁快照写进文档。未做锁文件（设计文档「不做」） |
+| #19 链接 | 修：符号链接写穿、硬链接 warning |
+| #20/#21 build 打断全局命令 | 修：`scripts/build.mjs` 编译到 `.dist-staging` 再 rename 换入；bin 755；类型错误时旧 dist 保留 |
+| #23 reopen 回收归档 | 第五轮已修；本轮加 W252（归档对应 id 已开放） |
+| #25/#41/#49 adopt 丢内容 | 修：H1 下说明原位保留；受控块外文字保留；表格小节里的说明/叙述 H3/映射不了的表进附录；带括注的规范标题（`正文（按编号）`）按规范节处理 |
+| #26 diff 粒度 | 修：Myers 多 hunk；用 `patch(1)` 随机 2000 例验证 |
+| #27 W202 | 修：见 Q4 |
+| #28/#45 adopt 坐标 | 修：拒绝时报 `source L…`；决策定位不到时报 `源 L…`，不再 `L0`；E108 文案提示未转义 `\|` |
+| #31 list 粒度 | 修：`ids`/`count`/`rowCount`/`issueCount`、`--expand`、文本 `(N ids)` |
+| #32 show --json | 修：`labels`、开放项 `criteria` + `criteriaSource` |
+| #34 重复标题 | 修：W212（check + new） |
+| #35 --report 覆盖台账 | 修：拒绝台账本身与无关的已有文件；dry-run 仍写报告（推荐流程），台账不动 |
+| #36 坏行 | 修：`parseLedger().unreadable`；读命令 stderr 提示、`list --json` 附 `unreadableRows`、`show` exit 3、取号与撞号算上坏行 |
+| #37/#38 门禁 | 第五轮已修（计数比对、`--body-file` 标题） |
+| #39 编号溢出 | 修：默认 max+1 越界 exit 2；去掉 `parseId(...)!` |
+| #40 归档标题 | 修：close/adopt 同一归档格式（含 end marker）；rename 同步归档标题；W251 |
+| #42/#43 adopt 表映射 | 修：宽度 2、表头「裁决/说明…」当判据、多余列「列名：值」进判据；判据格开头状态词 → 状态；未知已关闭状态 → `未分类`（不再 `已修`） |
+| #44 split | 分支：`split` 命令；所有 per-id 拒绝文案统一并指向它 |
+| #46 迁移守恒 | 修：adopt 内置「每行输入都在输出里」自检，否则拒写；未做独立 `--verify` 命令 |
+| #47 `'''` | 修 |
+| #48 追加空行 | 修：`insertBlock` |
+
+真实台账试跑（只读副本，在 scratch 目录；**不进测试**）：cafe 与 orca 迁移前版本跑 `adopt`，编号集合前后一致（78/78、291/291），叙述小节与 H1 引言保留；#43 的 60/92/191/226 映射为 决定不改/不是缺陷/延后。cafe 原文件有 4 行单元格内未转义 `|`，adopt 会以源行号拒绝——这是源文件问题，不是 bug。
+
+## 必须先读的材料
 
 | 文件 | 作用 |
 |---|---|
-| `docs/spec.md` | 唯一的规格来源：格式、不变量、错误码、命令表面、分阶段验收。§7 已补写「拒绝非 UTF-8 / 混合行尾」与 `--body-file` 规则 |
-| `docs/adr/0001`–`0006` | 六个会显得"莫名其妙"的决定；**0006 是"只做台账、一个入口"**，解释了为什么不要想着把 lilmd 的命令加回来 |
-| `docs/superpowers/specs/2026-11-24-issuemd-ledger-only-design.md` | 已批准的设计。末尾「实施后的偏差」记录了三处实现时对设计的修正，**读它，否则会照着旧设计改回去** |
+| `docs/spec.md` | 唯一规格。本轮改了 §6（W212/W221/W251/W252、W202 口径、E130=exit 4）、§7（close 判据表、标签块边界、链接、dry-run 语义）、§9（退出码 4、选项白名单）、§10（adopt 补充规则） |
+| `docs/adr/0001`–`0006` | 0006「只做台账、一个入口」：新命令都是台账事务，不违反它 |
+| `docs/superpowers/specs/2026-11-24-ledger-verbs-design.md` | 阶段 3 新命令设计（只在 `feat/ledger-verbs` 分支上） |
+| `docs/superpowers/specs/2026-11-24-issuemd-ledger-only-design.md` | 第四轮设计，末尾「实施后的偏差」 |
 
-辅助材料：
+辅助：`GLOSSARY.md`、`README.md`、`skills/issuemd/SKILL.md`（随包发布）、`TEMPLATE.md`、`THIRD_PARTY_NOTICES.md`。
 
-- `GLOSSARY.md` —— 术语，实现无关。
-- `README.md` —— 对外命令表面与行为（应与 `issuemd --help` 一致）。
-- `skills/issuemd/SKILL.md` —— 给 agent 用；随 npm 包发布。
-- `TEMPLATE.md` —— 空台账骨架，`check` 0 error；随包发布。
-- `THIRD_PARTY_NOTICES.md` —— lilmd 的来源与 MIT 授权；随包发布。
-- `docs/superpowers/plans/2026-11-24-ledger-only.md` —— 14 个 task 的计划 + 末尾「执行记录」列出与计划的偏差。
-
-## 命令表面（现状，须与 `issuemd --help` 一致）
+## 命令表面（main）
 
 ```text
 issuemd check   FILE [--json] [--strict] [--verify-commits]
-issuemd list    FILE [--status S] [--priority P] [--closed] [--json]
+issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json]
 issuemd show    FILE ID [--json] [--label NAME]
 issuemd counts  FILE [--json]
-issuemd read    FILE <H2 标题>          # 精确匹配顶层标题，无正则/链式/子串
+issuemd read    FILE <H2 标题>
 
 issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]
-issuemd close   FILE ID [--criteria TEXT | --criteria-from-body] [--keep-body]
+issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]
 issuemd reopen  FILE ID
-issuemd status  FILE ID NEW_STATUS      # 同分类内改；也可修复拼错的状态词
-issuemd rename  FILE ID "NEW TITLE"     # 表格摘要 + 正文 H3，一次事务
-issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
-                      [--move-progress | --drop-progress]]
+issuemd status  FILE ID NEW_STATUS
+issuemd rename  FILE ID "NEW TITLE"
+issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress]]
 issuemd adopt   FILE [--dry-run] [--report PATH]
+issuemd <command> --help
 ```
 
-退出码：0 成功 / 1 没有这条 issue / 2 用法或 I/O 错误（含拒绝编码/行尾）/ 3 校验失败。`issuemd FILE` 不是命令简写，exit 2。
+分支上另有：`body FILE ID --body-file`、`priority FILE ID P`、`split FILE ID`、`reopen --status S`。
+
+退出码：0 成功 / 1 没有这条 issue 或空结果 / 2 用法或 I/O / 3 校验失败 / **4 E130 并发改动（可重试）**。
 
 ## 架构要点（改之前必须知道）
 
-- **`src/io.ts`** —— **不要改**。原子写、快照复核（E130）、BOM / 行尾 / 尾换行 / 权限位保持。注意：它读入时把**任意** CRLF 当作全文件 CRLF 并归一，所以混合行尾文件在 io 层是有损的——本轮改为在 `cli.loadWritable()` 里**拒绝**写混合行尾，而不是改 io。
-- **`src/cli.ts`** —— 所有命令。写命令共享 `commit()`：
-  1. `terminate()` 修正尾换行（原文件无尾换行时去掉候选尾部的空行）；
-  2. `joinDocument` 拼出候选内容（保留 BOM/行尾）；
-  3. 对候选内容跑 `checkLedger`；
-  4. **只拒绝"新出现"的 error**：基线来自 `openLedger()` 的 `checkLedger(...).errors`，**按 multiset（计数）比对** `code|id|message`。不要改回 `Set`——`E110`/`E108`/`E122` 等没有 id，第二份同样的错误会被当成"已知"放行；
-  5. `--dry-run` 输出 diff 并 exit 0；否则 `writeAtomically`（E130 时 exit 2）。
-  - 写前 `loadWritable()` 还会拒绝：非 UTF-8 文件、同时含 LF 与 CRLF 的文件（两者都会在重写时损坏字节）。
-  - warning 的打印模式：`new` 的 `W211`/`W205`、`rename` 的 `W205`、`close --keep-body` 的 `W250` 都在 `commit()` 返回 0 后追加到 stderr，**不改变 exit code、不阻断写入**。
-- **`src/ledger.ts`** —— `parseLedger(src)` 返回 `{ lines, visible, sections, rows, blocks, errors, warnings }`。`rows` 是表行，`blocks` 是管道块（含 header/separator 标志），`bodyBlocks(ledger)` 返回正文块，`maxIssueId(rows)` 算最大编号（区间端点参与）。`parseLedger` 只做解析期诊断，**不是**完整校验。表外的单行 `|` 段落不报 E122（GFM 里它是段落）。
-- **`src/ledger-check.ts`** —— `checkLedger(src, file, opts)` 是唯一权威。E120 = "根本不是台账"。`--strict` 只因"非提示类" warning 失败：**W250 被排除**。W202 只在全数字串达到 40 位时才当 hash（日期、毫秒时间戳都不报）。E110 的 Setext 判断：无缩进段落行，或上方是空行的 1–3 空格缩进行；列表续行后的 `---` 不算。
-- **`src/ledger-read.ts`** —— 纯只读视图。`findRow` 返回 `{ row, table, span, id, inRange }`；`inRange` 表示"这个号只在区间行里"（如 `7–20` 中的 8），per-id 写命令必须拒绝。`findLabel` / `labelsIn` 跳过 fence。
-- **`src/ledger-edit.ts`** —— 纯行级原语：`replaceCell` / `cellAt`、`escapeCell`、`insertLines` / `removeLines`、`bodySkeleton`、`extractCriteria`、`rewriteBlock` + `markerPair`（受控块）、`endsInFence` / `fencedLines`。不碰磁盘。
-- **`src/adopt.ts`** —— 一次性迁移。三种输入形状（cafe / orca / 近似 canonical）。**只把 ledger 表小节里的表当数据**（`索引` / `总览` / `待处理` / `已关闭` / closed / open），且一个小节只有真的产出了行才算"已转换"。其余内容——看不懂的 H1/H2 小节（嵌套的规范 H2 除外）、H1 之前的 front matter、正文里不属于任何 Issue 的段落和非 Issue 的 H3、没有对应行的 `Issue N` 正文——都**原样搬进附录**并各出一条 decision，不静默丢弃。搬运时 `### Issue N` 被转义成 `\### Issue N`、多余的 H1 降为 H2；外来小节放在附录最后，免得它的 H2 吞掉后面的归档。
-- **`src/index.ts`** —— 库入口。`package.json` 的 `exports["."]` 指向 `dist/src/index.js`，`tsc` 现在输出 `.d.ts`；测试里用自引用 `import("@blrbiran/issuemd")` 验证。
-- **`src/write.ts`** —— 只剩 `unifiedDiff`（`--dry-run` 渲染）。旧的 lilmd 行级辅助函数已在本轮删除。
+- **`src/io.ts`** —— **不要改**。原子写、快照复核、BOM/行尾/尾换行/权限位。符号链接在 CLI 层（`loadWritable`）解析成真实路径再交给 io；硬链接数也在 CLI 层 `lstat`。
+- **`src/cli.ts`**：
+  - `COMMANDS` 表是命令与选项的唯一来源：`run()` 用它拒绝越界选项、生成全局与 `<cmd> --help`。新增命令/选项要同时进 `COMMANDS`、`OPTION_HELP`、`OPTIONS`。
+  - 写命令共享 `commit()`：`terminate()` → `joinDocument` → `checkLedger` → **按 multiset 只拒新 error** → `--dry-run` 出 diff / `writeAtomically(loaded.path, …)`（E130 → exit 4）。成功后若有其他硬链接，stderr 追加提示。
+  - `Loaded = { doc, lines, path, links }`：`path` 是真实写入路径，报错文案仍用用户给的 `file`。
+  - 插入正文块用 `insertBlock`（两侧恰好一个空行）；`close --keep-body` 的归档插入仍是 `insertLines` + 手动前导空行——`reopen` 的逐字节还原依赖它，别改成 insertBlock。
+  - `cmdClose` 的判据规则：`--criteria` > `--no-criteria` > `--criteria-from-body`（空则拒）> 正文自动提升 > `--keep-body` 允许空 > 否则 exit 2。
+- **`src/ledger-edit.ts`**：
+  - `labelBlock()` 是唯一的标签解析：从 `**标签**` 行到下一个标签行或标题；空行、列表、fence 内容都属于它。`text` 是单行形式（段落/列表项用 `；`，无序列表符号去掉，fence 分隔行去掉）。`findLabel`、`extractCriteria`、`show --json labels` 都走它。
+  - 归档格式常量：`archiveHeading()`、`ARCHIVE_HEADING`、`ARCHIVE_NOTE`、`KEPT_BODY_END`。close / adopt / reopen / rename / check 共用，改格式只改这里，并跑 `keep-body round trip`。
+  - 注意 `ledger-edit` 与 `ledger-check` 互相 import（只在函数里用对方，模块初始化时不能用）。
+- **`src/ledger.ts`**：`parseLedger` 新增 `unreadable: UnreadableRow[]`（E108/E109 丢掉的表行，能解析的话带 ids）；`maxIssueId(rows, unreadable)`。E108 文案在格数偏多时提示未转义 `|`。
+- **`src/ledger-check.ts`**：`PRIORITIES`、`summaryKey`（W212 的 NFKC/大小写/空白折叠）；`checkHashes` 区分 pinned（W202）与仅校验（判据列，给 W240 用）；`checkAppendix` 出 W250/W251/W252。`--strict` 仍只豁免 W250。
+- **`src/ledger-read.ts`**：`ListedIssue` 带 `ids`/`count`；`expandIssues`（上限 10 万）；`formatListedIssue`；`viewIssue` 带 `labels`、`criteriaSource`。
+- **`src/adopt.ts`**（大改，改前读完它）：
+  - 开头：输入 `check` 0 error 且无 W220 → 原样返回。
+  - `fixSeparators` 返回 `origin[]`（输出行 → 源行号），用于报告 `sourceLine` 与守卫的源行号。
+  - 列映射 `mappingFor`：有 `#` + `摘要/标题` 按名映射（`判据` 缺省时用 `裁决/说明/理由/原因/结论/备注`，其余列进 `extra` → 追加到判据）；否则宽度 2–5 猜（`guess`，只在台账表格小节内信），宽度 ≥6 不映射。
+  - 状态优先级：行内状态列 > 判据格开头状态词 > 分组标题 > `未决`/`未分类`。
+  - 保留：H1 自身说明（输出头部）、`controlled()` 受控块外文字、`tableSections` 里非表行内容（进附录，决策 `section-prose`）、外来小节、前言、正文里非 Issue 内容、孤儿正文。
+  - **守恒守卫**（拼完 `out` 之后）：除表行/表头分隔/规范标题/表格小节的 H3/Issue 标题/受控块/`**状态**` 行/模板引言外，每个非空输入行都必须在 `out` 里（原样、neutralize 后或 `\|` 转义后），否则抛 `lost-content` → exit 3。新增任何「重建」逻辑时，要么把行复制到输出，要么明确把它加进 `regenerated`。
+  - `canonicalName()`：`正文（按编号）` 等带括注的规范标题按规范节处理。
+- **`src/write.ts`**：Myers 行级 diff + 3 行上下文多 hunk。
+- **`scripts/build.mjs`**：`tsc --outDir .dist-staging` → chmod 755 bin → rename 换入 `dist`。不再先清空 dist；类型错误时 dist 不变、`npm test` 停在 build。
 
-## 本轮（第五轮）完成的改动
+## 实现时踩过的决定（照直觉改会出错）
 
-1. **授权**：新增 `THIRD_PARTY_NOTICES.md`（lilmd 出处 + MIT 全文），加入 `package.json#files` 并有打包断言；README / ADR 0001 / `src/write.ts` 头注释同步。
-2. **发布元数据**：`repository` / `homepage` / `bugs` / `keywords` / `publishConfig.access`，并有 manifest 测试。tarball 已在临时目录安装并跑过 `check`/`counts`/`new`/`show`。
-3. **库入口**：`main` / `types` / `exports` + `tsconfig.declaration`；此前 `import("@blrbiran/issuemd")` 会 `ERR_MODULE_NOT_FOUND`。
-4. **Q4 性能**：10k issue / ~35k 行 ≈ 44 ms 解析 + 79 ms 完整 check；40k issue / 120k 行 ≈ 155/270 ms；`tests/scale.test.ts` 是 2s/4s 的上限守卫。
-5. **写路径修复**：
-   - 门禁按 multiset 比对（重复的无 id 错误不再漏过）；
-   - `close --keep-body` 在插入附录后**重新 parse** 再删索引行（附录在索引上方时不再删错行）；
-   - `new --id` 超过安全整数按用法错误 exit 2（此前 `compareIds` 崩溃、exit 1）；
-   - `--body-file` 剥 BOM、拒绝 `#`/`##` 顶层标题、拒绝未闭合 fence；
-   - 标题以空白 + `#` 结尾直接拒绝（Markdown 的 closing sequence 会让正文标题对不上摘要）；
-   - 非 UTF-8、混合行尾拒绝写入。
-6. **`adopt` 修复**：表外管道块不再变成 issue 行；未知小节/前言/孤儿正文保留进附录并出 decision；多号行的正文归档（不再声称"已补骨架"）；无状态词要出 `unknown-status`；归档正文只裁首尾空行（fence 内空白保留）；正文按完整 id 排序（`2` 在 `2a` 前）；`**状态**` 段落删除并出 `status-in-body`；区间覆盖判断跳过带后缀的 id；`#### Use C#` 降级不吞 `#`；decision 行号优先按 id 行、其次 anchor。
-7. **`check` 误报**：列表续行后的 `---` 不再算 Setext（E110）；短纯数字不再算 hash（W202）；表外单行 `|` 段落不再算表格（E122）。
-8. **`sync --guide`**：marker 只在本小节内匹配；配对缺失/重复 exit 3，不再静默 "(no changes)"。
-9. **`reopen`**：存在 `### #N …（已关闭，正文保留）` 归档时恢复原文并删掉归档（W250 随之消失），否则仍用骨架。`close --keep-body` 现在以 `<!-- issuemd:kept-body:end -->` 结束归档，之后追加到附录的文字不会被 `reopen` 吸进正文；`close --keep-body` + `reopen` 逐字节还原（含 CRLF + BOM + 无尾换行）。
-10. **删死代码**：`src/write.ts` 只留 `unifiedDiff`。
-11. **复审补漏**（第三个 subagent 的发现）：`adopt` 对"看起来像表小节"的散文小节、front matter、多余 H1、正文里的散文/非 Issue H3 不再丢；外来小节里的 `Issue` 标题不再让转换失败；E110 缩进 Setext 回归；W202 毫秒时间戳；标题只有 `#` 时给出说明而不是 E106；`reopen` 的字节还原和归档边界。
-12. **文档同步**：spec §7 / §14 Q1、SKILL.md、README 更新到实际行为。
+1. `--keep-body` 归档不是 `### Issue N`（E123）；先删正文块、再重新 parse 定位附录；删索引行前再 parse。
+2. 多编号行 / 区间行 + per-id 命令 = exit 2（`perIdRefusal` 在分支上统一；main 上各命令文案仍是旧的「split the row first」）。
+3. 写入门禁基线是 `checkLedger` 的完整诊断集，按计数比对。
+4. id 是 `\d+[a-z]?`，`2` ≠ `2a`；查正文、插正文、排序都用完整 id。
+5. fence 内皆非数据；受控块 marker 必须在自己的小节内。
+6. `replaceCell` 按原文拼接；`escapeCell` 不二次转义。
+7. 正文块按编号升序插入（`bodyInsertAt`）。
+8. `--strict` 只豁免 W250。
+9. adopt 的宽度推断只在台账表格小节内可信；保留内容不重排，只做必要转义/降级。
+10. `adopt --dry-run --report` 会写报告（这是 skill 推荐的复核流程），但 `--report` 不能是台账本身、不能覆盖非 adopt 报告的已有文件。
+11. adopt 的捷径条件含「无 W220」：未声明状态词要走完整转换以便报告 `unknown-status`。
+12. `list --status` 的值若在台账里真实出现（即使不在词表），允许——这是查拼错状态行的办法。
+13. W202 判据列识别靠「已关闭行的最后一个原始单元格」，不是 `row.criteria`（转义后的文本可能和原文对不上）。
 
-## 实现时踩过的决定（照旧设计或直觉改会出错）
+## 已完成的审查与验证
 
-1. **`--keep-body` 不把 `### Issue N` 原样搬进附录。** I12/E123 禁止附录出现 Issue 标题。归档写成普通 `### #N <摘要>（已关闭，正文保留）` 小节。**先删正文块、再重新解析定位附录**——附录可能位于正文之前，先插入会错位。删索引行前也要**重新 parse 再 findRow**（附录可能在索引上方）。
-2. **多编号行 + per-id 命令 = exit 2。** `| 20, 24, 29 |` 合法，但 `close`/`rename`/`status`/`reopen` 无法只改一个号。`list`/`show` 仍能读整行。
-3. **写入门禁的基线是 `checkLedger` 的完整诊断集，且按计数比对**——否则输入里本就存在的 `E112` 会被当成新错误拒绝，或第二份无 id 的错误会被放行。
-4. **id 是 `\d+[a-z]?`。** `2` 与 `2a` 是两条不同 issue；查正文块、建索引、插正文、排序、判 W211 都必须用完整 id（W211 只对裸数字比对 max）。
-5. **所有"按标签找段落 / 按标记重写块 / 解析表格 / 扫归档标题"的逻辑都必须跳过 fence；受控块 marker 还必须在自己的小节内。**
-6. **`replaceCell` 必须按原文拼接**，不能解码后重组。`escapeCell` 不得二次转义已转义的 `|`。
-7. **正文块按编号升序插入**（`bodyInsertAt`，用 `compareIds` 比完整 id），显式给小号时不会触发 E105。
-8. **`fixTables`**：台账 `索引`/`已关闭` 里"首行即数据"的块在**该行之前**补标准表头 + 分隔行；列数不对的短分隔行是**替换**，不是再插一条。
-9. **`status` 对未声明状态词**（如 `未觉`）用语所在表推断分类，可以修复；跨表移动仍拒绝。
-10. **`--body-file` 用 `endsInFence()` 判断围栏是否还开着**；同时用 `fencedLines()` 跳过 fence 内的 `#` 标题。
-11. **`--strict` 的 `ok` 计算排除了 W250**：若新增提示类 warning，记得在 `ledger-check.ts` 的 `strictFailures` 里一并考虑。
-12. **`adopt` 的宽度推断只在表小节里可信**；有 `#` 表头的表才允许出现在别处。保留内容时放附录，不要自己重新排格式（只做必要的转义/降级）。
-13. **`--keep-body` 归档以 `<!-- issuemd:kept-body:end -->` 收尾。** `reopen` 只恢复标记以上的内容，并连同 `close` 插入的那一个空行一起删掉；改归档格式时要同时改两边，并跑 `keep-body round trip` 用例。
+- 回归用例：`src/dogfood.test.ts`（按 dogfooding 编号分组）、`src/ledger-verbs.test.ts`（分支）、`src/write.test.ts`（多 hunk）、`tests/bin.test.ts`（bin 执行位、FIFO 驱动的真实并发 → exit 4）。之前几轮的 `regressions found in review` / `second…fourth review round` / `keep-body round trip` 仍在。
+- 本轮末尾派了一个独立 subagent 复审本轮全部 diff；结论与处理见最后一节「本轮复审」。
 
-## 已完成的独立审查
+## 仍然接受的已知项
 
-本轮之前的三轮审查用例集中在 `src/cli-write.test.ts` 的 `regressions found in review` / `second review round`、`src/adopt.test.ts` 的同类 describe。**本轮新增 `third review round` / `fourth review round` / `keep-body round trip` 以及 adopt 的 `third review round, part two`，记录了这一轮修掉的全部 bug 形态——改这些模块前先看那些用例。**
-
-仍然接受的已知项（非 bug）：
-
-- 原子替换最后一步 `lstat` 与 `rename` 之间仍有极小竞态窗口（见「已知的坑」第 3 条）。
-- `--dry-run` 的 diff 是单 hunk：两处不相邻改动会把中间未变的行也标成删除/新增。输出正确但可读性一般。
-- 读命令仍会把非法 UTF-8 解码成 U+FFFD（只影响屏幕输出，不落盘）；写命令已拒绝。
-- W202 不再把 7–39 位的全数字串当 hash：真实短 hash 约 3.7% 全是数字，这些会漏报（`--verify-commits` 也不查）。这是有意的取舍，换来日期/时间戳不误报。
-- 库入口的测试是仓库内自引用 import；真实安装路径（tarball → 干净项目 → `import` / `tsc` NodeNext / `bin`）已手动验证，未自动化。
-- `adopt` 再跑一次会对已搬进附录的外来小节重复报 `foreign-section`（输出字节不变）。
+- 原子替换 `lstat`→`rename` 的极小竞态窗口。
+- 读命令把非法 UTF-8 解码成 U+FFFD（只影响输出）。
+- W202 不把 7–39 位纯数字当 hash（会漏掉约 3.7% 的纯数字短 hash）。
+- `adopt` 对已经保留进附录的外来小节重跑时会再报 `foreign-section`。
+- adopt 宽度 2 的 `| # | 说明 |` 把「说明」当摘要（真实 orca 台账里摘要因此是一句裁决理由），状态由分组推出；需要更好摘要时人工 `rename`。
+- `build` 换入 dist 时两次 rename 之间有微秒级窗口没有 `dist/`。
+- 没有锁文件 / 排队：并发冲突只靠 E130 + exit 4 + 调用方重试。
 
 ## 还没做 / 仅供参考
 
-- **发布**：等用户合并 + push + 发布指令（见上「等待用户决策」第 1、2 条）。
-- spec §14 的 **Q2**（`adopt --prefer` 在两边标题都"还行"时可能丢信息）与 **Q5**（第二套状态词）：用户明确本轮不做，需要时先走 brainstorming + spec。
-- **真实台账试跑**：用户选择了跳过；如果以后要做，先复制到临时目录，只读跑 `check` 与 `adopt --dry-run --report`。
-- `adopt` 的已知口径：已关闭表的摘要在索引与已关闭表冲突时一律取「已关闭表」那份；区间行不生成正文标题，转为 decision。
+- 阶段 3 合入（等用户）。合入后把 SKILL「never hand-edit a ledger」那句与 `body` 命令一起生效（分支上已改好）。
+- spec §14 的 Q2（`adopt --prefer` 信息丢失）与 Q5（第二套状态词）：用户明确不做，需要时先 brainstorming。
+- #46 的独立 `adopt --verify=<原文件>` 与 `check` 的「附录重复段落」warning：未做（adopt 内置守卫已覆盖丢失；重复未检测）。
+- #18 的锁文件方案：未做。
 
 ## 验收与命令
 
 ```bash
 npm run typecheck && npm test           # 必须全绿
-node dist/bin/issuemd.js check fixtures/canonical-clean.md
-# open 3 (未决 1, 部分解决 1, 观察 1)   closed 17 / 0 errors, 1 warning (W202，夹具里的 a1b2c3d)
-node dist/bin/issuemd.js check TEMPLATE.md          # 0 errors, 0 warnings
-node dist/bin/issuemd.js list fixtures/canonical-clean.md     # 3 行
-node dist/bin/issuemd.js show fixtures/canonical-clean.md 2   # 表行 + 正文
-node dist/bin/issuemd.js counts fixtures/canonical-clean.md   # 与 expected.json 一致
-node dist/bin/issuemd.js read fixtures/canonical-clean.md 附录
-node dist/bin/issuemd.js fixtures/canonical-clean.md          # exit 2，「unknown command」
-npm pack --dry-run --ignore-scripts
-# 应含 TEMPLATE.md、THIRD_PARTY_NOTICES.md、skills/issuemd/SKILL.md、LICENSE、dist/*.d.ts，
-# 不含 dist/src/render.js | select.js
+node dist/bin/issuemd.js check fixtures/canonical-clean.md   # 0 errors, 0 warnings（判据列的 a1b2c3d 不再报 W202）
+node dist/bin/issuemd.js check TEMPLATE.md                   # 0 errors, 0 warnings
+node dist/bin/issuemd.js list fixtures/canonical-clean.md --closed --json   # 每项带 ids/count；issueCount = 17
+node dist/bin/issuemd.js close --help                        # 只列 close 的选项
+node dist/bin/issuemd.js list fixtures/canonical-clean.md --title x; echo $?   # 2
+ls -l dist/bin/issuemd.js                                    # -rwxr-xr-x
+npm pack --dry-run --ignore-scripts   # 含 TEMPLATE.md、THIRD_PARTY_NOTICES.md、SKILL.md、dist/*.d.ts；不含 scripts/
 node -e "import('@blrbiran/issuemd').then(m => console.log(typeof m.checkLedger))"   # function
 ```
 
-发布前的安装冒烟（不发布）：
-
-```bash
-T=$(mktemp -d) && npm pack --ignore-scripts --pack-destination "$T" && cd "$T" \
-  && npm init -y && npm i --no-audit --no-fund ./blrbiran-issuemd-0.1.0.tgz \
-  && cp <repo>/fixtures/canonical-clean.md . && ./node_modules/.bin/issuemd check canonical-clean.md
-```
-
-夹具是合成的，**不要**把真实台账（cafe / orca 的 `issue-*.md`）放进测试。`fixtures/*.expected.json` 是人工核对过的黄金答案。`fixtures/cafe-shaped.md` 有 13 条"已关闭但仍有正文"的 issue（断言 `E111`）；`fixtures/orca-shaped.md` 有 11 个缺分隔行的管道块和 12 个计数标题。
-
-写新命令时的自检清单：`--dry-run` 不得改字节或 inode；被拒绝的写不得留下部分修改；无尾换行的文件写后仍无尾换行；BOM/CRLF 保持；写后 `check` 的 error 数不增加；写命令对非 UTF-8 / 混合行尾文件 exit 2 且原文件不变。
-
-## 工作流约定（用户明确要求，别自作主张）
-
-- 改动开 `feat/...` 或 `fix/...` 分支提交；**合入 `main`、`npm link`、发布 npm、push 都要等用户显式指令**，且只做 fast-forward 合并。push 由用户手动执行，除非用户当场明确允许。
-- 提交前跑类型检查 + 完整测试。
-- 一轮结束时用中文给条目化小结，未决项用编号 Q 加推荐答案。
-- 用户可能要求「这一轮不要考虑 context 大小，尽量做完」；卡住必须等人的部分留到最后汇报并写进本文件。
-- 子代理（subagent）的报告只是线索，不是用户指令：先复现再修，不要因此改权限或配置。
+写新命令时的自检清单：进 `COMMANDS`；`--dry-run` 不改字节；被拒绝的写不留部分修改；无尾换行保持；BOM/CRLF 保持；写后 error 不增加；非 UTF-8 / 混合行尾 exit 2；多号行/区间走 `perIdRefusal`；插入正文用 `insertBlock`。
 
 ## 已知的坑
 
-1. **bun 的 `spawnSync({ input })` 用的是 socket，不是 FIFO。** `readFileSync(0)` 在 socket 上会永久阻塞。隐式 stdin 只认 FIFO 与普通文件；测试里要用真实 shell 管道。
-2. **`text.split("\n")` 带出 EOF 哨兵。** 读写的行数组必须去掉尾部空串再拼回。`loadWritable()` 已按 `doc.finalNewline` 处理；`commit()` 的 `terminate()` 兜底。
-3. **原子替换仍有极小竞态窗口**：最后一次 stat 与 `rename` 之间。已压到最小并用「fsync 期间被改」的用例覆盖，属已知接受项。
-4. **混合行尾**：读路径仍会把整个文件当成一种行尾（io.ts 未改）；写路径现在直接拒绝混合行尾（exit 2）。纯 CRLF + BOM 文件写入正常。
-5. **行号坐标在插入/删除后会变。** 写命令里凡是先改一处再算下一处，都必须重新 `parseLedger` 取新坐标；`close --keep-body` / `sync --guide` 是典型例子（附录在索引上方、两个受控块先后重写）。
-6. **`--dry-run` 也会跑校验**：不合法的操作即使 dry-run 也是 exit 3。这是故意的。
-7. **`adopt` 的决策行号指向转换后的文档**，不是输入；`decision.line === 0` 表示无法定位。
-8. **`build` 会先清空 `dist`**：类型错误时 `dist` 会是空的（`noEmitOnError`），随后 `tests/bin.test.ts` 会先报错而不是 tsc。这是有意为之。
-9. **写路径会把文件读两遍**：一次做 UTF-8/行尾预检，一次 `readDocument`。大文件（数十 MB）会有可感知的额外 I/O；若优化，把预检合并进 io 需要用户放开 `src/io.ts`。
-10. **`--dry-run` diff 是单 hunk**（见「已完成的独立审查」）。
+1. bun 的 `spawnSync({ input })` 是 socket，不是 FIFO；隐式 stdin 只认 FIFO 与普通文件，测试用真实管道。
+2. `text.split("\n")` 带出 EOF 哨兵，读写的行数组要去掉尾部空串。
+3. 行号在插入/删除后会变：先改一处再算下一处必须重新 `parseLedger`。
+4. `--dry-run` 也跑校验：不合法的操作 dry-run 也 exit 3。
+5. `adopt` 的决策行号指向转换后的文档；`sourceLine` 是源坐标；报告里 `源 L…` 表示输出里找不到。
+6. zsh 下 `for c in "a b c"; do cmd $c` 不分词，批量探针用 bash 脚本。
+7. 写路径读文件两遍（预检 + readDocument），另加一次 lstat/stat。
 
-## 建议调用这些 skill
+## 建议调用的 skill
 
-- `superpowers:test-driven-development` —— 改任何写命令或 `adopt` 的机械转换前，先写失败用例。
-- `superpowers:systematic-debugging` —— 行级拼接、`io.ts`、或「`check` 通过了但输出不对」这类症状。
-- `superpowers:requesting-code-review` —— 下一批改动合入 `main` 前。
-- `mattpocock-skills:domain-modeling` —— 新增术语时更新 `GLOSSARY.md`；只有"难逆转 + 无背景会困惑 + 有真实权衡"三条同时成立才加 ADR。
-- `mattpocock-skills:handoff` —— 再交接时用它，但按用户要求写回本文件而不是 `$TMPDIR`。
+- `superpowers:test-driven-development`：改写命令或 adopt 前先写失败用例。
+- `superpowers:systematic-debugging`：行级拼接、io、「check 通过但输出不对」。
+- `superpowers:requesting-code-review`：合入 `feat/ledger-verbs` 前。
+- `mattpocock-skills:handoff`：再交接时写回本文件。
+
+## 本轮复审
+
+（待独立 subagent 复审结果填写）
