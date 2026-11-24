@@ -24,7 +24,7 @@ issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
 issuemd adopt   FILE [--dry-run] [--report PATH]
 ```
 
-Every write verb is atomic, keeps the file's BOM, line endings, trailing newline and mode bits, and validates the result before replacing the file: a change that would introduce a new `check` error is refused with exit `3` and nothing is written. `--dry-run` prints a unified diff instead (one hunk per changed region). A file that is not valid UTF-8, or that mixes LF and CRLF, is refused with exit `2` rather than being silently re-encoded. `close` never drops criteria silently: it promotes the body's `**验收判据**` by default and refuses when there is nothing to record unless you say `--no-criteria`.
+Every write verb is atomic, keeps the file's BOM, line endings, trailing newline and mode bits, and validates the result before replacing the file: a change that would introduce a new `check` error is refused with exit `3` and nothing is written. `--dry-run` prints a unified diff instead (one hunk per changed region) and a `snapshot` on stderr; `--if-unchanged SNAPSHOT` then applies the write only if nobody changed the file since. `new` prints the id it filed. A file that is not valid UTF-8, or that mixes LF and CRLF, is refused with exit `2` rather than being silently re-encoded. `close` never drops criteria silently: it promotes the body's `**验收判据**` by default and refuses when there is nothing to record unless you say `--no-criteria`.
 
 Each command accepts only its own options (`issuemd <command> --help`); anything else is exit `2`. The exit code is `0` on success, `1` for an unknown issue or empty result, `2` for usage or I/O errors, `3` for validation failures, and `4` when the file changed between read and write (`E130`; re-read and retry). Add `--strict` to fail on warnings (`W250`, the "body kept in the appendix" hint, is informational and never fails strict) or `--verify-commits` to look up referenced commits in the ledger's Git repository.
 
@@ -46,7 +46,14 @@ It also fixes a rendering bug that no checker noticed: **11 pipe blocks** in a r
 
 ## Install
 
-Build and link from this checkout with Node.js 20 or later and npm.
+Node.js 20 or later:
+
+```bash
+npm install -g @blrbiran/issuemd
+issuemd --help
+```
+
+To work on issuemd itself, build and link from this checkout instead:
 
 ```bash
 npm ci
@@ -90,11 +97,9 @@ There is exactly one command surface: `issuemd` is a ledger tool, not a general 
 
 ## Status
 
-P0–P5 are implemented: the Markdown baseline, byte-faithful atomic writes, the canonical parser and `check`, the read views, the ledger write verbs, `adopt`, and the agent skill (now packaged). `new`, `close`, `reopen`, `status`, `rename` and `sync` all share one gate that re-runs `check` in memory and refuses any change that introduces a new error.
+P0–P5 are implemented: the Markdown baseline, byte-faithful atomic writes, the canonical parser and `check`, the read views, the ledger write verbs, `adopt`, and the agent skill (now packaged). `new`, `close`, `reopen`, `status`, `rename`, `body`, `priority`, `split` and `sync` all share one gate that re-runs `check` in memory and refuses any change that introduces a new error.
 
 The two hand-written cross-check scripts (`check-issues.mjs`, `verify-facts.mjs`) that predated `check` have been removed. `skills/issuemd/SKILL.md`, `TEMPLATE.md` and `THIRD_PARTY_NOTICES.md` ship in the npm package; `files` is `dist` plus those three files, and `build` produces a fresh `dist` (staged, then swapped in) so a deleted source can't linger in the tarball.
-
-Not done yet: publishing to npm and the public release.
 
 ## License
 

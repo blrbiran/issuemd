@@ -18,8 +18,8 @@ command -v issuemd && issuemd --help >/dev/null
 
 If it is missing:
 
+- `npm install -g @blrbiran/issuemd` (Node.js 20+).
 - **Inside an issuemd checkout**: `npm ci && npm run build && npm link` (or run `node dist/bin/issuemd.js` directly).
-- **Once the package is published**: `npm install -g @blrbiran/issuemd`. Until then that command fails with `ENOTFOUND`/404 — don't retry it.
 
 If neither works, fall back to `lilmd` + a manual consistency pass, and say so once. Don't burn turns reinstalling.
 
