@@ -23,7 +23,7 @@ issuemd adopt   FILE [--dry-run] [--report PATH]
 
 Every write verb is atomic, keeps the file's BOM, line endings, trailing newline and mode bits, and validates the result before replacing the file: a change that would introduce a new `check` error is refused with exit `3` and nothing is written. `--dry-run` prints a unified diff instead.
 
-The exit code is `0` on success, `1` for an unknown issue or empty result, `2` for usage or I/O errors, and `3` for validation failures. Add `--strict` to fail on warnings or `--verify-commits` to look up referenced commits in the ledger's Git repository.
+The exit code is `0` on success, `1` for an unknown issue or empty result, `2` for usage or I/O errors, and `3` for validation failures. Add `--strict` to fail on warnings (`W250`, the "body kept in the appendix" hint, is informational and never fails strict) or `--verify-commits` to look up referenced commits in the ledger's Git repository.
 
 ## Why
 

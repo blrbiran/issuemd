@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -90,6 +90,15 @@ test("the manifest carries the metadata npm needs to render the package page", (
   expect(Array.isArray(manifest.keywords) && manifest.keywords.length > 0).toBe(true);
   expect(manifest.description.length).toBeGreaterThan(10);
   expect(manifest.publishConfig?.access).toBe("public");
+});
+
+test("the package resolves as a library entry, with type declarations", async () => {
+  const api = await import("@blrbiran/issuemd");
+  expect(typeof api.checkLedger).toBe("function");
+  expect(typeof api.parseLedger).toBe("function");
+  expect(typeof api.writeAtomically).toBe("function");
+  const types = fileURLToPath(new URL("../dist/src/index.d.ts", import.meta.url));
+  expect(existsSync(types)).toBe(true);
 });
 
 test("the omitted pretty formatter is reported as an unknown option", () => {
