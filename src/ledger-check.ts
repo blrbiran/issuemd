@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
 import { parseLedger, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
+import { ARCHIVE_HEADING } from "./ledger-edit.js";
 
 export const STATUS_CLASSES = {
   未决: "open",
@@ -214,16 +215,28 @@ function checkRows(ledger: Ledger, ids: Record<TableKind, IdSet>) {
  * heading is the only way `check` can tell a kept body apart from prose, so it
  * is what W250 keys on. Fenced lookalikes are not data.
  */
-const ARCHIVED_BODY = /^ {0,3}###\s+#([1-9]\d*[a-z]?)\s+.*（已关闭，正文保留）\s*$/;
-
 function checkAppendix(ledger: Ledger) {
-  const { lines, visible, sections, warnings } = ledger;
+  const { lines, visible, sections, warnings, rows } = ledger;
   const appendix = sections.find((section) => section.level === 2 && section.title === "附录");
   if (!appendix) return;
+  const single = (kind: TableKind, id: string) =>
+    rows[kind].find((row) => row.ids.length === 1 && idText(row.ids[0]) === id);
   for (let line = appendix.line_start + 1; line <= appendix.line_end; line++) {
     if (!visible.has(line)) continue;
-    const match = ARCHIVED_BODY.exec(lines[line - 1]);
-    if (match) warnings.push({ code: "W250", line, id: match[1], message: "Issue body kept in 附录 by close --keep-body" });
+    const match = ARCHIVE_HEADING.exec(lines[line - 1]);
+    if (!match) continue;
+    const [, id, summary] = match;
+    warnings.push({ code: "W250", line, id, message: "Issue body kept in 附录 by close --keep-body" });
+    const closedRow = single("closed", id);
+    if (closedRow && foldWhitespace(closedRow.summary) !== foldWhitespace(summary)) {
+      warnings.push({
+        code: "W251", line, id, message: "Archive heading summary differs from the closed table",
+        expected: closedRow.summary, actual: summary,
+      });
+    }
+    if (single("open", id)) {
+      warnings.push({ code: "W252", line, id, message: "Archive kept for an issue that is open again; reopen normally restores it" });
+    }
   }
 }
 
@@ -240,22 +253,73 @@ function checkGuide(ledger: Ledger) {
   }
 }
 
+/** Normalised summary for duplicate detection: width, case and spacing folded. */
+export const summaryKey = (text: string) => text.normalize("NFKC").toLowerCase().trim().replace(/\s+/g, " ");
+
+/**
+ * Two rows with the same summary are almost always one issue recorded twice
+ * (a retried `new`, two agents filing the same thing). `new` cannot know, so
+ * `check` makes the duplicate visible instead of letting it pass (W212).
+ */
+function checkDuplicateSummaries(ledger: Ledger) {
+  const seen = new Map<string, LedgerRow>();
+  for (const row of [...ledger.rows.open, ...ledger.rows.closed].sort((a, b) => a.line - b.line)) {
+    if (row.ids.length !== 1 || row.ids[0].start !== row.ids[0].end) continue;
+    const key = summaryKey(row.summary);
+    if (key === "") continue;
+    const first = seen.get(key);
+    if (!first) {
+      seen.set(key, row);
+      continue;
+    }
+    ledger.warnings.push({
+      code: "W212", line: row.line, id: idText(row.ids[0]),
+      message: `Same summary as #${idText(first.ids[0])}: possibly a duplicate issue`,
+    });
+  }
+}
+
+const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+
 function checkHashes(ledger: Ledger, file: string, verify: boolean) {
-  const hashes = new Map<string, number>();
-  ledger.lines.forEach((line, index) => {
-    if (!ledger.visible.has(index + 1)) return;
-    for (const match of line.matchAll(/\b[0-9a-f]{7,40}\b/g)) {
+  // Where a hash is *meant* to be: the closed table's 判据 column records the
+  // commit that closed an issue (GLOSSARY: "a test count, a commit, …").
+  // Those are verified by --verify-commits but are not "pinned" (W202).
+  const closedLines = new Set(ledger.rows.closed.map((row) => row.line));
+  // The last cell, raw (escaped pipes intact), so it can be cut out exactly.
+  const lastCell = (line: string): [string, string] => {
+    const trimmed = line.trimEnd();
+    const end = trimmed.endsWith("|") ? trimmed.length - 1 : trimmed.length;
+    let start = end - 1;
+    while (start >= 0 && !(trimmed[start] === "|" && trimmed[start - 1] !== "\\")) start--;
+    return [trimmed.slice(start + 1, end), trimmed.slice(0, start + 1)];
+  };
+  const hashes = new Map<string, { line: number; pinned: boolean }>();
+  const collect = (text: string, line: number, pinned: boolean) => {
+    for (const match of text.replace(UUID, " ").matchAll(/\b[0-9a-f]{7,40}\b/g)) {
       // Dates, millisecond timestamps and other plain numbers are not pinned
       // hashes. An all-digit run is only treated as a commit at full SHA-1
       // length; in between, `20261124` and `1732406400000` are far more
       // common than an all-numeric short hash.
       if (!/[a-f]/.test(match[0]) && match[0].length !== 40) continue;
-      if (!hashes.has(match[0])) hashes.set(match[0], index + 1);
+      const known = hashes.get(match[0]);
+      if (!known) hashes.set(match[0], { line, pinned });
+      else if (pinned && !known.pinned) hashes.set(match[0], { line, pinned });
+    }
+  };
+  ledger.lines.forEach((line, index) => {
+    if (!ledger.visible.has(index + 1)) return;
+    if (closedLines.has(index + 1)) {
+      const [criteria, rest] = lastCell(line);
+      collect(criteria, index + 1, false);
+      collect(rest, index + 1, true);
+    } else {
+      collect(line, index + 1, true);
     }
   });
   if (hashes.size === 0) return;
-  for (const [hash, line] of hashes) {
-    ledger.warnings.push({ code: "W202", line, message: `Possible pinned commit hash: ${hash}` });
+  for (const [hash, { line, pinned }] of hashes) {
+    if (pinned) ledger.warnings.push({ code: "W202", line, message: `Possible pinned commit hash: ${hash}` });
   }
   if (!verify) return;
   const hashesToCheck = [...hashes.keys()];
@@ -268,7 +332,7 @@ function checkHashes(ledger: Ledger, file: string, verify: boolean) {
   const objects = result.stdout.split(/\r?\n/);
   for (const [index, hash] of hashesToCheck.entries()) {
     if (objects[index] !== "commit") {
-      ledger.warnings.push({ code: "W240", line: hashes.get(hash)!, message: `Commit not found: ${hash}` });
+      ledger.warnings.push({ code: "W240", line: hashes.get(hash)!.line, message: `Commit not found: ${hash}` });
     }
   }
 }
@@ -311,6 +375,7 @@ export function checkLedger(src: string, file: string, options: Options = {}) {
     }
     checkBodies(ledger, open, ids);
     checkRows(ledger, ids);
+    checkDuplicateSummaries(ledger);
     checkAppendix(ledger);
     checkGuide(ledger);
     checkHashes(ledger, file, options.verifyCommits ?? false);

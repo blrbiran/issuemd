@@ -462,3 +462,180 @@ describe("#9 priority vocabulary", () => {
     expect(report.warnings.map((w: { code: string }) => w.code)).toContain("W221");
   });
 });
+
+async function threeIssues() {
+  const path = file();
+  for (const id of ["1", "2", "3"]) {
+    expect((await run(["new", path, "--id", id, "--title", `题${id}`, "--body-file", body("**现象**：a\n\n**验收判据**：x\n")])).code).toBe(0);
+  }
+  return path;
+}
+
+describe("#36 unreadable rows are never silently dropped", () => {
+  test("list/counts warn, show names the bad row, new does not reuse its id", async () => {
+    const path = await threeIssues();
+    writeFileSync(path, text(path).replace("| 3 | 未决 | P2 | 题3 |", "| 3 | 未决 | P2 | 题3 | 多一列 |"));
+    const listed = await run(["list", path]);
+    expect(listed.stderr).toContain("could not be read");
+    expect((await run(["counts", path])).stderr).toContain("could not be read");
+    const json = JSON.parse((await run(["list", path, "--json"])).stdout);
+    expect(json.unreadableRows[0].line).toBeGreaterThan(0);
+    const shown = await run(["show", path, "3"]);
+    expect(shown.code).toBe(3);
+    expect(shown.stderr).toContain("unreadable");
+    writeFileSync(path, text(path).replace("| 2 | 未决 | P2 | 题2 |", "| 2 | 未决 | P2 | 题2 | 坏 |"));
+    const before = text(path);
+    const created = await run(["new", path, "--title", "新", "--id", "2"]);
+    expect(created.code).toBe(2);
+    expect(text(path)).toBe(before);
+  });
+});
+
+describe("#31 list reports how many ids a row holds", () => {
+  test("rows carry ids and count; --expand gives one entry per id", async () => {
+    const fixture = new URL("../fixtures/canonical-clean.md", import.meta.url);
+    const path = file(readFileSync(fixture, "utf8"));
+    const json = JSON.parse((await run(["list", path, "--closed", "--json"])).stdout);
+    const range = json.issues.find((issue: { id: string }) => issue.id === "7–20");
+    expect(range.count).toBe(14);
+    expect(range.ids).toEqual(["7–20"]);
+    const total = json.issues.reduce((sum: number, issue: { count: number }) => sum + issue.count, 0);
+    expect(total).toBe(json.issueCount);
+    const counts = JSON.parse((await run(["counts", path, "--json"])).stdout).counts;
+    expect(json.issueCount).toBe(counts.closed);
+    const expanded = JSON.parse((await run(["list", path, "--closed", "--json", "--expand"])).stdout);
+    expect(expanded.issues.length).toBe(counts.closed);
+    expect(expanded.issues.filter((issue: { id: string }) => issue.id === "8").length).toBe(1);
+    const textOut = (await run(["list", path, "--closed"])).stdout;
+    expect(textOut).toMatch(/7–20.*14 ids/);
+  });
+});
+
+describe("#11 list --closed text shows criteria", () => {
+  test("the criteria column is printed", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：唯一判据\n");
+    await run(["close", path, "1"]);
+    expect((await run(["list", path, "--closed"])).stdout).toContain("唯一判据");
+  });
+});
+
+describe("#32 show --json exposes labels and open criteria", () => {
+  test("labels map and criteria with its source", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：\n\n- x\n- y\n");
+    const view = JSON.parse((await run(["show", path, "1", "--json"])).stdout);
+    expect(view.labels["现象"]).toBe("a");
+    expect(view.criteria).toBe("x；y");
+    expect(view.criteriaSource).toBe("body");
+    await run(["close", path, "1"]);
+    const closed = JSON.parse((await run(["show", path, "1", "--json"])).stdout);
+    expect(closed.criteria).toBe("x；y");
+    expect(closed.criteriaSource).toBe("table");
+  });
+});
+
+describe("#15 sync --titles reports rows it cannot fix", () => {
+  test("a drifted multi-id row is listed, not silently skipped", async () => {
+    const path = await threeIssues();
+    writeFileSync(path, text(path).replace("| 3 | 未决 | P2 | 题3 |", "| 3, 30 | 未决 | P2 | 题3（改过） |"));
+    const result = await run(["sync", path, "--titles", "--dry-run"]);
+    expect(result.stderr).toContain("3, 30");
+    expect(result.stderr).toContain("split");
+  });
+});
+
+describe("#40 one archive format, kept in step with rename", () => {
+  test("rename updates the kept-body archive heading", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    await run(["close", path, "1", "--keep-body"]);
+    expect((await run(["rename", path, "1", "新标题"])).code).toBe(0);
+    expect(text(path)).toContain("### #1 新标题（已关闭，正文保留）");
+    expect(text(path)).not.toContain("### #1 甲（");
+  });
+
+  test("check flags an archive heading whose summary drifted (W251)", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    await run(["close", path, "1", "--keep-body"]);
+    writeFileSync(path, text(path).replace("### #1 甲（已关闭", "### #1 旧名（已关闭"));
+    const report = JSON.parse((await run(["check", path, "--json"])).stdout);
+    expect(report.warnings.map((w: { code: string }) => w.code)).toContain("W251");
+  });
+
+  test("adopt archives a closed body in the close --keep-body format, so reopen can restore it", async () => {
+    const { path, out } = await adopted(`# 台账
+
+## 待处理
+
+| # | 状态 | P | 摘要 |
+|---|---|---|---|
+| 7 | 未决 | P1 | 还开着 |
+
+## 已关闭
+
+| # | 状态 | P | 摘要 | 判据 |
+|---|---|---|---|---|
+| 1 | 已修 | P2 | 甲 | 测试通过 |
+
+## 正文
+
+### Issue 1: 甲
+
+**现象**：原来的现象
+
+### Issue 7: 还开着
+
+**验收判据**：y
+`);
+    expect(out).toContain("### #1 甲（已关闭，正文保留）");
+    expect(out).toContain("<!-- issuemd:kept-body:end -->");
+    const report = JSON.parse((await run(["check", path, "--json"])).stdout);
+    expect(report.warnings.map((w: { code: string }) => w.code)).toContain("W250");
+    expect((await run(["reopen", path, "1"])).code).toBe(0);
+    expect((await run(["show", path, "1"])).stdout).toContain("**现象**：原来的现象");
+  });
+});
+
+describe("#34 duplicate titles are visible", () => {
+  test("new warns and check reports W212", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    const second = await run(["new", path, "--title", " 甲 "]);
+    expect(second.code).toBe(0);
+    expect(second.stderr).toContain("W212");
+    const report = JSON.parse((await run(["check", path, "--json"])).stdout);
+    expect(report.warnings.filter((w: { code: string }) => w.code === "W212").length).toBeGreaterThan(0);
+  });
+});
+
+describe("#27 W202 only for hashes that would rot", () => {
+  test("criteria-column commits and UUIDs are not W202; body hashes still are", async () => {
+    const path = await withIssue("**现象**：thread 550e8400-e29b-41d4-a716-446655440000 和 deadbee\n\n**验收判据**：x\n");
+    expect((await run(["new", path, "--title", "乙", "--body-file", body("**现象**：a\n\n**验收判据**：y\n")])).code).toBe(0);
+    await run(["close", path, "2", "--criteria", "commit 1a131d6 修复"]);
+    const report = JSON.parse((await run(["check", path, "--json"])).stdout);
+    const flagged = report.warnings.filter((w: { code: string }) => w.code === "W202").map((w: { message: string }) => w.message);
+    expect(flagged.some((m: string) => m.includes("deadbee"))).toBe(true);
+    expect(flagged.some((m: string) => m.includes("1a131d6"))).toBe(false);
+    expect(flagged.some((m: string) => /550e8400|e29b|446655440000/.test(m))).toBe(false);
+  });
+});
+
+describe("#19 links", () => {
+  test("a symlinked ledger is written through to its target; the link survives", async () => {
+    const { symlinkSync, lstatSync } = await import("node:fs");
+    const target = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    const link = join(dir, `link-${counter++}.md`);
+    symlinkSync(target, link);
+    const result = await run(["new", link, "--title", "经由链接"]);
+    expect(result.code).toBe(0);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(text(target)).toContain("经由链接");
+  });
+
+  test("a hard-linked ledger warns that other names keep the old content", async () => {
+    const { linkSync } = await import("node:fs");
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    linkSync(path, join(dir, `hard-${counter++}.md`));
+    const result = await run(["new", path, "--title", "硬链接"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("hard link");
+  });
+});

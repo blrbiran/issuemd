@@ -12,7 +12,12 @@ import { fencedLines, labelBlock, type LabelBlock } from "./ledger-edit.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
 
 export type ListedIssue = {
+  /** The id cell as written: `7`, `20, 24, 29`, `7–20`. */
   id: string;
+  /** Each id or range in the cell, spelled as the table spells it. */
+  ids: string[];
+  /** How many issues the row stands for (`7–20` is 14); `counts` sums these. */
+  count: number;
   status: string;
   priority: string;
   summary: string;
@@ -45,9 +50,37 @@ export function formatIssueRow(row: LedgerRow): string {
   return [rowIds(row), row.status, row.priority || "-", row.summary].join("  ");
 }
 
+/** Text form of one `list` entry; closed rows carry their criteria. */
+export function formatListedIssue(issue: ListedIssue): string {
+  const cells = [issue.id, issue.status, issue.priority || "-", issue.summary];
+  if (issue.count > 1) cells.push(`(${issue.count} ids)`);
+  if (issue.criteria) cells.push(`判据: ${issue.criteria}`);
+  return cells.join("  ");
+}
+
+/** `--expand`: one entry per id. Undefined when that would be absurdly long. */
+export function expandIssues(issues: ListedIssue[], limit = 100_000): ListedIssue[] | undefined {
+  const out: ListedIssue[] = [];
+  for (const issue of issues) {
+    for (const spelled of issue.ids) {
+      const range = /^(\d+)–(\d+)$/.exec(spelled);
+      const ids = range
+        ? Array.from({ length: Number(range[2]) - Number(range[1]) + 1 }, (_, at) => String(Number(range[1]) + at))
+        : [spelled];
+      for (const id of ids) {
+        out.push({ ...issue, id, ids: [id], count: 1 });
+        if (out.length > limit) return undefined;
+      }
+    }
+  }
+  return out;
+}
+
 export function toListedIssue(row: LedgerRow, table: TableKind): ListedIssue {
   const issue: ListedIssue = {
     id: rowIds(row),
+    ids: row.ids.map(spanText),
+    count: row.ids.reduce((sum, span) => sum + (span.end - span.start + 1), 0),
     status: row.status,
     priority: row.priority,
     summary: row.summary,
@@ -139,9 +172,13 @@ export type IssueView = {
   priority: string;
   summary: string;
   criteria?: string;
+  /** Where `criteria` came from: the closed table's column, or the open body's **验收判据**. */
+  criteriaSource?: "table" | "body";
   line: number;
   end: number;
   body?: { line: number; end: number; text: string };
+  /** Every `**label**` block in the body, one-line form (as `--label` and `close` read them). */
+  labels?: Record<string, string>;
 };
 
 /** The full view `show` renders: table row plus the body block when one exists. */
@@ -170,13 +207,27 @@ export function viewIssue(
     line: found.row.line,
     end: found.row.line,
   };
-  if (found.table === "closed") view.criteria = found.row.criteria;
+  if (found.table === "closed") {
+    view.criteria = found.row.criteria;
+    view.criteriaSource = "table";
+  }
   if (block) {
     view.body = {
       line: block.line,
       end: block.end,
       text: ledger.lines.slice(block.line - 1, block.end).join("\n").replace(/\n+$/, ""),
     };
+    const labels: Record<string, string> = {};
+    for (const name of labelsIn(ledger.lines, block.line, block.end)) {
+      labels[name] = labelBlock(ledger.lines, block.line, block.end, name)?.text ?? "";
+    }
+    view.labels = labels;
+    // Open issues keep their criteria in the body; expose them the same way
+    // a closed issue exposes its column, so consumers need not parse Markdown.
+    if (found.table === "open" && labels["验收判据"]) {
+      view.criteria = labels["验收判据"];
+      view.criteriaSource = "body";
+    }
   }
   return view;
 }

@@ -22,7 +22,7 @@
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
 import { splitCells } from "./ledger.js";
-import { fencedLines, formatRow, guideBlockLines, statusBlockLines } from "./ledger-edit.js";
+import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
 
@@ -862,9 +862,11 @@ export function adopt(src: string): AdoptResult {
   for (const row of archived) {
     const body = bodyById.get(fullId(row))!;
     usedBodyIds.add(body.idText);
-    appendixOut.push(`### #${row.idText} ${row.summary}（adopt 保留的已关闭正文）`, "");
+    // Same format as `close --keep-body`, so check (W250), rename and
+    // reopen treat an adopted archive exactly like one close wrote.
+    appendixOut.push(archiveHeading(row.idText, row.summary), "", "> adopt 时保留了原正文；状态见「已关闭」表。", "");
     const content = trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, row.idText, body.line));
-    appendixOut.push(...(content.length ? content : ["（空）"]), "");
+    appendixOut.push(...(content.length ? content : ["（空）"]), KEPT_BODY_END, "");
   }
   // A body that lives inside preserved text is already copied with it; do not
   // archive a second copy.

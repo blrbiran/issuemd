@@ -20,7 +20,7 @@
  */
 
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
@@ -29,12 +29,16 @@ import { buildSections, countLines } from "./sections.js";
 import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
 import { parseId, compareIds, type IdSpan } from "./issue-id.js";
 import { bodyBlocks, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
-import { checkLedger, PRIORITIES, STATUS_CLASSES } from "./ledger-check.js";
+import { checkLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
 import {
   bodySkeleton,
   extractCriteria,
   formatRow,
   guideBlockLines,
+  archiveHeading,
+  ARCHIVE_HEADING,
+  ARCHIVE_NOTE,
+  KEPT_BODY_END,
   insertBlock,
   insertLines,
   markerPair,
@@ -50,7 +54,8 @@ import {
   filterRows,
   findLabel,
   findRow,
-  formatIssueRow,
+  expandIssues,
+  formatListedIssue,
   labelsIn,
   spanText,
   summaryLine,
@@ -296,8 +301,6 @@ function formatDiagnostics(diagnostics: Diagnostic[]): string {
     .join("\n");
 }
 
-/** Ends a `close --keep-body` archive in 附录; `reopen` restores up to it. */
-const KEPT_BODY_END = "<!-- issuemd:kept-body:end -->";
 
 /** Drop leading and trailing blank lines; internal ones are content. */
 function trimBlank(lines: string[]): string[] {
@@ -353,7 +356,7 @@ function cmdCheck(rest: string[], v: Values): CliResult {
 function cmdList(rest: string[], v: Values): CliResult {
   const file = rest[0];
   if (file == null || rest.length !== 1) {
-    return err("usage: issuemd list FILE [--status S] [--priority P] [--closed] [--json]\n", 2);
+    return err(`usage: ${COMMANDS.list.usage}\n`, 2);
   }
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
@@ -379,16 +382,50 @@ function cmdList(rest: string[], v: Values): CliResult {
   const wrongTable = v.status != null && statusCategory(v.status) != null && statusCategory(v.status) !== table
     ? `'${v.status}' is ${statusCategory(v.status)}; ${table === "open" ? "add --closed" : "drop --closed"} to list it\n`
     : "";
+  const incomplete = unreadableNote(ledger);
+  const stderr = wrongTable + incomplete;
+  let issues = rows.map((row) => toListedIssue(row, table));
+  if (v.expand) {
+    const expanded = expandIssues(issues);
+    if (!expanded) return err("issuemd list: --expand would produce more than 100000 entries\n", 2);
+    issues = expanded;
+  }
   if (v.json) {
+    const unreadableRows = ledger.unreadable
+      .filter((row) => row.table === table)
+      .map(({ line, reason, ids }) => ({ line, reason, ...(ids ? { ids: ids.map(spanText) } : {}) }));
     const body = JSON.stringify(
-      { file, table, issues: rows.map((row) => toListedIssue(row, table)) },
+      {
+        file,
+        table,
+        rowCount: rows.length,
+        issueCount: issues.reduce((sum, issue) => sum + issue.count, 0),
+        issues,
+        ...(unreadableRows.length ? { unreadableRows } : {}),
+      },
       null,
       2,
     );
-    return rows.length === 0 ? { code: 1, stdout: body + "\n", stderr: wrongTable } : ok(body);
+    return { code: rows.length === 0 ? 1 : 0, stdout: body + "\n", stderr };
   }
-  if (rows.length === 0) return { code: 1, stdout: "(no issues)\n", stderr: wrongTable };
-  return ok(rows.map(formatIssueRow).join("\n"));
+  if (rows.length === 0) return { code: 1, stdout: "(no issues)\n", stderr };
+  return { code: 0, stdout: issues.map(formatListedIssue).join("\n") + "\n", stderr };
+}
+
+/** The unreadable row whose first cell names `id`, if any. */
+function unreadableHolding(ledger: ReturnType<typeof parseLedger>, id: string) {
+  const wanted = parseId(id);
+  if (!wanted) return undefined;
+  return ledger.unreadable.find((row) => (row.ids ?? []).some((span) =>
+    span.suffix === wanted.suffix && span.start <= wanted.start && wanted.start <= span.end));
+}
+
+/** A stderr note for read views when some table rows could not be parsed. */
+function unreadableNote(ledger: ReturnType<typeof parseLedger>): string {
+  if (ledger.unreadable.length === 0) return "";
+  const listed = ledger.unreadable.slice(0, 5).map(({ line, reason }) => `  L${line}: ${reason}`).join("\n");
+  return `warning: ${ledger.unreadable.length} table row(s) could not be read; this result is incomplete ` +
+    `(run 'issuemd check'):\n${listed}\n`;
 }
 
 function cmdCounts(rest: string[], v: Values): CliResult {
@@ -397,10 +434,12 @@ function cmdCounts(rest: string[], v: Values): CliResult {
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
   const report = checkLedger(loaded.src, file);
-  const unusable = unusableLedger(parseLedger(loaded.src));
+  const ledger = parseLedger(loaded.src);
+  const unusable = unusableLedger(ledger);
   if (unusable) return unusable;
-  if (v.json) return ok(JSON.stringify({ file, counts: report.counts }, null, 2));
-  return ok(summaryLine(report.counts) + "\n");
+  const stderr = unreadableNote(ledger);
+  if (v.json) return { code: 0, stdout: JSON.stringify({ file, counts: report.counts }, null, 2) + "\n", stderr };
+  return { code: 0, stdout: summaryLine(report.counts) + "\n", stderr };
 }
 
 function cmdShow(rest: string[], v: Values): CliResult {
@@ -415,7 +454,13 @@ function cmdShow(rest: string[], v: Values): CliResult {
   const unusable = unusableLedger(ledger);
   if (unusable) return unusable;
   const view = viewIssue(ledger, id);
-  if (!view) return noMatch(`(no such issue: ${id})\n`);
+  if (!view) {
+    const bad = unreadableHolding(ledger, id);
+    if (bad) {
+      return err(`issuemd show: #${id} is in an unreadable table row (L${bad.line}: ${bad.reason}); fix it, then re-run\n`, 3);
+    }
+    return noMatch(`(no such issue: ${id})\n`);
+  }
 
   if (v.label != null) {
     const range = view.body ?? { line: view.line, end: view.line };
@@ -489,7 +534,13 @@ function cmdRead(rest: string[]): CliResult {
 
 // ---- shared write plumbing --------------------------------------------
 
-type Loaded = { doc: Document; lines: string[] };
+/**
+ * `path` is where the bytes really live: a symlinked ledger is read and
+ * written through to its target, so the link itself survives the atomic
+ * rename (dogfood #19). `links` > 1 means other hard links exist; they keep
+ * the old inode after a rename, which callers are warned about.
+ */
+type Loaded = { doc: Document; lines: string[]; path: string; links: number };
 
 /** Load a file for writing. Stdin is refused: there is nothing to write back. */
 /**
@@ -522,7 +573,9 @@ function writeBlockReason(file: string): "utf8" | "eol" | undefined {
 function loadWritable(file: string): Loaded | CliResult {
   if (file === "-") return err("issuemd: write commands do not support stdin ('-')\n", 2);
   try {
-    const blocked = writeBlockReason(file);
+    const path = lstatSync(file).isSymbolicLink() ? realpathSync(file) : file;
+    const links = statSync(path).nlink;
+    const blocked = writeBlockReason(path);
     if (blocked === "utf8") {
       return err(
         `issuemd: refusing to write '${file}': it is not valid UTF-8, and rewriting it would corrupt the bytes. ` +
@@ -537,13 +590,13 @@ function loadWritable(file: string): Loaded | CliResult {
         2,
       );
     }
-    const doc = readDocument(file);
+    const doc = readDocument(path);
     // Split without the trailing sentinel: `joinDocument` adds the final
     // newline back, so keeping the "" would double it on every rewrite.
     const lines = doc.text === ""
       ? []
       : (doc.finalNewline ? doc.text.slice(0, -1) : doc.text).split("\n");
-    return { doc, lines };
+    return { doc, lines, path, links };
   } catch (e) {
     return err(`issuemd: cannot open '${file}': ${(e as Error).message}\n`, 2);
   }
@@ -612,14 +665,21 @@ function commit(
     newLines.every((line, index) => line === loaded.lines[index]);
   if (unchanged) return ok("");
   try {
-    const written = writeAtomically(file, content, loaded.doc.stat);
+    const written = writeAtomically(loaded.path, content, loaded.doc.stat);
     if (!written.ok) {
       return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 4);
     }
   } catch (error) {
     return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
   }
-  return ok("");
+  return { code: 0, stdout: "", stderr: hardLinkNote(file, loaded) };
+}
+
+/** The atomic rename gives the ledger a new inode; other hard links keep the old one. */
+function hardLinkNote(file: string, loaded: Loaded): string {
+  if (loaded.links <= 1) return "";
+  return `warning: '${file}' had ${loaded.links - 1} other hard link(s); they still show the old content ` +
+    "(an atomic write replaces the file). Use one path, or a symlink, for a shared ledger.\n";
 }
 
 /** Ledger view plus the exact bytes it came from, for write verbs. */
@@ -739,7 +799,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
 
-  const max = maxIssueId(ledger.rows);
+  const max = maxIssueId(ledger.rows, ledger.unreadable);
   let idText = String(max + 1);
   if (v.id == null && !Number.isSafeInteger(max + 1)) {
     return err(
@@ -761,6 +821,8 @@ function cmdNew(rest: string[], v: Values): CliResult {
     // new; only a bare number at or below the current max can be a reuse.
     reusedNumber = /^\d+$/.test(idText) && Number.parseInt(idText, 10) <= max;
     if (findRow(ledger, idText)) return err(`issuemd new: id ${idText} already exists\n`, 2);
+    const bad = unreadableHolding(ledger, idText);
+    if (bad) return err(`issuemd new: id ${idText} already exists in an unreadable row (L${bad.line}); fix that row first\n`, 2);
   }
   const id = Number.parseInt(idText, 10);
 
@@ -801,6 +863,12 @@ function cmdNew(rest: string[], v: Values): CliResult {
   }
   if (title.includes("|")) {
     warnings.push("W205: the title contains a pipe; it was escaped in the table cell\n");
+  }
+  const twin = [...ledger.rows.open, ...ledger.rows.closed].find((row) => summaryKey(row.summary) === summaryKey(title));
+  if (twin) {
+    warnings.push(
+      `W212: #${twin.ids.map(spanText).join(", ")} already has this summary; if this is a retry, the issue may now exist twice\n`,
+    );
   }
   return result.code === 0 && warnings.length > 0 ? { ...result, stderr: result.stderr + warnings.join("") } : result;
 }
@@ -890,7 +958,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
       while (kept.length > 0 && kept[0]!.trim() === "") kept.shift();
       while (kept.length > 0 && kept.at(-1)!.trim() === "") kept.pop();
       archive = [
-        `### #${idText} ${found.row.summary}（已关闭，正文保留）`,
+        archiveHeading(idText, found.row.summary),
         "",
         `> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。`,
         "",
@@ -929,7 +997,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
 
   const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
   if (keepBody && result.code === 0) {
-    return { code: 0, stdout: result.stdout, stderr: `W250: kept the body of #${idText} by moving it into 附录\n` };
+    return { code: 0, stdout: result.stdout, stderr: result.stderr + `W250: kept the body of #${idText} by moving it into 附录\n` };
   }
   return result;
 }
@@ -983,7 +1051,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
     }
     while (end > archived.line_start && loaded.lines[end - 1]!.trim() === "") end--;
     restored = trimBlank(loaded.lines.slice(archived.line_start, end)
-      .filter((line) => line.trim() !== KEPT_BODY_END && !/^>\s*关闭时以 --keep-body/.test(line)));
+      .filter((line) => line.trim() !== KEPT_BODY_END && !ARCHIVE_NOTE.test(line)));
     // `close` inserted one blank line before the archive; take it back.
     const start = archived.line_start > 1 && loaded.lines[archived.line_start - 2]!.trim() === ""
       ? archived.line_start - 1
@@ -1105,6 +1173,13 @@ function cmdRename(rest: string[], v: Values): CliResult {
     (candidate) => `${candidate.id.start}${candidate.id.suffix}` === idText,
   );
   if (block) lines[block.line - 1] = `### Issue ${idText}: ${next}`;
+  // A kept-body archive heading is a third copy of the summary; keep it in
+  // step, or it silently disagrees with the table forever (dogfood #40).
+  const fenced = fencedLines(lines);
+  lines.forEach((text, index) => {
+    const match = fenced[index] ? null : ARCHIVE_HEADING.exec(text);
+    if (match && match[1] === idText) lines[index] = archiveHeading(idText, next);
+  });
   const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
   if (next.includes("|") && result.code === 0) {
     return { ...result, stderr: result.stderr + "W205: the new title contains a pipe; it was escaped in the table cell\n" };
@@ -1175,7 +1250,7 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
     result.lines.every((line, index) => line === loaded.lines[index]);
   if (!unchanged) {
     try {
-      const written = writeAtomically(file, target, loaded.doc.stat);
+      const written = writeAtomically(loaded.path, target, loaded.doc.stat);
       if (!written.ok) return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 4);
     } catch (error) {
       return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
@@ -1185,7 +1260,7 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
   // that describes a write that did not happen.
   const failed = writeReport();
   if (failed) return failed;
-  return ok(report);
+  return { code: 0, stdout: report, stderr: unchanged ? "" : hardLinkNote(file, loaded) };
 }
 
 /**
@@ -1319,15 +1394,28 @@ function syncTitles(
 
   type Change = { id: string; oldSummary: string; title: string; rowLine: number; bodyLine?: number };
   const changes: Change[] = [];
+  // Rows sync cannot touch (several ids share one summary) are reported, so
+  // "nothing drifted" and "drifted but skipped" no longer look identical.
+  const skipped: string[] = [];
   for (const row of ledger.rows.open) {
-    if (row.ids.length !== 1) continue;
+    if (row.ids.length !== 1 || row.ids[0]!.start !== row.ids[0]!.end) {
+      const drifted = row.ids
+        .map((span) => byId.get(spanText(span)))
+        .some((block) => block != null && foldWhitespace(block.title) !== foldWhitespace(row.summary));
+      if (drifted) skipped.push(row.ids.map(spanText).join(", "));
+      continue;
+    }
     const id = spanText(row.ids[0]!);
     const block = byId.get(id);
     if (!block) continue;
     if (foldWhitespace(block.title) === foldWhitespace(row.summary)) continue;
     changes.push({ id, oldSummary: row.summary, title: block.title, rowLine: row.line, bodyLine: block.line });
   }
-  if (changes.length === 0) return ok("");
+  const skippedNote = skipped.length === 0
+    ? ""
+    : `issuemd sync --titles: skipped ${skipped.length} multi-id row(s) whose summary differs from a body title ` +
+      `(split the row first, then re-run): ${skipped.map((ids) => `#${ids}`).join("; ")}\n`;
+  if (changes.length === 0) return { code: 0, stdout: "", stderr: skippedNote };
 
   const progress = changes.filter((change) => PROGRESS.test(change.oldSummary));
   if (prefer === "body" && progress.length > 0 && !v["move-progress"] && !v["drop-progress"]) {
@@ -1363,7 +1451,8 @@ function syncTitles(
     }
   }
 
-  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  return skippedNote ? { ...result, stderr: result.stderr + skippedNote } : result;
 }
 
 /** Add a separator row after any pipe block that lacks one. */

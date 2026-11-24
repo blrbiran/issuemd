@@ -191,6 +191,19 @@ export function endsInFence(lines: string[]): boolean {
 
 // ---- bodies ------------------------------------------------------------
 
+/**
+ * The one archive format for a closed issue's body kept in 附录, written by
+ * `close --keep-body` and by `adopt`, read back by `reopen`, renamed by
+ * `rename`, and reported by `check` (W250/W251/W252). It is deliberately not
+ * an `Issue N:` heading: 附录 must not hold issue headings (E123).
+ */
+export const KEPT_BODY_END = "<!-- issuemd:kept-body:end -->";
+export const archiveHeading = (id: string, summary: string) => `### #${id} ${summary}（已关闭，正文保留）`;
+/** `### #<id> <summary>（已关闭，正文保留）` → id and summary. */
+export const ARCHIVE_HEADING = /^ {0,3}###\s+#([1-9]\d*[a-z]?)\s+(.*?)（已关闭，正文保留）\s*$/;
+/** The provenance note under the heading; `reopen` drops it when restoring. */
+export const ARCHIVE_NOTE = /^>\s*(?:关闭时以 --keep-body\s*|adopt 时)保留了原正文/;
+
 export function bodySkeleton(id: string, title: string, criteria = ""): string[] {
   return [
     `### Issue ${id}: ${title}`,

@@ -205,11 +205,17 @@ describe("issuemd check", () => {
     expect(report.warnings).toContainEqual(expect.objectContaining({ code: "W203" }));
   });
 
-  test("W202 fires for a short pinned hash and W240 for a missing commit with --verify-commits", () => {
+  test("a commit in the 判据 column is not W202, but --verify-commits still checks it (W240)", () => {
+    // a1b2c3d (closed #1's criteria) is a synthetic hash that does not exist in this repo.
     const verified = check(canonical, "--verify-commits");
-    expect(verified.report.warnings).toContainEqual(expect.objectContaining({ code: "W202" }));
-    // a1b2c3d is a synthetic hash that does not exist in this repo.
+    expect(verified.report.warnings).not.toContainEqual(expect.objectContaining({ code: "W202" }));
     expect(verified.report.warnings).toContainEqual(expect.objectContaining({ code: "W240" }));
+  });
+
+  test("W202 fires for a short hash pinned in a body", () => {
+    const source = canonical.replace("**验收判据**：重启后保持上次宽度。", "**验收判据**：重启后保持上次宽度（见 deadbee）。");
+    const { report } = check(source);
+    expect(report.warnings).toContainEqual(expect.objectContaining({ code: "W202" }));
   });
 
   test("W201 fires for a body over 300 lines", () => {

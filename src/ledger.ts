@@ -22,6 +22,13 @@ export type LedgerRow = {
   criteria: string;
 };
 
+/**
+ * A table row in 索引/已关闭 that could not be read (wrong cell count, bad id).
+ * It is not in `rows`, but its ids — when the first cell still parses — are
+ * real and must not be reused or reported as missing (dogfood #36).
+ */
+export type UnreadableRow = { line: number; table: TableKind; reason: string; ids?: IdSpan[] };
+
 type PipeBlock = { line: number; rows: string[][]; header: boolean; separator: boolean };
 export type { PipeBlock };
 export type BodyBlock = { id: IdSpan; title: string; line: number; end: number };
@@ -88,7 +95,13 @@ function cellCountMessage(expected: number, found: number): string {
   return `Expected ${expected} cells, found ${found}${hint}`;
 }
 
-function readRows(block: PipeBlock, kind: TableKind, errors: Diagnostic[], warnings: Diagnostic[]): LedgerRow[] {
+function readRows(
+  block: PipeBlock,
+  kind: TableKind,
+  errors: Diagnostic[],
+  warnings: Diagnostic[],
+  unreadable: UnreadableRow[],
+): LedgerRow[] {
   const columns = COLUMNS[kind];
   const header = block.rows[0];
   if (block.header && (header.length !== columns.length || columns.some((name, i) => header[i] !== name))) {
@@ -105,11 +118,15 @@ function readRows(block: PipeBlock, kind: TableKind, errors: Diagnostic[], warni
     if (cells.length !== columns.length) {
       if (!block.header) errors.push({ code: "E108", line, message: cellCountMessage(columns.length, cells.length) });
       if (cells.length > columns.length) warnings.push({ code: "W205", line, message: "Check for an unescaped pipe in a cell" });
+      unreadable.push({
+        line, table: kind, reason: cellCountMessage(columns.length, cells.length), ids: parseIds(cells[0] ?? "") ?? undefined,
+      });
       continue;
     }
     const ids = parseIds(cells[0]);
     if (!ids) {
       errors.push({ code: "E109", line, message: `Invalid issue IDs: ${cells[0]}` });
+      unreadable.push({ line, table: kind, reason: `Invalid issue IDs: ${cells[0]}` });
       continue;
     }
     const [, status, priority, summary, criteria = ""] = cells;
@@ -128,10 +145,11 @@ export function parseLedger(src: string) {
   const errors: Diagnostic[] = [];
   const warnings: Diagnostic[] = [];
   const rows: Record<TableKind, LedgerRow[]> = { open: [], closed: [] };
+  const unreadable: UnreadableRow[] = [];
   const missing = CORE.filter((title) => !h2s.some((section) => section.title === title));
   if (missing.length > 0) {
     errors.push({ code: "E120", line: 1, message: `Canonical ledger sections missing: ${missing.join(", ")}` });
-    return { lines, visible, sections, rows, blocks: [] as PipeBlock[], errors, warnings };
+    return { lines, visible, sections, rows, unreadable, blocks: [] as PipeBlock[], errors, warnings };
   }
 
   const roots = sections.filter((section) => section.level === 1);
@@ -193,9 +211,9 @@ export function parseLedger(src: string) {
     const section = h2s.find((candidate) => candidate.title === title)!;
     const tables = blocks.filter((block) => block.line > section.line_start && block.line <= section.line_end);
     if (tables.length !== 1) errors.push({ code: "E112", line: section.line_start, message: `${title} must contain one table` });
-    rows[kind] = tables.flatMap((table) => readRows(table, kind, errors, warnings));
+    rows[kind] = tables.flatMap((table) => readRows(table, kind, errors, warnings, unreadable));
   }
-  return { lines, visible, sections, rows, blocks, errors, warnings };
+  return { lines, visible, sections, rows, unreadable, blocks, errors, warnings };
 }
 
 /** Well-formed `### Issue N: title` bodies strictly inside `## 正文`. */
@@ -219,10 +237,13 @@ export function bodyBlocks(ledger: ReturnType<typeof parseLedger>): BodyBlock[] 
 }
 
 /** Highest numbered issue anywhere in the tables, retired range ends included. */
-export function maxIssueId(rows: { open: LedgerRow[]; closed: LedgerRow[] }): number {
+export function maxIssueId(rows: { open: LedgerRow[]; closed: LedgerRow[] }, unreadable: UnreadableRow[] = []): number {
   let max = 0;
   for (const row of [...rows.open, ...rows.closed]) {
     for (const span of row.ids) max = Math.max(max, span.end);
+  }
+  for (const row of unreadable) {
+    for (const span of row.ids ?? []) max = Math.max(max, span.end);
   }
   return max;
 }
