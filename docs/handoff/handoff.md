@@ -1,24 +1,27 @@
 # issuemd 交接文档
 
-更新于 2026-11-24（第七轮：合入台账动词 + 测试者复测 #50/#51）。写给下一位接手者。
+更新于 2026-11-24（第七轮收尾：台账动词已合入、#50/#51 已处理、0.1.0 已由用户发布）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
 >
 > ```bash
 > git log --oneline -12
-> git branch -a                           # 是否还有 feat/ledger-verbs（待复核分支）
+> git branch -a                           # 正常只有 main（合并后的分支都已删）
 > git rev-list --count origin/main..main  # main 领先 origin/main 多少（push 由用户手动做）
-> git log --oneline main..feat/ledger-verbs
+> git tag                                 # 已发布版本的 tag（v0.1.0 起）
+> npm view @blrbiran/issuemd version      # registry 上的最新版本
 > ```
 
 ## 一句话现状
 
-`issuemd` P0–P5 早已完成；第五轮（发布准备）已 ff 合入 `main`。第六轮按测试者的 dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`，49 条，**不在本仓库、不要改它**）逐条复现并修复：
+`issuemd` P0–P5 早已完成；第五轮（发布准备）已 ff 合入 `main`。第六、七轮按测试者的 dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`，现 51 条，**不在本仓库、不要改它，状态由测试者自己更新**）逐条复现并修复：
 
 - **已在 `main`**：阶段 1（静默丢数据/破坏）+ 阶段 2（读写体验）+ 阶段 3 新命令 `body` / `priority` / `split` / `reopen --status`（第七轮用户裁定合入，`feat/ledger-verbs` 已 ff 并删除）+ 文档。测试全绿（数量以 `npm test` 末行为准）。
 - 第七轮：测试者在台账追加 #50（adopt 把表格小节内的正文存两份）与 #51（复测：40 条已修、7 条未达标）。#50、#41 判据 4、#46 判据 1、#30 判据 4 已修；#10/#16/#30/#44 随合入达标。#51 说的「分支丢失」是因为分支从未 push，合入后由用户 push 即可。
-- 第六轮之前的提交用户已 push；第七轮提交未 push。未发布 npm。
+- 全部提交用户已 push；`v0.1.0` tag 已在远端（对应「移出 .cafe」那次提交）。
+- **npm**：用户报告 `@blrbiran/issuemd@0.1.0` 已发布（首发，public）。写本文档时 `npm view @blrbiran/issuemd` 与 `https://registry.npmjs.org/@blrbiran%2fissuemd` 仍返回 404，可能是刚发布的传播延迟——**接手后先复查**；仍 404 就请用户看 `npm publish` 的输出（2FA/OTP、scope 权限）。
+- 当前没有进行中的开发任务；下一轮的输入通常是测试者在 dogfooding 台账里追加的新条目或复测结论。
 
 ## 工作流约定（用户明确要求）
 
@@ -31,10 +34,12 @@
 
 ## 等待用户决策 / 动作
 
-1. **push `main`**（用户手动）。
-2. **npm 发布**（用户之后决定）。发布前：`npm pack` → 临时目录安装 → 跑 `check`/`new`，并 `import('@blrbiran/issuemd')`。
+当前没有阻塞项。下列是常设约定与可能的下一步：
+
+1. **确认 0.1.0 在 registry 上可见**（见上）。
+2. **之后的发版**（用户决定时机，命令由用户执行）：`npm version patch|minor` → `npm publish`（`prepack` 会自动 build）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`。
 3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。
-4. 第七轮 Q1–Q4 已裁定不做（见「第七轮裁定」）；`.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。
+4. 第七轮 Q1–Q4 已裁定不做（见「第七轮裁定」）；`.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。其他 clone 拉到这次提交时，git 会删掉它们工作区里的 `.cafe`，需从上一提交恢复（`git show <移出前的提交>:.cafe > .cafe`）。
 
 ## 第七轮裁定（用户 2026-11-24：Q1–Q4 按推荐，均不做）
 
@@ -57,7 +62,7 @@
 | Q6 符号链接 | 解析到目标文件写入（不改 io.ts），链接保留；硬链接写后 warning | `loadWritable` |
 | Q7 keep-body 判据两份 | 接受：附录归档 = 冻结的历史快照，不算第二份判据 | spec §7.2 |
 
-## dogfooding 49 条的处理结果
+## dogfooding 51 条的处理结果
 
 | 条目 | 结果 |
 |---|---|
@@ -173,6 +178,9 @@ issuemd <command> --help
 11. adopt 的捷径条件含「无 W220」：未声明状态词要走完整转换以便报告 `unknown-status`。
 12. `list --status` 的值若在台账里真实出现（即使不在词表），允许——这是查拼错状态行的办法。
 13. W202 判据列识别靠「已关闭行的最后一个原始单元格」，不是 `row.criteria`（转义后的文本可能和原文对不上）。
+14. adopt 里表格小节（`## 待处理` 等）下的 `### Issue N:` 是**正文块**：section-prose 循环用 `bodyStarts` 跳过它，交给正文/归档/孤儿逻辑。别让同一块走两条路（#50）。
+15. adopt 守恒有两层：逐行文本守卫 + 编号集合守卫（输入表的 id 必须都在输出表里，区间按展开计，单跨度 >10 万跳过比对）。通过时 `changes` 里写 `守恒自检：issue N → N…`。
+16. W253 只报「第二份」：转义的 `\### Issue N:` 副本或重复归档；开放项的第一份归档仍归 W252，不双报。
 
 ## 已完成的审查与验证
 
@@ -223,6 +231,8 @@ node -e "import('@blrbiran/issuemd').then(m => console.log(typeof m.checkLedger)
 5. `adopt` 的决策行号指向转换后的文档；`sourceLine` 是源坐标；报告里 `源 L…` 表示输出里找不到。
 6. zsh 下 `for c in "a b c"; do cmd $c` 不分词，批量探针用 bash 脚本。
 7. 写路径读文件两遍（预检 + readDocument），另加一次 lstat/stat。
+8. 把一个已跟踪文件改成「忽略 + git rm --cached」后，若在分支上提交再 checkout main 并 ff 合入，git 会**删掉工作区里的该文件**（`.cafe` 就这样被删过一次，已从历史恢复）。处理这类文件时先备份到 scratch。
+9. 用 python 做多处文档替换时，每处都先 `assert old in s`，否则静默不改。
 
 ## 建议调用的 skill
 
