@@ -167,6 +167,10 @@ function ok(s: string): CliResult {
 function noMatch(s: string): CliResult {
   return { code: 1, stdout: s, stderr: "" };
 }
+/** A write verb's "no such issue": stderr, so it never mixes into a --dry-run diff on stdout. */
+function missingIssue(verb: string, id: string): CliResult {
+  return { code: 1, stdout: "", stderr: `issuemd ${verb}: no such issue: ${id}\n` };
+}
 function err(s: string, code = 1): CliResult {
   return { code, stdout: "", stderr: s };
 }
@@ -337,7 +341,7 @@ function trimBlank(lines: string[]): string[] {
 function cmdCheck(rest: string[], v: Values): CliResult {
   const file = rest[0];
   if (file == null || rest.length !== 1) {
-    return err("usage: issuemd check FILE [--json] [--strict] [--verify-commits]\n", 2);
+    return err(`usage: ${COMMANDS.check.usage}\n`, 2);
   }
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
@@ -454,7 +458,7 @@ function unreadableNote(ledger: ReturnType<typeof parseLedger>): string {
 
 function cmdCounts(rest: string[], v: Values): CliResult {
   const file = rest[0];
-  if (file == null || rest.length !== 1) return err("usage: issuemd counts FILE [--json]\n", 2);
+  if (file == null || rest.length !== 1) return err(`usage: ${COMMANDS.counts.usage}\n`, 2);
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
   const report = checkLedger(loaded.src, file);
@@ -470,7 +474,7 @@ function cmdShow(rest: string[], v: Values): CliResult {
   const file = rest[0];
   const id = rest[1];
   if (file == null || id == null || rest.length !== 2) {
-    return err("usage: issuemd show FILE ID [--json] [--label NAME]\n", 2);
+    return err(`usage: ${COMMANDS.show.usage}\n`, 2);
   }
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
@@ -543,7 +547,7 @@ function cmdRead(rest: string[]): CliResult {
   const file = rest[0];
   const title = rest[1];
   if (file == null || title == null || rest.length !== 2) {
-    return err("usage: issuemd read FILE <H2 heading>\n", 2);
+    return err(`usage: ${COMMANDS.read.usage}\n`, 2);
   }
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
@@ -879,7 +883,7 @@ function readBodyFile(spec: string, verb = "new"): { lines: string[] } | CliResu
 function cmdNew(rest: string[], v: Values): CliResult {
   const file = rest[0];
   if (file == null || rest.length !== 1) {
-    return err("usage: issuemd new FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]\n", 2);
+    return err(`usage: ${COMMANDS.new.usage}\n`, 2);
   }
   if (v.title == null || v.title.trim() === "") return err("issuemd new: --title is required\n", 2);
   const title = v.title.trim().replace(/\s+/g, " ").replace(/\\\|/g, "|");
@@ -991,7 +995,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
   const file = rest[0];
   const idText = rest[1];
   if (file == null || idText == null || rest.length !== 2) {
-    return err("usage: issuemd close FILE ID [--criteria TEXT | --criteria-from-body] [--keep-body]\n", 2);
+    return err(`usage: ${COMMANDS.close.usage}\n`, 2);
   }
   // `--criteria "$CRIT"` with CRIT unset is the usual way to pass nothing;
   // that is --no-criteria by accident, so say so instead of writing it.
@@ -1007,7 +1011,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
   const { loaded, ledger, errors } = opened;
 
   const found = findRow(ledger, idText);
-  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (!found) return missingIssue("close", idText);
   // Same row, same diagnosis for every per-id verb: check the row shape
   // before "already closed", or a multi-id closed row reads as a state error.
   const refused = perIdRefusal("close", idText, found);
@@ -1162,7 +1166,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   const { loaded, ledger, errors } = opened;
 
   const found = findRow(ledger, idText);
-  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (!found) return missingIssue("reopen", idText);
   const refused = perIdRefusal("reopen", idText, found);
   if (refused) return refused;
   if (found.table === "open") return err(`issuemd reopen: #${idText} is already open\n`, 2);
@@ -1254,7 +1258,7 @@ function cmdStatus(rest: string[], v: Values): CliResult {
   const idText = rest[1];
   const next = rest[2];
   if (file == null || idText == null || next == null || rest.length !== 3) {
-    return err("usage: issuemd status FILE ID NEW_STATUS\n", 2);
+    return err(`usage: ${COMMANDS.status.usage}\n`, 2);
   }
   if (!statusCategory(next)) return err(`issuemd status: unknown status '${next}'\n`, 2);
   const opened = openLedger(file, v["if-unchanged"]);
@@ -1262,7 +1266,7 @@ function cmdStatus(rest: string[], v: Values): CliResult {
   const { loaded, ledger, errors } = opened;
 
   const found = findRow(ledger, idText);
-  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (!found) return missingIssue("status", idText);
   const refused = perIdRefusal("status", idText, found);
   if (refused) return refused;
   // `status` is also the repair verb for a typo'd word: an undeclared status
@@ -1300,7 +1304,7 @@ function cmdRename(rest: string[], v: Values): CliResult {
   const { loaded, ledger, errors } = opened;
 
   const found = findRow(ledger, idText);
-  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (!found) return missingIssue("rename", idText);
   const refused = perIdRefusal("rename", idText, found);
   if (refused) return refused;
   // Renaming is the other way two open rows end up with one summary; refuse
@@ -1355,7 +1359,7 @@ function cmdBody(rest: string[], v: Values): CliResult {
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
   const found = findRow(ledger, idText);
-  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (!found) return missingIssue("body", idText);
   const refused = perIdRefusal("body", idText, found);
   if (refused) return refused;
   if (found.table === "closed") {
@@ -1389,7 +1393,7 @@ function cmdPriority(rest: string[], v: Values): CliResult {
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
   const found = findRow(ledger, idText);
-  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (!found) return missingIssue("priority", idText);
   const refused = perIdRefusal("priority", idText, found);
   if (refused) return refused;
   const lines = [...loaded.lines];
@@ -1409,7 +1413,7 @@ function cmdSplit(rest: string[], v: Values): CliResult {
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
   const found = findRow(ledger, idText);
-  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (!found) return missingIssue("split", idText);
   if (!found.inRange && found.row.ids.length === 1) {
     return err(`issuemd split: #${idText} already has a row of its own\n`, 2);
   }
@@ -1444,7 +1448,7 @@ function cmdSplit(rest: string[], v: Values): CliResult {
 function cmdAdopt(rest: string[], v: Values): CliResult {
   const file = rest[0];
   if (file == null || rest.length !== 1) {
-    return err("usage: issuemd adopt FILE [--dry-run] [--report PATH]\n", 2);
+    return err(`usage: ${COMMANDS.adopt.usage}\n`, 2);
   }
   const loaded = loadWritable(file, v["if-unchanged"]);
   if ("code" in loaded) return loaded;
@@ -1590,16 +1594,19 @@ function renderAdoptReport(file: string, changes: string[], decisions: Decision[
 function cmdSync(rest: string[], v: Values): CliResult {
   const file = rest[0];
   if (file == null || rest.length !== 1) {
-    return err(
-      "usage: issuemd sync FILE [--guide | --fix-tables | --titles [--prefer body|table]]\n",
-      2,
-    );
+    return err(`usage: ${COMMANDS.sync.usage}\n`, 2);
   }
   const modes = [!!v.guide, !!v["fix-tables"], !!v.titles].filter(Boolean).length;
   if (modes === 0) return err("issuemd sync: choose --guide, --fix-tables or --titles\n", 2);
   if (modes > 1) return err("issuemd sync: run one mode at a time\n", 2);
   if ((v["move-progress"] || v["drop-progress"]) && !v.titles) {
     return err("issuemd sync: --move-progress/--drop-progress require --titles\n", 2);
+  }
+  if (v.prefer != null && !v.titles) {
+    return err("issuemd sync: --prefer only applies to --titles\n", 2);
+  }
+  if ((v["move-progress"] || v["drop-progress"]) && v.prefer === "table") {
+    return err("issuemd sync: --move-progress/--drop-progress apply to --prefer body (the table summary is replaced)\n", 2);
   }
   if (v["move-progress"] && v["drop-progress"]) {
     return err("issuemd sync: choose --move-progress or --drop-progress, not both\n", 2);
@@ -1685,7 +1692,12 @@ function syncTitles(
     ? ""
     : `issuemd sync --titles: skipped ${skipped.length} multi-id row(s) whose summary differs from a body title ` +
       `(split the row first, then re-run): ${skipped.map((ids) => `#${ids}`).join("; ")}\n`;
-  if (changes.length === 0) return { code: 0, stdout: "", stderr: skippedNote };
+  if (changes.length === 0) {
+    // Same contract as every other dry-run: say "(no changes)", give the snapshot.
+    return v["dry-run"]
+      ? { code: 0, stdout: "(no changes)\n", stderr: snapshotNote(loaded) + skippedNote }
+      : { code: 0, stdout: "", stderr: skippedNote };
+  }
 
   const progress = changes.filter((change) => PROGRESS.test(change.oldSummary));
   if (prefer === "body" && progress.length > 0 && !v["move-progress"] && !v["drop-progress"]) {
@@ -1694,6 +1706,18 @@ function syncTitles(
       `issuemd sync --titles: ${progress.length} summary/summary pair(s) carry progress text; nothing written\n` +
         `${listed}\n` +
         "re-run with --move-progress (keep it in the body) or --drop-progress (discard it)\n",
+      3,
+    );
+  }
+
+  // --prefer table would copy the progress text into the body heading,
+  // spreading exactly the drift W260 is about.
+  if (prefer === "table" && progress.length > 0) {
+    const listed = progress.map(({ id, oldSummary }) => `  #${id}  ${oldSummary}`).join("\n");
+    return err(
+      `issuemd sync --titles --prefer table: ${progress.length} table summary(ies) carry progress text; nothing written\n` +
+        `${listed}\n` +
+        "use --prefer body with --move-progress (keep it in the body) or --drop-progress, or rename those issues first\n",
       3,
     );
   }

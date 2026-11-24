@@ -1253,3 +1253,45 @@ test("probe: writes refuse a read-only ledger; dry-run still previews", async ()
   expect(text(path)).toBe(before);
   chmodSync(path, 0o644);
 });
+
+describe("probe: CLI surface (round nine)", () => {
+  test("a write verb's 'no such issue' goes to stderr, even under --dry-run", async () => {
+    const path = file();
+    for (const args of [["close", path, "9", "--no-criteria"], ["rename", path, "9", "x", "--dry-run"], ["status", path, "9", "观察"]]) {
+      const result = await run(args);
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("no such issue: 9");
+    }
+  });
+
+  test("usage lines come from the command table (close lists --no-criteria)", async () => {
+    const result = await run(["close", file()]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("--no-criteria");
+  });
+
+  test("sync: --prefer only with --titles; progress flags only with --prefer body", async () => {
+    const path = file();
+    expect((await run(["sync", path, "--guide", "--prefer", "table"])).code).toBe(2);
+    expect((await run(["sync", path, "--titles", "--prefer", "table", "--move-progress"])).code).toBe(2);
+  });
+
+  test("sync --titles --prefer table refuses to copy progress text into body titles", async () => {
+    const path = await withIssue("**验收判据**：x\n");
+    const drifted = file(text(path).replace("| 1 | 未决 | P2 | 甲 |", "| 1 | 未决 | P2 | 甲 已落地一半 |"));
+    const before = text(drifted);
+    const result = await run(["sync", drifted, "--titles", "--prefer", "table"]);
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain("--move-progress");
+    expect(text(drifted)).toBe(before);
+  });
+
+  test("sync --titles --dry-run with nothing to do says so and gives the snapshot", async () => {
+    const path = await withIssue("**验收判据**：x\n");
+    const result = await run(["sync", path, "--titles", "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("(no changes)\n");
+    expect(result.stderr).toContain("snapshot: ");
+  });
+});

@@ -461,7 +461,9 @@ issuemd counts FILE [--json]
 
 **为什么默认 `--prefer=body`**：正文标题是干净的问题描述；表摘要里可能有进度汇报。默认 body→table 符合 S4。
 
-**护栏**：`sync --titles` 一旦命中 W260，**默认拒绝执行**并 exit 3，要求显式二选一。这样「只改 N 行」的承诺不会被悄悄违反。
+**护栏**：`sync --titles` 一旦命中 W260，**默认拒绝执行**并 exit 3，要求显式二选一。这样「只改 N 行」的承诺不会被悄悄违反。`--prefer=table` 命中 W260 时同样拒绝（它会把进展词抄进正文标题），两个进展开关只与 `--prefer=body` 搭配；`--prefer` 只能配 `--titles`。无事可做的 `--titles --dry-run` 与其他 dry-run 一样输出 `(no changes)` 并在 stderr 给 `snapshot`。
+
+写命令找不到编号时 exit 1，提示写在 stderr（不混进 `--dry-run` 的 stdout diff）；读命令 `show` 仍在 stdout 打 `(no such issue: N)`。
 
 ---
 

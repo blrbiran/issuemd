@@ -108,7 +108,9 @@ issuemd sync FILE --guide --dry-run
 
 `sync` never deletes a body, never moves a row, never changes a status. That boundary is what makes it safe to run unattended with `--dry-run`. Rows it cannot fix (several ids in one row) are listed on stderr.
 
-If `--titles` reports W260 (a table summary carries progress text the body title lacks), it **refuses to run** until you pick `--move-progress` (append that text to the body, losing nothing) or `--drop-progress` (overwrite, knowingly).
+If `--titles` reports W260 (a table summary carries progress text the body title lacks), it **refuses to run** until you pick `--move-progress` (append that text to the body, losing nothing) or `--drop-progress` (overwrite, knowingly). `--prefer table` refuses too (it would copy the progress text into the body title). `--prefer` only goes with `--titles`.
+
+A write verb that cannot find the id exits `1` with the message on stderr, so a `--dry-run` diff on stdout is never mixed with it.
 
 ## Several agents, one ledger
 
