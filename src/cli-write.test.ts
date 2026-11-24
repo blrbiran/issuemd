@@ -770,6 +770,19 @@ describe("third review round", () => {
     expect(renamed.stderr).toContain("ends with '#'");
   });
 
+  test("a write refuses mixed line endings instead of rewriting every line", async () => {
+    const path = ledger();
+    writeFileSync(path, Buffer.concat([
+      readFileSync(path),
+      Buffer.from("附录补记\r\n第二行\r\n", "utf8"),
+    ]));
+    const before = readFileSync(path);
+    const result = await run(["status", path, "2", "观察"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("line endings");
+    expect(readFileSync(path)).toEqual(before);
+  });
+
   test("reopen restores the body kept by close --keep-body", async () => {
     const path = ledger();
     expect((await run(["close", path, "2", "--keep-body"])).code).toBe(0);

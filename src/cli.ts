@@ -403,25 +403,45 @@ type Loaded = { doc: Document; lines: string[] };
 /**
  * The read path decodes UTF-8 with replacement, which is harmless for `check`
  * but destructive on write: every invalid byte would be replaced by U+FFFD in
- * the file. Refuse the write instead — the user can convert the file first.
+ * the file. `readDocument` also normalises to a single EOL, so a file with one
+ * CRLF line would come back with every line converted to CRLF. Refuse both
+ * rather than silently rewriting bytes the user did not ask to touch.
  */
-function isUtf8File(file: string): boolean {
+function writeBlockReason(file: string): "utf8" | "eol" | undefined {
+  let raw: Buffer;
   try {
-    new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(file));
-    return true;
+    raw = readFileSync(file);
+  } catch {
+    return undefined; // let readDocument report the real open error
+  }
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(raw);
   } catch (error) {
-    if ((error as { code?: string }).code === "ERR_ENCODING_INVALID_ENCODED_DATA") return false;
+    if ((error as { code?: string }).code === "ERR_ENCODING_INVALID_ENCODED_DATA") return "utf8";
     throw error;
   }
+  const text = raw.toString("latin1");
+  const crlf = (text.match(/\r\n/g) ?? []).length;
+  const lf = (text.match(/\n/g) ?? []).length;
+  if (crlf > 0 && lf > crlf) return "eol";
+  return undefined;
 }
 
 function loadWritable(file: string): Loaded | CliResult {
   if (file === "-") return err("issuemd: write commands do not support stdin ('-')\n", 2);
   try {
-    if (!isUtf8File(file)) {
+    const blocked = writeBlockReason(file);
+    if (blocked === "utf8") {
       return err(
         `issuemd: refusing to write '${file}': it is not valid UTF-8, and rewriting it would corrupt the bytes. ` +
           "Convert it to UTF-8 first.\n",
+        2,
+      );
+    }
+    if (blocked === "eol") {
+      return err(
+        `issuemd: refusing to write '${file}': it has mixed line endings, and this write would convert every line ` +
+          "to one style. Normalise the line endings first.\n",
         2,
       );
     }
