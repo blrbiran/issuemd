@@ -1205,3 +1205,37 @@ describe("probe: write verbs (round nine)", () => {
     expect(text(path)).toBe(before);
   });
 });
+
+describe("probe: kept-body marker and body round trips", () => {
+  test("a marker line inside a fenced example survives close --keep-body + reopen", async () => {
+    const path = await withIssue("**现象**：\n\n```md\n<!-- issuemd:kept-body:end -->\n> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。\n```\n\n**验收判据**：z\n");
+    const before = text(path);
+    expect((await run(["close", path, "1", "--keep-body"])).code).toBe(0);
+    expect((await run(["reopen", path, "1"])).code).toBe(0);
+    expect(text(path)).toBe(before);
+  });
+
+  test("new/body refuse an unfenced end marker in the body text", async () => {
+    const path = file();
+    const result = await run(["new", path, "--title", "t", "--body-file", body("a\n<!-- issuemd:kept-body:end -->\nb\n")]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("kept-body:end");
+  });
+
+  test("the documented body edit recipe (show --json body.text minus heading) is a no-op", async () => {
+    const path = await withIssue("**x**：y\n");
+    const before = text(path);
+    const view = JSON.parse((await run(["show", path, "1", "--json"])).stdout);
+    const recipe = view.body.text.split("\n").slice(1).join("\n") + "\n";
+    expect((await run(["body", path, "1", "--body-file", body(recipe)])).code).toBe(0);
+    expect(text(path)).toBe(before);
+  });
+});
+
+test("probe: close --keep-body refuses a hand-written unfenced marker in the body", async () => {
+  const base = await withIssue("a\n\n**验收判据**：x\n");
+  const path = file(text(base).replace("\na\n", "\na\n<!-- issuemd:kept-body:end -->\n"));
+  const before = text(path);
+  expect((await run(["close", path, "1", "--keep-body"])).code).toBe(3);
+  expect(text(path)).toBe(before);
+});

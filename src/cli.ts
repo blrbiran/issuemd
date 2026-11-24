@@ -823,6 +823,10 @@ function readBodyFile(spec: string, verb = "new"): { lines: string[] } | CliResu
     const src = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
     const lines = src.replaceAll("\r\n", "\n").split("\n");
     if (lines.at(-1) === "") lines.pop();
+    // The heading is followed by exactly one blank line; leading blanks in
+    // the input (`show --json` body.text minus its heading starts with one)
+    // would otherwise pile up on every edit.
+    while (lines.length > 0 && lines[0]!.trim() === "") lines.shift();
     // An unclosed fence would swallow every heading after the body — including
     // `## 附录` — and `check` would still pass, so refuse it up front.
     if (endsInFence(lines)) {
@@ -837,6 +841,16 @@ function readBodyFile(spec: string, verb = "new"): { lines: string[] } | CliResu
       return err(
         `issuemd ${verb}: --body-file may not contain a top-level heading (## or #): '${lines[heading]!.trim()}'.\n` +
           "Use **bold labels** inside an issue body.\n",
+        2,
+      );
+    }
+    // The marker ends a kept-body archive; in a body it would cut the archive
+    // short at close --keep-body. Inside a fence it is an example and fine.
+    const marker = lines.findIndex((line, index) => !fenced[index] && line.trim() === KEPT_BODY_END);
+    if (marker !== -1) {
+      return err(
+        `issuemd ${verb}: --body-file may not contain the line '${KEPT_BODY_END}' outside a code fence ` +
+          "(it marks the end of a kept-body archive)\n",
         2,
       );
     }
@@ -1043,6 +1057,14 @@ function cmdClose(rest: string[], v: Values): CliResult {
       const kept = bodyText.slice(1);
       while (kept.length > 0 && kept[0]!.trim() === "") kept.shift();
       while (kept.length > 0 && kept.at(-1)!.trim() === "") kept.pop();
+      const keptFenced = fencedLines(kept);
+      if (kept.some((line, index) => !keptFenced[index] && line.trim() === KEPT_BODY_END)) {
+        return err(
+          `issuemd close: the body of #${idText} contains '${KEPT_BODY_END}' outside a code fence; ` +
+            "reopen would cut the body there. Fence it or remove it first (issuemd body)\n",
+          3,
+        );
+      }
       archive = [
         archiveHeading(idText, found.row.summary),
         "",
@@ -1154,8 +1176,13 @@ function cmdReopen(rest: string[], v: Values): CliResult {
       }
     }
     while (end > archived.line_start && loaded.lines[end - 1]!.trim() === "") end--;
-    restored = trimBlank(loaded.lines.slice(archived.line_start, end)
-      .filter((line) => line.trim() !== KEPT_BODY_END && !ARCHIVE_NOTE.test(line)));
+    // Only the archive's own marker and note line are markup; the same text
+    // inside the body (a fenced example) is content and must come back.
+    const markerAt = !fenced[end - 1] && loaded.lines[end - 1]!.trim() === KEPT_BODY_END ? end : undefined;
+    const content = loaded.lines.slice(archived.line_start, markerAt ? end - 1 : end);
+    const noteAt = content.findIndex((line) => line.trim() !== "");
+    if (noteAt >= 0 && ARCHIVE_NOTE.test(content[noteAt]!)) content.splice(noteAt, 1);
+    restored = trimBlank(content);
     // The closed row's criteria may have been given on the command line and
     // exist nowhere in the archived text; reopening must not lose them.
     if (criteria !== "" && extractCriteria(restored) !== criteria && !restored.some((line) => line.includes(criteria))) {
