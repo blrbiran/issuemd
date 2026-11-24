@@ -1086,3 +1086,27 @@ test("probe: a multi-id body with its own title keeps that title as text", async
   expect(text(path)).toMatch(/### Issue 3: 合并\n\n\*\*原正文标题\*\*：另一个标题\n\nb\n/);
   expect((await run(["check", path])).code).toBe(0);
 });
+
+describe("probe: adopt status words", () => {
+  const legacy = "# T\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 进行中 | 一 |\n| 2 | ✅ 已修 | 二 |\n| 3 | **未决** | 三 |\n| 4 | 已修（v2） | 四 |\n\n## 已关闭\n\n| # | 状态 | 摘要 | 判据 |\n|---|---|---|---|\n| 5 | done | 五 | ok |\n";
+
+  test("decorated vocabulary words are recognised, with the decoration reported", async () => {
+    const path = file(legacy);
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    const out = text(path);
+    expect(out).toContain("| 2 | 已修 |  | 二 |");
+    expect(out).toContain("| 3 | 未决 |  | 三 |");
+    expect(out).toMatch(/\| 4 \| 已修 \| {2}\| 四 \| 原状态：已修（v2） \|/);
+    expect(result.stdout).toContain("✅ 已修");
+    expect((await run(["check", path])).code).toBe(0);
+  });
+
+  test("unknown words survive in the file, not only in the report", async () => {
+    const path = file(legacy);
+    expect((await run(["adopt", path])).code).toBe(0);
+    const out = text(path);
+    expect(out).toContain("**原表格判据**：原状态：进行中");
+    expect(out).toMatch(/\| 5 \| 未分类 \| {2}\| 五 \| ok；原状态：done \|/);
+  });
+});

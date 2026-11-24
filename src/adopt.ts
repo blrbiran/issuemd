@@ -96,6 +96,8 @@ type Row = {
    * Kept apart so it is never mistaken for an open issue's 验收判据.
    */
   extras: string;
+  /** The status cell as written, when formatting had to be stripped to read it. */
+  rawStatus?: string;
   /** The H2 section the row was found in, used to infer its table. */
   section: string;
 };
@@ -275,7 +277,21 @@ function rowsOf(blocks: Block[]): Row[] {
       // Keep the declared string even when it is not in the vocabulary, so
       // the decision report can name what the ledger actually said. A group
       // heading wins only when the row itself declares nothing.
-      const status = declared || fromCell || block.groupStatus;
+      let status = declared || fromCell || block.groupStatus;
+      let rawStatus: string | undefined;
+      if (declared && !STATUS_WORDS.has(declared)) {
+        // `**未决**`, `✅ 已修`, `已修（v2）` are vocabulary words in costume;
+        // anything else stays unknown. Either way the cell as written is kept
+        // in the output when it carries more than the word itself.
+        const plain = plainStatus(declared);
+        if (plain) {
+          rawStatus = declared;
+          status = plain.word;
+          if (plain.note !== "") extras.push(`原状态：${declared}`);
+        } else {
+          extras.push(`原状态：${declared}`);
+        }
+      }
       out.push({
         line: block.line + index,
         idText,
@@ -286,11 +302,24 @@ function rowsOf(blocks: Block[]): Row[] {
         summary: (cells[mapping.summary] ?? "").trim(),
         criteria,
         extras: extras.join("；"),
+        rawStatus,
         section: block.section,
       });
     });
   }
   return out;
+}
+
+/** A status word with Markdown emphasis, emoji or a trailing （note） around it. */
+function plainStatus(raw: string): { word: string; note: string } | undefined {
+  let text = raw.replace(/[*_`~]/g, "").replace(/^[^\p{L}\p{N}]+/u, "").replace(/[^\p{L}\p{N}）)]+$/u, "").trim();
+  let note = "";
+  const annotated = /^(.*?)\s*[（(]([^（）()]*)[）)]$/.exec(text);
+  if (annotated && STATUS_WORDS.has(annotated[1]!.trim())) {
+    text = annotated[1]!.trim();
+    note = annotated[2]!.trim();
+  }
+  return STATUS_WORDS.has(text) ? { word: text, note } : undefined;
 }
 
 type Body = { idText: string; id: number; title: string; line: number; end: number };
@@ -561,12 +590,21 @@ export function adopt(src: string): AdoptResult {
     const priorities = [...new Set(group.map((row) => row.priority).filter((value) => value !== ""))];
 
     const declared = group.find((row) => row.status != null && !STATUS_WORDS.has(row.status))?.status;
+    const decorated = group.find((row) => row.rawStatus != null);
     if (declared != null) {
       decisions.push({
         kind: "unknown-status",
         id: idText,
         line: group[0]!.line,
-        message: `状态「${declared}」不在词表里；按 ${category} 处理，需人工确认`,
+        message: `状态「${declared}」不在词表里；按 ${category === "closed" ? "未分类" : "未决"} 处理，原词以「原状态：」写进` +
+          `${category === "closed" ? "判据" : "正文的 **原表格判据**"}，需人工确认`,
+      });
+    } else if (decorated) {
+      decisions.push({
+        kind: "unknown-status",
+        id: idText,
+        line: group[0]!.line,
+        message: `状态格「${decorated.rawStatus}」去掉格式后按「${decorated.status}」处理，需人工确认`,
       });
     } else if (status == null) {
       // A row with no status column and no status-named group is the other way
