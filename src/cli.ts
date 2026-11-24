@@ -86,7 +86,7 @@ const COMMANDS = {
   close: { usage: "issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]", options: ["status", "criteria", "criteria-from-body", "no-criteria", "keep-body", "dry-run", "if-unchanged"] },
   reopen: { usage: "issuemd reopen  FILE ID [--status S]", options: ["status", "dry-run", "if-unchanged"] },
   status: { usage: "issuemd status  FILE ID NEW_STATUS", options: ["dry-run", "if-unchanged"] },
-  rename: { usage: "issuemd rename  FILE ID \"NEW TITLE\"", options: ["dry-run", "if-unchanged"] },
+  rename: { usage: "issuemd rename  FILE ID \"NEW TITLE\" [--allow-duplicate-title]", options: ["allow-duplicate-title", "dry-run", "if-unchanged"] },
   body: { usage: "issuemd body    FILE ID --body-file PATH|-", options: ["body-file", "dry-run", "if-unchanged"] },
   priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run", "if-unchanged"] },
   split: { usage: "issuemd split   FILE ID", options: ["dry-run", "if-unchanged"] },
@@ -110,7 +110,7 @@ const OPTION_HELP: Record<string, string> = {
   title: "--title <T>               new: summary/body title (starts with '-'? write --title=\"-…\")",
   id: "--id <N>                  new: explicit issue id",
   "allow-duplicate-title":
-    "--allow-duplicate-title   new: file it even though an open issue has the same summary",
+    "--allow-duplicate-title   write it even though another open issue has the same summary",
   "body-file": "--body-file <path|->      new/body: body text under the heading (no `### Issue` line), or '-' for stdin",
   criteria: "--criteria <TEXT>         close: criteria column text",
   "criteria-from-body":
@@ -1204,7 +1204,7 @@ function cmdRename(rest: string[], v: Values): CliResult {
   const idText = rest[1];
   const title = rest[2];
   if (file == null || idText == null || title == null || rest.length !== 3) {
-    return err("usage: issuemd rename FILE ID \"NEW TITLE\"\n", 2);
+    return err(`usage: ${COMMANDS.rename.usage}\n`, 2);
   }
   const next = title.trim().replace(/\s+/g, " ").replace(/\\\|/g, "|");
   if (next === "") return err("issuemd rename: title must not be empty\n", 2);
@@ -1218,6 +1218,20 @@ function cmdRename(rest: string[], v: Values): CliResult {
   if (!found) return noMatch(`(no such issue: ${idText})\n`);
   const refused = perIdRefusal("rename", idText, found);
   if (refused) return refused;
+  // Renaming is the other way two open rows end up with one summary; refuse
+  // it like `new` does (dogfood #34). Closed rows never block, either side.
+  if (found.table === "open" && !v["allow-duplicate-title"]) {
+    const twin = ledger.rows.open.find(
+      (row) => row.line !== found.row.line && summaryKey(row.summary) === summaryKey(next),
+    );
+    if (twin) {
+      return err(
+        `issuemd rename: open issue #${twin.ids.map(spanText).join(", ")} already has this summary ('${twin.summary}'); ` +
+          "nothing written. To use it anyway, add --allow-duplicate-title\n",
+        2,
+      );
+    }
+  }
 
   const lines = [...loaded.lines];
   lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 3, next);

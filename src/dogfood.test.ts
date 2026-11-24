@@ -624,6 +624,32 @@ describe("#34 duplicate titles", () => {
     expect(report.warnings.filter((w: { code: string }) => w.code === "W212").length).toBeGreaterThan(0);
   });
 
+  test("rename refuses another open issue's summary unless --allow-duplicate-title", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    expect((await run(["new", path, "--title", "乙"])).code).toBe(0);
+    const before = text(path);
+    for (const extra of [[], ["--dry-run"]]) {
+      const refused = await run(["rename", path, "2", " 甲 ", ...extra]);
+      expect(refused.code).toBe(2);
+      expect(refused.stderr).toContain("#1");
+      expect(refused.stderr).toContain("--allow-duplicate-title");
+    }
+    expect(text(path)).toBe(before);
+    // Renaming an issue to (a re-spacing of) its own summary is not a duplicate.
+    expect((await run(["rename", path, "1", "甲"])).code).toBe(0);
+    const forced = await run(["rename", path, "2", "甲", "--allow-duplicate-title"]);
+    expect(forced.code).toBe(0);
+    expect(text(path)).toContain("| 2 | 未决 | P2 | 甲 |");
+  });
+
+  test("rename of a closed issue, or onto a closed summary, is not blocked", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    expect((await run(["close", path, "1"])).code).toBe(0);
+    expect((await run(["new", path, "--title", "乙"])).code).toBe(0);
+    expect((await run(["rename", path, "2", "甲"])).code).toBe(0);
+    expect((await run(["rename", path, "1", "甲"])).code).toBe(0);
+  });
+
   test("a closed issue with the same title does not block", async () => {
     const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
     expect((await run(["close", path, "1"])).code).toBe(0);

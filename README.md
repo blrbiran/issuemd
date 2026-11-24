@@ -11,11 +11,11 @@ issuemd show    FILE ID [--json] [--label 验收判据]
 issuemd counts  FILE [--json]
 issuemd read    FILE <H2 heading>
 
-issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]
+issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-] [--allow-duplicate-title]
 issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]
 issuemd reopen  FILE ID [--status S]
 issuemd status  FILE ID NEW_STATUS
-issuemd rename  FILE ID "NEW TITLE"
+issuemd rename  FILE ID "NEW TITLE" [--allow-duplicate-title]
 issuemd body    FILE ID --body-file PATH|-
 issuemd priority FILE ID P0|P1|P2|P3|""
 issuemd split   FILE ID

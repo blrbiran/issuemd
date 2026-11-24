@@ -418,7 +418,7 @@ error: #56 当前 观察（open），目标 已修（closed）跨分类，请用
 
 ### 7.4 `rename`
 
-同时改索引摘要、正文 H3，以及附录里同号的 `--keep-body` 归档标题，一次事务、要么都不改。新标题含 `|` 时自动转义并 warn W205。
+同时改索引摘要、正文 H3，以及附录里同号的 `--keep-body` 归档标题，一次事务、要么都不改。新标题含 `|` 时自动转义并 warn W205。开放 issue 改成另一条**开放** issue 的摘要（与 `new` 同一规范化）时 exit 2、不写，并点名那条；确需如此加 `--allow-duplicate-title`。已关闭 issue 的改名、改成已关闭项的摘要都不拦。
 
 ### 7.5 `reopen`
 
@@ -492,11 +492,11 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
   issuemd read    FILE <H2 标题>          # 精确匹配顶层标题，无选择器/正则
 
 台账写（全部 --dry-run，原子写且保持 BOM/行尾/模式位）
-  issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]
+  issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-] [--allow-duplicate-title]
   issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]
   issuemd reopen  FILE ID [--status S]
   issuemd status  FILE ID NEW_STATUS
-  issuemd rename  FILE ID "NEW TITLE"
+  issuemd rename  FILE ID "NEW TITLE" [--allow-duplicate-title]
   issuemd body    FILE ID --body-file PATH|-
   issuemd priority FILE ID P0|P1|P2|P3|""
   issuemd split   FILE ID
