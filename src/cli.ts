@@ -1049,7 +1049,8 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
   try {
     result = adopt(loaded.doc.text);
   } catch (error) {
-    if ((error as { code?: string }).code === "no-rows") {
+    const code = (error as { code?: string }).code;
+    if (code === "no-rows" || code === "lost-content") {
       return err(`issuemd adopt: ${(error as Error).message}\n`, 3);
     }
     throw error;
@@ -1058,9 +1059,19 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
   const target = joinDocument(result.lines, loaded.doc);
   const after = checkLedger(target, file).errors;
   if (after.length > 0) {
+    // The converted text was never written, so its line numbers point at
+    // nothing the user can open. Most lines are copied verbatim, so look each
+    // one up in the source; say so plainly when it cannot be found.
+    const located = after.map((diagnostic) => {
+      const converted = result.lines[diagnostic.line - 1];
+      const source = converted == null ? -1 : loaded.lines.indexOf(converted);
+      const where = source >= 0 ? `source L${source + 1}` : "source line unknown";
+      return `  ${where} (converted L${diagnostic.line})${diagnostic.id ? ` #${diagnostic.id}` : ""} ` +
+        `${diagnostic.code}: ${diagnostic.message}`;
+    });
     return err(
       `issuemd adopt: the converted ledger still has ${after.length} error(s); nothing written\n` +
-        formatDiagnostics(after) + "\n" + report,
+        located.join("\n") + "\n" + report,
       3,
     );
   }
@@ -1081,11 +1092,15 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
     const diff = unifiedDiff(loaded.lines, result.lines, file);
     return ok((diff || "(no changes)\n") + "\n" + report);
   }
-  try {
-    const written = writeAtomically(file, target, loaded.doc.stat);
-    if (!written.ok) return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 2);
-  } catch (error) {
-    return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
+  const unchanged = result.lines.length === loaded.lines.length &&
+    result.lines.every((line, index) => line === loaded.lines[index]);
+  if (!unchanged) {
+    try {
+      const written = writeAtomically(file, target, loaded.doc.stat);
+      if (!written.ok) return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 2);
+    } catch (error) {
+      return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
+    }
   }
   // Written after the ledger so a failed conversion never leaves a report
   // that describes a write that did not happen.
@@ -1137,7 +1152,12 @@ function renderAdoptReport(file: string, changes: string[], decisions: Decision[
       const pair = decision.table != null
         ? `\n      表: ${decision.table}\n      文: ${decision.body ?? ""}`
         : "";
-      out.push(`    L${decision.line}${id} ${decision.message}${pair}`);
+      // `L` is the output file; a decision with nothing left to point at in
+      // the output falls back to the input coordinate, never a fake `L0`.
+      const where = decision.line > 0
+        ? `L${decision.line}`
+        : decision.sourceLine != null ? `源 L${decision.sourceLine}` : "L?";
+      out.push(`    ${where}${id} ${decision.message}${pair}`);
     }
   }
   return out.join("\n") + "\n";

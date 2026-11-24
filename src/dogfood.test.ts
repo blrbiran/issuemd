@@ -158,3 +158,218 @@ describe("#8/#22 close never silently drops criteria", () => {
     expect((await run(["close", path, "1", "--no-criteria", "--criteria-from-body"])).code).toBe(2);
   });
 });
+
+// ---- adopt: preserve everything, decide nothing silently -----------------
+
+async function adopted(source: string, ...extra: string[]) {
+  const path = file(source);
+  const result = await run(["adopt", path, ...extra]);
+  return { path, result, out: text(path) };
+}
+
+const CLOSED_GROUPS = `# 台账
+
+## 待处理
+
+| # | 状态 | P | 摘要 |
+|---|---|---|---|
+| 7 | 未决 | P1 | 还开着 |
+
+## 正文
+
+### Issue 7: 还开着
+
+**验收判据**：y
+
+## 已关闭
+
+### 决定不改
+
+| # | 说明 |
+|---|---|
+| 20, 24, 29 | 产品/设计取舍，不是待修 bug |
+
+### 延后
+
+| # | 说明 |
+|---|---|
+| 108 | split 流程重构转设计 |
+
+### owner 裁决不跟踪
+
+> owner 2026-11-19 裁决：以下编号不按 bug 继续跟踪。
+
+| # | 摘要 | 裁决 |
+|---|---|---|
+| 60 | 部分功能未完全实现 | 决定不改：没有逐条可执行清单 |
+| 191 | 需求管线背隐藏前缀 | 不是缺陷：provider 侧计量 |
+| 230 | 杂项 | 以后再说 |
+`;
+
+describe("#12 adopt leaves a canonical ledger alone", () => {
+  test("the empty template is not 'not a ledger'", async () => {
+    const { result, out } = await adopted(TEMPLATE);
+    expect(result.code).toBe(0);
+    expect(out).toBe(TEMPLATE);
+  });
+
+  test("a check-clean ledger is byte-identical after adopt", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    const before = text(path);
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("已是规范台账");
+    expect(text(path)).toBe(before);
+  });
+});
+
+describe("#42/#43 adopt maps every closed group and never invents 已修", () => {
+  test("width-2 groups keep their ids and take the group status", async () => {
+    const { result, path } = await adopted(CLOSED_GROUPS);
+    expect(result.code).toBe(0);
+    const closed = JSON.parse((await run(["list", path, "--closed", "--json"])).stdout).issues as
+      { id: string; status: string; summary: string; criteria: string }[];
+    const byId = new Map(closed.map((issue) => [issue.id, issue]));
+    expect(byId.get("20, 24, 29")?.status).toBe("决定不改");
+    expect(byId.get("108")?.status).toBe("延后");
+    expect((await run(["counts", path])).stdout).toContain("closed 7");
+  });
+
+  test("a verdict column starting with a status word sets the status and keeps the reason", async () => {
+    const { path, out } = await adopted(CLOSED_GROUPS);
+    const closed = JSON.parse((await run(["list", path, "--closed", "--json"])).stdout).issues as
+      { id: string; status: string; criteria: string }[];
+    const byId = new Map(closed.map((issue) => [issue.id, issue]));
+    expect(byId.get("60")?.status).toBe("决定不改");
+    expect(byId.get("60")?.criteria).toContain("没有逐条可执行清单");
+    expect(byId.get("191")?.status).toBe("不是缺陷");
+    // No status anywhere: 未分类 ("unknown"), never the success word 已修.
+    expect(byId.get("230")?.status).toBe("未分类");
+    expect(byId.get("230")?.criteria).toContain("以后再说");
+    expect(out).not.toMatch(/\| (60|191|230) \| 已修 \|/);
+  });
+
+  test("group prose (the ruling quote) survives, and unknown-group has a real line", async () => {
+    const { result, out } = await adopted(CLOSED_GROUPS);
+    expect(out).toContain("> owner 2026-11-19 裁决：以下编号不按 bug 继续跟踪。");
+    expect(result.stdout).toContain("unknown-group");
+    expect(result.stdout).not.toMatch(/^\s+L0 /m);
+  });
+});
+
+describe("#41/#49 adopt keeps prose around tables and in the header", () => {
+  const NARRATIVE = `# 台账
+
+> 口径：老组不走新预算不算未解决。
+
+## 怎么用
+
+写作约定：每条要自包含。
+
+## 待处理
+
+### 未决
+
+| # | 状态 | P | 摘要 |
+|---|---|---|---|
+| 7 | 未决 | P1 | 还开着 |
+
+### 第二十轮 diff 复核
+
+复核了 a..b，结论如下。
+
+- 第一条结论
+
+## 正文
+
+### Issue 7: 还开着
+
+**验收判据**：y
+`;
+
+  test("the header quote stays under the H1, the guide prose stays in 怎么用", async () => {
+    const { result, out } = await adopted(NARRATIVE);
+    expect(result.code).toBe(0);
+    const header = out.slice(0, out.indexOf("## 怎么用"));
+    expect(header).toContain("> 口径：老组不走新预算不算未解决。");
+    const guide = out.slice(out.indexOf("## 怎么用"), out.indexOf("## 状态口径"));
+    expect(guide).toContain("写作约定：每条要自包含。");
+    expect(guide).toContain("<!-- issuemd:guide:begin -->");
+  });
+
+  test("a narrative H3 inside 待处理 moves to 附录 verbatim, with a decision", async () => {
+    const { result, out } = await adopted(NARRATIVE);
+    const appendix = out.slice(out.indexOf("## 附录"));
+    expect(appendix).toContain("### 第二十轮 diff 复核");
+    expect(appendix).toContain("复核了 a..b，结论如下。");
+    expect(appendix).toContain("- 第一条结论");
+    expect(result.stdout).toContain("第二十轮 diff 复核");
+    expect((await run(["check", file(out)])).code).toBe(0);
+  });
+
+  test("an unmapped table inside a ledger section is kept, not dropped", async () => {
+    const source = NARRATIVE.replace("### 第二十轮 diff 复核", "### 奇怪的表\n\n| # | a | b | c | d | e |\n|---|---|---|---|---|---|\n| 31 | 1 | 2 | 3 | 4 | 5 |\n\n### 第二十轮 diff 复核");
+    const { result, out } = await adopted(source);
+    expect(result.code).toBe(0);
+    expect(out).toContain("| 31 | 1 | 2 | 3 | 4 | 5 |");
+  });
+});
+
+describe("#28 a refused adopt points at the source file", () => {
+  test("diagnostics carry the source line and an unescaped-pipe hint", async () => {
+    const source = `# 台账
+
+## 待处理
+
+| # | 状态 | P | 摘要 |
+|---|---|---|---|
+| 7 | 未决 | P1 | 还开着 |
+
+## 正文
+
+### Issue 7: 还开着
+
+| 协议 | 位置 |
+|---|---|
+| \`order/ack|heartbeat\` | src/index.ts |
+
+**验收判据**：y
+`;
+    const path = file(source);
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain("source L15");
+    expect(result.stderr).toContain("unescaped '|'");
+  });
+});
+
+describe("adopt recognises annotated canonical titles (real-ledger run)", () => {
+  test("`## 正文（按编号）` is 正文: each open body appears exactly once", async () => {
+    const { result, out } = await adopted(`# 台账
+
+## 待处理
+
+| # | 状态 | P | 摘要 |
+|---|---|---|---|
+| 7 | 未决 | P1 | 还开着 |
+
+## 已关闭（只留判据，不再跟踪）
+
+| # | 摘要 | 判据 |
+|---|---|---|
+| 3 | 旧的 | 测试通过 |
+
+## 正文（按编号）
+
+### Issue 7: 还开着
+
+**现象**：独一无二的现象描述
+
+**验收判据**：y
+`);
+    expect(result.code).toBe(0);
+    expect(out.split("独一无二的现象描述").length - 1).toBe(1);
+    expect(out).not.toContain("## 正文（按编号）");
+    expect(result.stdout).toContain("正文（按编号） → 正文");
+  });
+});

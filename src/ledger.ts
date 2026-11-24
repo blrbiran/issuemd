@@ -82,6 +82,12 @@ function pipeBlocks(lines: string[], visible: Set<number>): PipeBlock[] {
   return blocks;
 }
 
+/** E108 text; extra cells are almost always an unescaped `|` inside a cell. */
+function cellCountMessage(expected: number, found: number): string {
+  const hint = found > expected ? " — likely an unescaped '|' inside a cell; write it as '\\|'" : "";
+  return `Expected ${expected} cells, found ${found}${hint}`;
+}
+
 function readRows(block: PipeBlock, kind: TableKind, errors: Diagnostic[], warnings: Diagnostic[]): LedgerRow[] {
   const columns = COLUMNS[kind];
   const header = block.rows[0];
@@ -97,7 +103,7 @@ function readRows(block: PipeBlock, kind: TableKind, errors: Diagnostic[], warni
     const cells = block.rows[i];
     const line = block.line + i;
     if (cells.length !== columns.length) {
-      if (!block.header) errors.push({ code: "E108", line, message: `Expected ${columns.length} cells, found ${cells.length}` });
+      if (!block.header) errors.push({ code: "E108", line, message: cellCountMessage(columns.length, cells.length) });
       if (cells.length > columns.length) warnings.push({ code: "W205", line, message: "Check for an unescaped pipe in a cell" });
       continue;
     }
@@ -178,7 +184,7 @@ export function parseLedger(src: string) {
       block.rows.slice(1).forEach((cells, index) => {
         const line = block.line + index + 1;
         if (cells.length !== width) {
-          errors.push({ code: "E108", line, message: `Expected ${width} cells, found ${cells.length}` });
+          errors.push({ code: "E108", line, message: cellCountMessage(width, cells.length) });
         }
       });
     }

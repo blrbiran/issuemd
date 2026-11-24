@@ -106,8 +106,9 @@ describe("adopt: guards", () => {
     const path = copy("canonical-clean.md");
     const result = await run(["adopt", path, "--dry-run"]);
     expect(result.code).toBe(0);
-    // The only decision left is the retired range, which adopt keeps as-is.
-    expect(result.stdout).toContain("id-range x1");
+    // A check-clean ledger is left alone entirely (dogfood #12).
+    expect(result.stdout).toContain("已是规范台账");
+    expect(result.stdout).toContain("(no changes)");
     expect(result.stdout).not.toContain("open-title-conflict");
     expect(result.stdout).not.toContain("closed-with-body");
     expect(result.stdout).not.toContain("progress-text");

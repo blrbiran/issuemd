@@ -24,7 +24,7 @@ import { buildSections, type Section } from "./sections.js";
 import { splitCells } from "./ledger.js";
 import { fencedLines, formatRow, guideBlockLines, statusBlockLines } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds } from "./issue-id.js";
-import { STATUS_CLASSES } from "./ledger-check.js";
+import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
 
 
 export type DecisionKind =
@@ -41,12 +41,21 @@ export type DecisionKind =
   | "foreign-section"
   | "preamble"
   | "orphan-body"
-  | "status-in-body";
+  | "status-in-body"
+  | "section-prose"
+  | "kept-section-text"
+  | "extra-columns";
 
 export type Decision = {
   kind: DecisionKind;
   id?: string;
   line: number;
+  /**
+   * The line in the *input* file (1-indexed). `line` points at the output,
+   * which is what a reader opens after the write; when nothing in the output
+   * can be located (`line === 0`) this is the only usable coordinate.
+   */
+  sourceLine?: number;
   message: string;
   /** Exact text of the output line this decision belongs to, when it has no id. */
   anchor?: string;
@@ -61,7 +70,17 @@ export type AdoptResult = {
   changes: string[];
 };
 
-type Mapping = { id: number; status?: number; priority?: number; summary: number; criteria?: number };
+type Mapping = {
+  id: number;
+  status?: number;
+  priority?: number;
+  summary: number;
+  criteria?: number;
+  /** Header cells not mapped to a field; their text is appended to criteria. */
+  extra?: { index: number; name: string }[];
+  /** True when the mapping is a guess (no 摘要/标题 header): table sections only. */
+  guess?: boolean;
+};
 
 type Row = {
   line: number;
@@ -87,7 +106,14 @@ const isClosedSection = (title: string) => /已关闭|closed/i.test(title);
  */
 const isTableSection = (title: string) => /索引|总览|待处理|待办|已关闭|closed|open|issues?/i.test(title);
 /** Sections adopt regenerates itself; every other H2 is preserved verbatim. */
-const KNOWN_SECTION = /^(怎么用|状态口径|索引|已关闭|正文|附录)$/;
+const KNOWN_SECTION = /^(怎么用|状态口径|索引|已关闭|正文|附录)(?:\s*[（(][^）)]*[）)])?$/;
+/**
+ * `## 正文（按编号）` is the canonical 正文 with a note attached. Matching the
+ * bare name only made adopt copy the whole section to 附录 *and* use its
+ * bodies, duplicating every open issue.
+ */
+const canonicalName = (title: string) => title.replace(/\s*[（(][^）)]*[）)]\s*$/, "").trim();
+const isCanonical = (section: Section, name: string) => section.level === 2 && canonicalName(section.title) === name;
 const fold = (text: string) => text.trim().replace(/\s+/g, " ");
 const PROGRESS = /已落地|仍缺|仍无|仍逐|仍走/;
 const isSeparator = (cells: string[]) => cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
@@ -100,30 +126,52 @@ function statusFromHeading(title: string): string | undefined {
   return [...STATUS_WORDS].filter((word) => bare.startsWith(word)).sort((a, b) => b.length - a.length)[0];
 }
 
+/** Columns that explain why an issue is closed; criteria when there is no 判据. */
+const VERDICT_COLUMNS = ["裁决", "说明", "理由", "原因", "结论", "备注"];
+
 function mappingFor(header: string[] | undefined, width: number): Mapping | undefined {
   if (header) {
-    const index = (name: string) => header.findIndex((cell) => cell === name);
-    const id = index("#");
-    const summary = index("摘要") >= 0 ? index("摘要") : index("标题");
-    if (id >= 0 && summary >= 0) {
-      return {
-        id,
-        status: index("状态") >= 0 ? index("状态") : undefined,
-        priority: index("P") >= 0 ? index("P") : index("优先级") >= 0 ? index("优先级") : undefined,
-        summary,
-        criteria: index("判据") >= 0 ? index("判据") : undefined,
-      };
+    const index = (...names: string[]) => header.findIndex((cell) => names.includes(cell));
+    const id = index("#", "编号", "ID", "Id", "id");
+    if (id >= 0) {
+      const status = index("状态");
+      const priority = index("P", "优先级");
+      const named = index("摘要", "标题");
+      const used = new Set([id, status, priority, named].filter((at) => at >= 0));
+      const summary = named;
+      if (summary >= 0) {
+        used.add(summary);
+        let criteria = index("判据");
+        if (criteria < 0) criteria = header.findIndex((cell, at) => !used.has(at) && VERDICT_COLUMNS.includes(cell));
+        if (criteria >= 0) used.add(criteria);
+        const extra = header.flatMap((name, at) => (used.has(at) ? [] : [{ index: at, name }]));
+        return {
+          id,
+          status: status >= 0 ? status : undefined,
+          priority: priority >= 0 ? priority : undefined,
+          summary,
+          criteria: criteria >= 0 ? criteria : undefined,
+          extra: extra.length ? extra : undefined,
+        };
+      }
     }
   }
-  // Header-less blocks: width decides. `# | 摘要 | 判据` is the orca shape.
-  if (width === 3) return { id: 0, summary: 1, criteria: 2 };
-  if (width === 5) return { id: 0, status: 1, priority: 2, summary: 3, criteria: 4 };
-  if (width === 4) return { id: 0, status: 1, priority: 2, summary: 3 };
+  // Width decides for header-less blocks, and for headers that name no
+  // 摘要/标题 (`| # | 说明 |`, `| # | 摘要 | 裁决 |` is handled above). Either
+  // way it is a guess, trusted only inside a ledger table section. Wider
+  // tables are not guessed at: they are kept verbatim instead.
+  const guess = header !== undefined;
+  if (width === 2) return { id: 0, summary: 1, guess };
+  if (width === 3) return { id: 0, summary: 1, criteria: 2, guess };
+  if (width === 5) return { id: 0, status: 1, priority: 2, summary: 3, criteria: 4, guess };
+  if (width === 4) return { id: 0, status: 1, priority: 2, summary: 3, guess };
   return undefined;
 }
 
 type Block = {
   line: number;
+  /** Number of source lines in the block. */
+  length: number;
   cells: string[][];
   mapping: Mapping;
   /** Status declared by the enclosing H3 group, if any. */
@@ -147,7 +195,7 @@ function pipeBlocks(lines: string[], sections: Section[]): Block[] {
       // Width-only mappings are a guess; only trust them inside a section that
       // is known to hold ledger tables. A 3-column table inside an issue body
       // or 附录 is content, and turning it into rows invents issues.
-      if (!header && !isTableSection(h2?.title ?? "")) {
+      if ((!header || mapping.guess) && !isTableSection(h2?.title ?? "")) {
         block = undefined;
         return;
       }
@@ -156,6 +204,7 @@ function pipeBlocks(lines: string[], sections: Section[]): Block[] {
         .at(-1);
       out.push({
         line: start,
+        length: block.cells.length,
         cells: block.cells,
         mapping,
         groupStatus: h3 ? statusFromHeading(h3.title) : undefined,
@@ -193,10 +242,20 @@ function rowsOf(blocks: Block[]): Row[] {
       if (!spans) return;
       const ids = spans.map((span) => span.start);
       const declared = mapping.status != null ? cells[mapping.status]?.trim() : undefined;
+      let criteria = (mapping.criteria != null ? cells[mapping.criteria] : "")?.trim() ?? "";
+      // `决定不改：没有逐条可执行清单` in a verdict column is the row's own
+      // status plus its reason. It is more specific than a group heading.
+      const verdict = /^([^：:\s]+)\s*[：:]\s*(.*)$/.exec(criteria);
+      const fromCell = !declared && verdict && STATUS_WORDS.has(verdict[1]!) ? verdict[1] : undefined;
+      if (fromCell) criteria = verdict![2]!.trim();
+      for (const { index: at, name } of mapping.extra ?? []) {
+        const value = (cells[at] ?? "").trim();
+        if (value) criteria = criteria ? `${criteria}；${name}：${value}` : `${name}：${value}`;
+      }
       // Keep the declared string even when it is not in the vocabulary, so
       // the decision report can name what the ledger actually said. A group
       // heading wins only when the row itself declares nothing.
-      const status = declared || block.groupStatus;
+      const status = declared || fromCell || block.groupStatus;
       out.push({
         line: block.line + index,
         idText,
@@ -205,7 +264,7 @@ function rowsOf(blocks: Block[]): Row[] {
         status,
         priority: (mapping.priority != null ? cells[mapping.priority] : "")?.trim() ?? "",
         summary: (cells[mapping.summary] ?? "").trim(),
-        criteria: (mapping.criteria != null ? cells[mapping.criteria] : "")?.trim() ?? "",
+        criteria,
         section: block.section,
       });
     });
@@ -315,15 +374,21 @@ function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
   return { lines: out, count };
 }
 
-/** Add the missing separator row to each header-less block, once per block. */
-function fixSeparators(lines: string[]): { lines: string[]; count: number } {
+/**
+ * Add the missing separator row to each header-less block, once per block.
+ * `origin[i]` is the 1-indexed input line output line `i` came from; an
+ * inserted separator borrows the line of the row above it.
+ */
+function fixSeparators(lines: string[]): { lines: string[]; count: number; origin: number[] } {
   const out: string[] = [];
+  const origin: number[] = [];
   const fenced = fencedLines(lines);
   let count = 0;
   let index = 0;
   while (index < lines.length) {
     if (fenced[index] || !/^ {0,3}\|/.test(lines[index]!)) {
       out.push(lines[index]!);
+      origin.push(index + 1);
       index++;
       continue;
     }
@@ -334,14 +399,17 @@ function fixSeparators(lines: string[]): { lines: string[]; count: number } {
     // A block whose second row is a separator is already well-formed.
     if (cells[1] && isSeparator(cells[1])) {
       out.push(...blockLines);
+      blockLines.forEach((_, at) => origin.push(start + at + 1));
       continue;
     }
     out.push(blockLines[0]!);
     out.push(`|${"---|".repeat(cells[0]!.length)}`);
     out.push(...blockLines.slice(1));
+    origin.push(start + 1, start + 1);
+    blockLines.slice(1).forEach((_, at) => origin.push(start + at + 2));
     count++;
   }
-  return { lines: out, count };
+  return { lines: out, count, origin };
 }
 
 /** Any heading with a trailing `（N）` count loses it. */
@@ -363,6 +431,16 @@ export function adopt(src: string): AdoptResult {
   const original = src.replace(/^﻿/, "").replaceAll("\r\n", "\n").split("\n");
   if (original.at(-1) === "") original.pop();
 
+  // A ledger that already passes `check` has nothing mechanical left to do.
+  // Re-running the conversion on it used to delete an empty `## 附录` and
+  // reject the empty TEMPLATE.md as "not a ledger".
+  const precheck = checkLedger(src, "");
+  // W220 (a status outside the vocabulary) is the one warning adopt itself
+  // reports on, so such a ledger still goes through the conversion.
+  if (precheck.errors.length === 0 && !precheck.warnings.some(({ code }) => code === "W220")) {
+    return { lines: original, decisions: [], changes: ["已是规范台账（check 0 error），无需转换"] };
+  }
+
   // Mechanical rewrites first, so every later coordinate refers to the text
   // that will actually be written.
   const demoted = demoteHeadings(original);
@@ -376,12 +454,31 @@ export function adopt(src: string): AdoptResult {
   const sections = buildSections(scan(lines.join("\n")), lines.length);
   const h1 = sections.find((section) => section.level === 1);
   const title = h1?.title ?? "Issue 台账";
-  const appendix = sections.find((section) => section.level === 2 && section.title === "附录");
-  const bodySection = sections.find((section) => section.level === 2 && section.title === "正文");
+  const appendix = sections.find((section) => isCanonical(section, "附录"));
+  const bodySection = sections.find((section) => isCanonical(section, "正文"));
+  const annotated = sections.filter((section) =>
+    section.level === 2 && KNOWN_SECTION.test(section.title) && canonicalName(section.title) !== section.title);
+  if (annotated.length > 0) {
+    changes.push(`规范小节标题去掉括注：${annotated.map((section) => `${section.title} → ${canonicalName(section.title)}`).join("，")}`);
+  }
 
   // ---- rows ----------------------------------------------------------
   const blocks = pipeBlocks(lines, sections);
   const rows = rowsOf(blocks);
+  // Lines that became table rows (plus their block's header/separator) are
+  // the only input lines adopt is allowed to rewrite rather than copy.
+  const rowLines = new Set(rows.map((row) => row.line));
+  const consumedBlocks = blocks.filter((block) =>
+    rows.some((row) => row.line >= block.line && row.line < block.line + block.length));
+  const consumedBlockLines = new Set<number>();
+  const layoutLines = new Set<number>();
+  for (const block of consumedBlocks) {
+    for (let at = 0; at < block.length; at++) {
+      consumedBlockLines.add(block.line + at);
+      const cells = block.cells[at]!;
+      if (isSeparator(cells) || isHeader(cells)) layoutLines.add(block.line + at);
+    }
+  }
   if (rows.length === 0) {
     throw Object.assign(
       new Error("no issue rows found; this does not look like a ledger, nothing to adopt"),
@@ -435,7 +532,9 @@ export function adopt(src: string): AdoptResult {
       // A row with no status column and no status-named group is the other way
       // to invent a status by accident: say so instead of writing 已修/未决
       // silently.
-      const assumed = category === "closed" ? "已修" : "未决";
+      // 未分类 is the vocabulary's word for "unknown". 已修 claims a fix
+      // nobody made: a ruling like 不是缺陷 must never read as fixed.
+      const assumed = category === "closed" ? "未分类" : "未决";
       decisions.push({
         kind: "unknown-status",
         id: idText,
@@ -487,7 +586,7 @@ export function adopt(src: string): AdoptResult {
       }
     }
 
-    if (category === "closed") closed.push({ ...merged, status: status ?? "已修" });
+    if (category === "closed") closed.push({ ...merged, status: status ?? "未分类" });
     else open.push({ ...merged, status: status ?? "未决" });
 
     // A closed-table summary that differs from the index summary is the
@@ -577,10 +676,15 @@ export function adopt(src: string): AdoptResult {
       (line) => line > section.line_start && line < section.line_end,
     );
     if (!introducesRows) continue;
+    const ids = rows
+      .filter((row) => row.line > section.line_start && row.line <= section.line_end)
+      .map((row) => row.idText);
     decisions.push({
       kind: "unknown-group",
       line: section.line_start,
-      message: `分组标题「${section.title}」不对应任何状态词；其下的行需要人工分类`,
+      message:
+        `分组标题「${section.title}」不对应任何状态词；其下 ${ids.length} 行（${ids.join("、")}）` +
+        "按行内状态处理，行内也没有的记为「未分类」，需人工确认",
     });
   }
 
@@ -609,7 +713,18 @@ export function adopt(src: string): AdoptResult {
     // `body.line` is the heading itself; the slice starts one line later.
     const content = body
       ? trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, row.idText, body.line))
-      : ["**现象**：", "", "**根因**：", "", "**期望**：", "", "**验收判据**：", ""];
+      : ["**现象**：", "", "**根因**：", "", "**期望**：", "", `**验收判据**：${row.criteria}`, ""];
+    // The index has no criteria column. Criteria (or extra columns) an open
+    // row carried in the old table go into its body instead of vanishing.
+    if (body && row.criteria !== "" && !content.some((line) => line.includes(row.criteria))) {
+      content.push("", `**原表格判据**：${row.criteria}`);
+      decisions.push({
+        kind: "extra-columns",
+        id: row.idText,
+        line: row.line,
+        message: "开放项的表格里带有判据/附加列；已追加到正文末尾的 **原表格判据**，请人工合并",
+      });
+    }
     bodyOut.push(...content, "");
   }
 
@@ -656,6 +771,46 @@ export function adopt(src: string): AdoptResult {
     keep(heading, trimBlankEdges(content), section.line_start,
       `未识别的小节「${section.title}」；原样移入附录`);
     preservedSections++;
+  }
+  // Inside a converted table section only the rows are data. Group notes
+  // (`> owner 裁决：…`), narrative H3s (`### 第二十轮 diff 复核`) and tables
+  // adopt could not map used to vanish with the rebuilt section; they are
+  // copied to 附录 under their own heading instead.
+  const sectionProseOut: string[] = [];
+  let sectionProseCount = 0;
+  const tableSections = sections.filter(
+    (section) => section.level === 2 &&
+      (isCanonical(section, "索引") || isCanonical(section, "已关闭") ||
+        (isTableSection(section.title) && rowSections.has(section.title))),
+  );
+  for (const section of tableSections) {
+    const groups = sections.filter((candidate) =>
+      candidate.level === 3 && candidate.line_start > section.line_start && candidate.line_start <= section.line_end);
+    const starts = [section.line_start, ...groups.map((group) => group.line_start)];
+    starts.forEach((start, at) => {
+      const end = at + 1 < starts.length ? starts[at + 1]! - 1 : section.line_end;
+      const content: string[] = [];
+      for (let line = start + 1; line <= end; line++) {
+        if (layoutLines.has(line) || rowLines.has(line)) continue;
+        const text = lines[line - 1]!;
+        // A non-row line left inside a converted block (a `| — | 无 |`
+        // placeholder) can no longer form a table; escape it so it stays text.
+        content.push(consumedBlockLines.has(line) ? `\\${text.trimStart()}` : text);
+        preservedLines.add(line);
+      }
+      const kept = trimBlankEdges(content);
+      if (kept.length === 0) return;
+      const own = at === 0 ? undefined : groups[at - 1]!;
+      const heading = own ? lines[own.line_start - 1]! : `### 「${section.title}」小节的说明`;
+      sectionProseOut.push(...neutralizePreserved([heading]), "", ...neutralizePreserved(kept), "");
+      sectionProseCount++;
+      decisions.push({
+        kind: "section-prose",
+        line: start,
+        anchor: neutralizePreserved([heading])[0],
+        message: `「${section.title}${own ? ` › ${own.title}` : ""}」里表格行以外的内容（${kept.length} 行）；原样移入附录`,
+      });
+    });
   }
   // Front matter and prose that sits directly under the H1 are not part of
   // any section, so the loop above never sees them.
@@ -728,32 +883,85 @@ export function adopt(src: string): AdoptResult {
       message: `正文块 #${body.idText} 在表格里没有对应行（或多号行无法挂载）；已原样移入附录`,
     });
   }
-  // Foreign sections go last: an H2 would otherwise end 附录 and swallow the
-  // archived bodies, preamble and orphan text that follow it.
-  appendixOut.push(...foreignOut);
+  // Section prose comes before foreign sections, whose H2 would otherwise
+  // adopt these H3s as children. Foreign sections go last: an H2 would end
+  // 附录 and swallow the archived bodies, preamble and orphan text after it.
+  appendixOut.push(...sectionProseOut, ...foreignOut);
   if (archived.length > 0) changes.push(`已关闭项的正文移入附录：${archived.length} 条`);
   if (preservedSections > 0) changes.push(`未识别的小节原样移入附录：${preservedSections} 处`);
-  changes.push("重写「怎么用」与「状态口径」受控块");
+  if (sectionProseCount > 0) changes.push(`表格小节里的说明文字/叙述小节移入附录：${sectionProseCount} 处`);
+
+  // The H1's own prose (scope notes, criteria conventions) stays where it
+  // was; the template blurb is only a default for a ledger without one.
+  const afterH1 = h1 ? sections.find((section) => section.line_start > h1.line_start) : undefined;
+  const headerOwn = h1
+    ? trimBlankEdges(lines.slice(h1.line_start, (afterH1?.line_start ?? lines.length + 1) - 1))
+    : [];
+  const header = headerOwn.length > 0
+    ? neutralizePreserved(headerOwn)
+    : [
+      "> 唯一台账 + 唯一正文。状态只在下表；正文不写状态。编号不回收。",
+      "> 读法：`issuemd list <file>` / `issuemd show <file> <id>` / `issuemd check <file>`",
+    ];
+  if (headerOwn.length > 0) changes.push(`保留 H1 下的原有说明：${headerOwn.length} 行`);
+
+  // Only the marker block is regenerated; the rest of 怎么用/状态口径
+  // (writing conventions, command notes) is kept around it.
+  const controlled = (name: string, begin: string, end: string) => {
+    const section = sections.find((candidate) => isCanonical(candidate, name));
+    if (!section) return { before: [] as string[], after: [] as string[], block: undefined };
+    const fenced = fencedLines(lines);
+    const inside = (target: string) => {
+      for (let line = section.line_start + 1; line <= section.line_end; line++) {
+        if (!fenced[line - 1] && lines[line - 1]!.trim() === target) return line;
+      }
+      return undefined;
+    };
+    const from = inside(begin);
+    const to = inside(end);
+    const own = (a: number, b: number) =>
+      trimBlankEdges(lines.slice(a - 1, b).filter((text) => text.trim() !== begin && text.trim() !== end));
+    const ordered = from != null && to != null && from < to;
+    const before = ordered ? own(section.line_start + 1, from - 1) : [];
+    const after = ordered ? own(to + 1, section.line_end) : own(section.line_start + 1, section.line_end);
+    const kept = before.length + after.length;
+    if (before.concat(after).some((text) => text.trim() !== "")) {
+      decisions.push({
+        kind: "kept-section-text",
+        line: section.line_start,
+        anchor: `## ${name}`,
+        message: `「${name}」里受控块以外的文字（${kept} 行）已原样保留；如已过时请手动删改`,
+      });
+    }
+    return { before, after, block: ordered ? { from: from!, to: to! } : undefined };
+  };
+  const guide = controlled("怎么用", "<!-- issuemd:guide:begin -->", "<!-- issuemd:guide:end -->");
+  const statusText = controlled("状态口径", "<!-- issuemd:statuses:begin -->", "<!-- issuemd:statuses:end -->");
+  const around = (part: string[]) => (part.length > 0 ? [...neutralizePreserved(part), ""] : []);
+  changes.push("重写「怎么用」与「状态口径」受控块（块外文字保留）");
   if (bodySection) changes.push("正文块改为按编号升序");
 
   const out = [
     `# ${title}`,
     "",
-    "> 唯一台账 + 唯一正文。状态只在下表；正文不写状态。编号不回收。",
-    "> 读法：`issuemd list <file>` / `issuemd show <file> <id>` / `issuemd check <file>`",
+    ...header,
     "",
     "## 怎么用",
     "",
+    ...around(guide.before),
     "<!-- issuemd:guide:begin -->",
     ...guideBlockLines(),
     "<!-- issuemd:guide:end -->",
     "",
+    ...around(guide.after),
     "## 状态口径",
     "",
+    ...around(statusText.before),
     "<!-- issuemd:statuses:begin -->",
     ...statusBlockLines(),
     "<!-- issuemd:statuses:end -->",
     "",
+    ...around(statusText.after),
     "## 索引",
     "",
     formatRow(["#", "状态", "P", "摘要"]),
@@ -764,14 +972,55 @@ export function adopt(src: string): AdoptResult {
     "",
     formatRow(["#", "状态", "P", "摘要", "判据"]),
     "|---|---|---|---|---|",
-    ...closed.map((row) => formatRow([row.idText, row.status ?? "已修", row.priority, row.summary, row.criteria])),
+    ...closed.map((row) => formatRow([row.idText, row.status ?? "未分类", row.priority, row.summary, row.criteria])),
     "",
     "## 正文",
     "",
     ...bodyOut,
-    ...(appendixOut.length > 0 ? ["## 附录", "", ...appendixOut] : []),
+    // An existing (even empty) 附录 is kept: deleting it is not a mechanical fix.
+    ...(appendixOut.length > 0 || appendix ? ["## 附录", "", ...appendixOut] : []),
   ];
   while (out.at(-1) === "") out.pop();
+
+  // ---- conservation guard ---------------------------------------------
+  // Every input line adopt did not deliberately consume must still be in the
+  // output. This is the check that would have caught each silent loss found
+  // in dogfooding (#41, #42, #49): refuse rather than write a smaller file.
+  const regenerated = new Set<number>([...rowLines, ...layoutLines]);
+  if (h1) regenerated.add(h1.line_start);
+  for (const section of sections) {
+    const inTable = tableSections.some((table) =>
+      section.line_start > table.line_start && section.line_start <= table.line_end);
+    if (section.level === 2 && (KNOWN_SECTION.test(section.title) || tableSections.includes(section))) {
+      regenerated.add(section.line_start);
+    }
+    if (section.level === 3 && (inTable || /^Issue\s/.test(section.title))) regenerated.add(section.line_start);
+  }
+  for (const block of [guide.block, statusText.block]) {
+    if (!block) continue;
+    for (let line = block.from; line <= block.to; line++) regenerated.add(line);
+  }
+  const outSet = new Set(out);
+  const lost: number[] = [];
+  lines.forEach((text, index) => {
+    if (text.trim() === "" || regenerated.has(index + 1)) return;
+    if (/^\s*\*\*状态\*\*\s*[:：]/.test(text) || /^>\s*(?:唯一台账|读法：)/.test(text)) return;
+    if (/^ {0,3}<!-- issuemd:(?:guide|statuses):(?:begin|end) -->\s*$/.test(text)) return;
+    if (outSet.has(text) || outSet.has(neutralizePreserved([text])[0]!) || outSet.has(`\\${text.trimStart()}`)) return;
+    lost.push(index + 1);
+  });
+  if (lost.length > 0) {
+    const sample = lost.slice(0, 10)
+      .map((line) => `  source L${separated.origin[line - 1] ?? line}: ${lines[line - 1]!.trim().slice(0, 80)}`)
+      .join("\n");
+    throw Object.assign(
+      new Error(
+        `refusing to convert: ${lost.length} input line(s) would not survive the conversion\n${sample}` +
+          (lost.length > 10 ? `\n  … (${lost.length - 10} more)` : ""),
+      ),
+      { code: "lost-content" },
+    );
+  }
 
   // Decision line numbers were collected while scanning the *input*; report
   // them against the output instead, so `adopt --report` points at the file
@@ -801,7 +1050,8 @@ export function adopt(src: string): AdoptResult {
         ? out.findIndex((line) => line.startsWith(`### #${id} `))
         : -1;
     const line = bodyIndex >= 0 ? bodyIndex : index;
-    return line >= 0 ? { ...decision, line: line + 1 } : { ...decision, line: 0 };
+    const sourceLine = decision.line > 0 ? separated.origin[decision.line - 1] ?? decision.line : undefined;
+    return line >= 0 ? { ...decision, line: line + 1, sourceLine } : { ...decision, line: 0, sourceLine };
   });
   return { lines: out, decisions: located, changes };
 }
