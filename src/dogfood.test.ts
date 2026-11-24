@@ -859,6 +859,25 @@ describe("#52 issue tables outside 索引/已关闭 are not invisible", () => {
     expect(errors.map((e) => e.code)).not.toContain("E124");
   });
 
+  test("review: a foreign table with an ID and 状态 but no 摘要 is not an issue table", async () => {
+    const plan = "## 版本计划\n\n| ID | 状态 | 说明 |\n|---|---|---|\n| 1 | 进行中 | plan |\n\n";
+    const path = file(TEMPLATE.replace("## 索引", `${plan}## 索引`));
+    const errors = JSON.parse((await run(["check", path, "--json"])).stdout).errors as { code: string }[];
+    expect(errors.map((e) => e.code)).not.toContain("E124");
+    expect((await run(["new", path, "--title", "甲", "--id", "1"])).code).toBe(0);
+  });
+
+  test("review: a legacy file with such a foreign table can still be adopted", async () => {
+    const legacy = "# Proj\n## 待处理\n| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 1 | 未决 | P1 | first |\n" +
+      "## 路线图\n| ID | 状态 | 说明 |\n|---|---|---|\n| 7 | 进行中 | plan |\n" +
+      "## 已关闭\n| # | 状态 | P | 摘要 | 判据 |\n|---|---|---|---|---|\n| 2 | 已修 | P2 | old | ok |\n";
+    const path = file(legacy);
+    const result = await run(["adopt", path]);
+    expect(result.stderr).not.toContain("E124");
+    expect(result.code).toBe(0);
+    expect(text(path)).toContain("| 7 | 进行中 | plan |");
+  });
+
   test("default numbering skips stray ids", async () => {
     const path = mixed();
     expect((await run(["new", path, "--title", "新"])).code).toBe(0);

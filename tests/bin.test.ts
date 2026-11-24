@@ -151,3 +151,26 @@ test("a concurrent change is exit 4 (E130, retryable), distinct from usage error
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+test("build --out only accepts dist-like directory names, never a source directory", async () => {
+  const { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  // Run a copy of the script in a scratch root: if validation regressed, the
+  // damage lands there, not in this checkout.
+  const work = mkdtempSync(join(tmpdir(), "issuemd-build-"));
+  try {
+    mkdirSync(join(work, "scripts"));
+    mkdirSync(join(work, "src"));
+    copyFileSync(fileURLToPath(new URL("../scripts/build.mjs", import.meta.url)), join(work, "scripts", "build.mjs"));
+    writeFileSync(join(work, "src", "keep.ts"), "export {};\n");
+    for (const out of ["src", "bin", "tests", "scripts", ".", "..", "-x", "a/b", ""]) {
+      const result = spawnSync("node", [join(work, "scripts", "build.mjs"), "--out", out], { cwd: work, encoding: "utf8" });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("--out");
+      expect(existsSync(join(work, "src", "keep.ts"))).toBe(true);
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});

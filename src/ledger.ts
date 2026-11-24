@@ -56,8 +56,13 @@ function strayRows(
     if (block.header) {
       const header = block.rows[0];
       idAt = header.findIndex((cell) => ID_COLUMN.includes(cell));
-      const known = header.some((cell) => ["状态", "摘要", "标题"].includes(cell));
-      if (idAt < 0 || !known) continue;
+      // Mirror adopt: a header that names a summary column is an issue table
+      // anywhere; one with only 状态 (`| ID | 状态 | 说明 |`, a roadmap) is
+      // one only under a ledger-table heading. Flagging the roadmap made
+      // legacy files with such a section unadoptable.
+      const named = header.some((cell) => cell === "摘要" || cell === "标题");
+      const status = header.includes("状态");
+      if (idAt < 0 || !(named || (status && isTableSection(h2.title)))) continue;
       first = 2;
     } else {
       const width = block.rows[0].length;

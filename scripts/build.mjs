@@ -24,8 +24,10 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 // that a linked or global `issuemd` is running (dogfood #21).
 const flag = process.argv.indexOf("--out");
 const out = flag >= 0 ? process.argv[flag + 1] : "dist";
-if (!out || out.includes("/") || out.startsWith("-")) {
-  console.error("build: --out expects a directory name in the package root, e.g. --out .dist-test");
+// The target is replaced wholesale, so only build-output names are allowed:
+// `--out src` used to rename the sources away and delete them.
+if (!/^\.?dist(?:-[a-z0-9]+)*$/.test(out ?? "")) {
+  console.error(`build: --out expects 'dist' or a '.dist-…' name such as .dist-test, got '${out ?? ""}'`);
   process.exit(2);
 }
 const name = out.replace(/^\./, "");
