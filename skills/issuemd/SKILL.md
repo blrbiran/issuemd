@@ -132,7 +132,7 @@ Writes are optimistic: each command re-checks the file just before replacing it.
 - **Status lives only in the table.** A `**状态**` line in a body is an error (`E107`).
 - **The summary and the body title are the same string.** Don't shorten one; `rename` changes both.
 - **Escape pipes inside cells** as `\|` — including inside backticks. Too many cells is `E108`, whose message says so.
-- **A title may not end with ` #`** — Markdown strips the trailing hash from the body heading, so it could never match the table summary. `new` / `rename` refuse it up front.
+- **A title may not end with ` #` or a count like `（2）`** — Markdown strips a trailing hash from the body heading, and counts in headings are `E121`. `new` / `rename` refuse both up front; `reopen` of an old closed row with such a summary tells you to `rename` it first.
 - **Writes respect a read-only file** (`chmod 444`): exit `2`, nothing written; `--dry-run` still previews.
 - **Writes refuse files they would corrupt.** A ledger that is not valid UTF-8, or that mixes LF and CRLF, gets exit `2` with an explanation instead of a silently re-encoded rewrite.
 - **Ids are `\d+[a-z]?`** (`393b` is real) and are never recycled. `new FILE --id N` with `N` at or below the highest existing id still writes, but prints `W211` — don't reuse a number just because its row is gone.

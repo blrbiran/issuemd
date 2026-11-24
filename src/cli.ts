@@ -823,6 +823,15 @@ function statusCategory(status: string): "open" | "closed" | undefined {
  * body title the tool just wrote would no longer match the table summary
  * (E106). Refuse before writing, with a message that says why.
  */
+/** Why a summary cannot become a body heading, or null. */
+function titleProblem(title: string): string | null {
+  // A heading ending in a count is E121 (spec §2.2); say it before the gate does.
+  if (/[（(]\d+[）)]\s*$/.test(title)) {
+    return "the title ends with a count like '（2）'; headings must not carry counts (E121). Drop or reword it.";
+  }
+  return titleEndsWithHash(title);
+}
+
 function titleEndsWithHash(title: string): string | null {
   const hashes = /#+\s*$/.exec(title);
   if (!hashes) return null;
@@ -888,7 +897,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   }
   if (v.title == null || v.title.trim() === "") return err("issuemd new: --title is required\n", 2);
   const title = unescapeCell(v.title.trim().replace(/\s+/g, " "));
-  const badTitle = titleEndsWithHash(title);
+  const badTitle = titleProblem(title);
   if (badTitle) return err(`issuemd new: ${badTitle}\n`, 2);
   const status = v.status ?? "未决";
   const priority = v.priority ?? "P2";
@@ -1171,6 +1180,16 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   const refused = perIdRefusal("reopen", idText, found);
   if (refused) return refused;
   if (found.table === "open") return err(`issuemd reopen: #${idText} is already open\n`, 2);
+  // Closed rows may carry summaries that cannot be a body heading (older
+  // ledgers); reopening needs one, so name the fix instead of failing the gate.
+  const badSummary = titleProblem(found.row.summary);
+  if (badSummary) {
+    return err(
+      `issuemd reopen: #${idText}'s summary cannot be a body heading: ${badSummary}\n` +
+        `rename it first: issuemd rename ${file} ${idText} "…"\n`,
+      2,
+    );
+  }
 
   // "" is a legal priority (most open rows in real ledgers have none).
   const priority = found.row.priority;
@@ -1298,7 +1317,7 @@ function cmdRename(rest: string[], v: Values): CliResult {
   }
   const next = unescapeCell(title.trim().replace(/\s+/g, " "));
   if (next === "") return err("issuemd rename: title must not be empty\n", 2);
-  const badTitle = titleEndsWithHash(next);
+  const badTitle = titleProblem(next);
   if (badTitle) return err(`issuemd rename: ${badTitle}\n`, 2);
   const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;

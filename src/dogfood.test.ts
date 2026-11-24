@@ -1303,3 +1303,15 @@ test("probe: a pipe after an escaped backslash is still escaped in cells", async
   expect((await run(["close", path, "1"])).code).toBe(0);
   expect((await run(["check", path])).code).toBe(0);
 });
+
+test("probe: reopen of a closed summary that cannot be a heading says to rename first", async () => {
+  const base = await withIssue("**验收判据**：x\n");
+  expect((await run(["close", base, "1"])).code).toBe(0);
+  for (const summary of ["甲（2）", "甲 #"]) {
+    const path = file(text(base).replace("| 1 | 已修 | P2 | 甲 |", `| 1 | 已修 | P2 | ${summary} |`));
+    const result = await run(["reopen", path, "1"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("issuemd rename");
+  }
+  expect((await run(["new", file(), "--title", "缓存（3）"])).code).toBe(2);
+});
