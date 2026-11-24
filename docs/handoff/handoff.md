@@ -68,6 +68,7 @@
 | A9 | `a \\| b`（字面反斜杠后跟竖线）被当已转义，写入被门禁拒 | `escapeCell`/`unescapeCell` 按反斜杠奇偶，与 `splitCells` 一致 |
 | A9 | 旧已关闭摘要以 ` #` 或 `（2）` 结尾时 reopen 只报 E106/E121 | `titleProblem` 提前拒绝并给 `issuemd rename …`；`new`/`rename` 也拒带计数的标题 |
 | B-minor | `show FILE 4-x` exit 1 | 格式非法的 id 一律 exit 2（`badIdText`） |
+| 复审 | `plainStatus` 剥掉所有非字母字符，`❌ 已修`、`已修？` 被当成已修并关闭，原格丢失 | 只剥强调符、开头勾号、结尾括注；剥掉的不止强调符时写 `原状态：…`；否定/存疑写法按未知词 |
 
 验证：`npm run typecheck && npm test` 全绿；`npm run build` 后对三份真实台账（只读副本）跑 check（0 error）、`adopt --dry-run`（均「已是规范台账」）、每个单号开放项 `close --keep-body` → `reopen` → `body` 配方 → `check`，0 失败；不逐字节的只有「台账没有 `## 附录`」（已知项）与「原文正文前缺空行、reopen 规范化」两类。发版冒烟：`npm pack` → 临时目录安装 → `new/check/show --json` + `import()` 正常，包内无 `.cafe`/`scripts/`/`.dist-test`。
 
@@ -149,7 +150,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `docs/spec.md` | 唯一规格。第八轮改了 §6（E124、W212 口径）、§7（`--if-unchanged` / `snapshot`、`new` 重复摘要拒绝、取号算上 E124 行）、§9（读命令 `--json` 带 `snapshot`）、§10（adopt 对混合文件） |
+| `docs/spec.md` | 唯一规格。第九轮改了 §7（`new` 打编号、只读、`close` 判据与 keep-body 拒绝情形、`rename` 查重、`sync` 选项、写命令 miss 走 stderr）、§9（`show` 的游离行提示）、§10（同号多行摘要、附加列、开放多号行、状态格、坏编号行、搬走的正文）。第八轮改了 §6（E124、W212 口径）、§7（`--if-unchanged` / `snapshot`、`new` 重复摘要拒绝、取号算上 E124 行）、§9（读命令 `--json` 带 `snapshot`）、§10（adopt 对混合文件） |
 | `docs/adr/0001`–`0006` | 0006「只做台账、一个入口」 |
 | `docs/superpowers/specs/2026-11-24-ledger-verbs-design.md` | `body` / `priority` / `split` / `reopen --status` 的设计 |
 | `docs/superpowers/specs/2026-11-24-issuemd-ledger-only-design.md` | 第四轮设计，末尾「实施后的偏差」 |
@@ -325,3 +326,16 @@ npm pack --dry-run --ignore-scripts   # 含 TEMPLATE.md、THIRD_PARTY_NOTICES.md
 | 4 | E124 无 id、文案含小节名：门禁按计数比对，已有 E124 的台账上 `new` 仍可写 | 无问题，符合「只拒新 error」 |
 
 复审确认无问题的：读写两条路径的 snapshot 在 LF / CRLF / BOM / 无尾换行下与 `shasum -a 256` 前 16 位一致；`--if-unchanged` 覆盖全部写命令（含三种 `sync` 与 `adopt`），且在任何改动前比对；重复摘要对 `\|` 转义、大小写、尾空白都能识别。
+
+## 第九轮复审
+
+本轮末尾派独立 subagent 复审 `origin/main..main`（把 origin/main 另行 build 做基线对比）。唯一回归是 `plainStatus` 过宽（见第九轮表最后一行），已先写失败用例再修。复审确认成立的：多号/区间展开与全局排序、`extras` 不进骨架判据、`movedBodyLines` 只输出一份且守恒守卫通过、坏编号行、adopt 自身输出再 adopt 逐字节不变、只读拒绝、转义奇偶与 `splitCells` 一致、keep-body 往返（含 fence 里的标记与说明行）、`--criteria ""`、exit 1/2 划分、`sync` 选项、`rename` 查重。
+
+复审顺带指出、与 origin/main 行为相同（不是回归）、本轮**未修**的缺口，下一轮可做：
+
+1. 没有 H1 时，第一个 H2 之前的 `### Issue N:` 被 preamble 路径原样拷进附录 → adopt 以 E123 自拒。
+2. 输入的 `## 附录` 里已有 `### Issue N:` → 原样拷贝 → E123 自拒（应转义或当正文处理）。
+3. `### Issue 3–5:` 这种区间正文标题 → adopt 守恒自拒（lost-content）。
+4. 已关闭多号行的正文在 H1 下时，会同时留在 H1 说明（已转义）与附录孤儿里。
+5. `rename` 已关闭项到以 `（2）` 结尾的标题现在被拒（与 reopen 的 `titleProblem` 一致，属有意）。
+
