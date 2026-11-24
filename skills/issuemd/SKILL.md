@@ -95,7 +95,7 @@ Exit code **3** means structural errors. Fix them before reporting anything as d
 `check` warnings worth knowing:
 
 - `W202` — a short hash pinned in prose (it rots). Commits in the closed table's 判据 column are expected and are not W202; `--verify-commits` checks them and reports `W240` for a commit the repo does not have.
-- `W212` duplicate summary · `W220` undeclared status · `W221` undeclared priority.
+- `W212` duplicate summary · `W220` undeclared status · `W221` undeclared priority · `W225` issue-shaped table outside the ledger tables (kept as text).
 - `W250` — an appendix archive left by `close --keep-body` (or `adopt`): a `### #N <summary>（已关闭，正文保留）` heading ending at `<!-- issuemd:kept-body:end -->`. Intentional, informational, never fails `--strict`. Leave the marker alone: `reopen` restores exactly the text above it. The archive is a frozen snapshot, not a second copy of the criteria. `W251`/`W252` mean someone hand-edited it out of step. `W253` means a second copy of the same body sits in 附录 (an escaped `\### Issue N:` left by an older `adopt`, or a repeated archive): keep one, delete the other by hand, then `check`.
 
 ### 5. Fix drift mechanically
@@ -123,7 +123,7 @@ Writes are optimistic: each command re-checks the file just before replacing it.
 ## Format rules that will bite you
 
 - **A ledger needs `## 索引`, `## 已关闭` and `## 正文`** (plus `## 怎么用` / `## 状态口径`). Missing any of the three core sections is `E120` — "not a ledger"; start from `TEMPLATE.md`.
-- **Issue rows live only in `## 索引` and `## 已关闭`.** An issue table under any other heading (an old `## 待处理`) is not read: `check` reports `E124` per row, its ids are reserved, and `show` exits `3`. Run `issuemd adopt FILE` to move the rows in.
+- **Issue rows live only in `## 索引` and `## 已关闭`.** An issue table under an old ledger-table heading (`## 待处理`, `## 总览`) is not read: `check` reports `E124` per row, its ids are reserved, and `show` exits `3`. Run `issuemd adopt FILE` to move the rows in. The same shape under any other heading (`## 复核记录`) is treated as text: `check` warns `W225` once per table and adopt leaves it alone — move real issues into the tables by hand, or rename the `#` column if they are not issues.
 - **Every table needs a `|---|` separator row.** A block of `|`-lines without it is not a table — it renders as one paragraph of literal pipes (`E122`).
 - **Count issues by id, not by row.** One cell may hold several ids (`| 20, 24, 29 |` is three) or a retired range (`| 1–199 |`).
 - **No headings inside an issue body.** Use `**bold labels**`; `####` inside a body is `E110`. Read one labelled block with `show --label`.

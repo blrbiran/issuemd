@@ -41,11 +41,17 @@ const ID_COLUMN = ["#", "编号", "ID", "Id", "id"];
  * Issue rows sitting under an H2 the ledger does not read (dogfood #52). They
  * are invisible to every view, so they become E124 + unreadable rows: their
  * ids are reserved and `show` points at them instead of "no such issue".
+ *
+ * Only under a ledger-table heading (`isTableSection`) — exactly where adopt
+ * migrates rows. An issue-shaped table under any other heading (`## 复核记录`)
+ * is usually narrative citing existing ids; adopt keeps it as text, so it gets
+ * W225 (once per table) instead of an error adopt could never clear (#54).
  */
 function strayRows(
   blocks: PipeBlock[],
   h2s: Section[],
   errors: Diagnostic[],
+  warnings: Diagnostic[],
   unreadable: UnreadableRow[],
 ) {
   for (const block of blocks) {
@@ -64,6 +70,18 @@ function strayRows(
       const status = header.includes("状态");
       if (idAt < 0 || !(named || (status && isTableSection(h2.title)))) continue;
       first = 2;
+      if (!isTableSection(h2.title)) {
+        const line = block.rows.slice(first).findIndex((cells) => parseIds(cells[idAt] ?? ""));
+        if (line >= 0) {
+          warnings.push({
+            code: "W225",
+            line: block.line + first + line,
+            message: `table under '## ${h2.title}' looks like an issue table but is not tracked (adopt keeps it as text); ` +
+              "if its rows are issues, move them into 索引/已关闭 by hand; if not, rename its '#' column",
+          });
+        }
+        continue;
+      }
     } else {
       const width = block.rows[0].length;
       if (!isTableSection(h2.title) || width < 2 || width > 5) continue;
@@ -265,7 +283,7 @@ export function parseLedger(src: string) {
     if (tables.length !== 1) errors.push({ code: "E112", line: section.line_start, message: `${title} must contain one table` });
     rows[kind] = tables.flatMap((table) => readRows(table, kind, errors, warnings, unreadable));
   }
-  strayRows(blocks, h2s, errors, unreadable);
+  strayRows(blocks, h2s, errors, warnings, unreadable);
   return { lines, visible, sections, rows, unreadable, blocks, errors, warnings };
 }
 

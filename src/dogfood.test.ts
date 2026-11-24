@@ -853,6 +853,45 @@ describe("#46 adopt reports its conservation check", () => {
   });
 });
 
+describe("#54 issue-shaped tables under a non-ledger heading are text, said once", () => {
+  const SHAPES = {
+    narrow: "| # | 摘要 |\n|---|---|\n| 90 | 第一轮复核 |\n",
+    closed: "| # | 状态 | P | 摘要 | 判据 |\n|---|---|---|---|---|\n| 90 | 已修 | P2 | 某事 | abc |\n",
+    open: "| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 90 | 未决 | P2 | 某事 |\n",
+  };
+  const withSection = (title: string, table: string) =>
+    file(TEMPLATE.replace("## 索引", `## ${title}\n\n${table}\n## 索引`));
+  type Diag = { code: string; line: number; message: string };
+
+  for (const title of ["变更记录", "复核记录"]) {
+    for (const [shape, table] of Object.entries(SHAPES)) {
+      test(`${title} / ${shape}: W225 instead of E124, and adopt leaves a clean ledger`, async () => {
+        const path = withSection(title, table);
+        const checked = JSON.parse((await run(["check", path, "--json"])).stdout) as { errors: Diag[]; warnings: Diag[] };
+        expect(checked.errors.map((e) => e.code)).not.toContain("E124");
+        const w225 = checked.warnings.filter((w) => w.code === "W225");
+        expect(w225.length).toBe(1);
+        expect(text(path).split("\n")[w225[0].line - 1]).toStartWith("| 90 |");
+        expect(w225[0].message).toContain(title);
+        expect(w225[0].message).not.toContain("run 'issuemd adopt");
+        expect((await run(["check", path])).code).toBe(0);
+        expect((await run(["check", path, "--strict"])).code).toBe(3);
+
+        const adopted = await run(["adopt", path]);
+        expect(adopted.code).toBe(0);
+        expect((await run(["check", path])).code).toBe(0);
+        expect(text(path)).toContain("| 90 |");
+      });
+    }
+  }
+
+  test("the id is not tracked: show says no such issue, new may use it", async () => {
+    const path = withSection("变更记录", SHAPES.narrow);
+    expect((await run(["show", path, "90"])).code).toBe(1);
+    expect((await run(["new", path, "--title", "新"])).stdout.trim()).toBe("1");
+  });
+});
+
 describe("#52 issue tables outside 索引/已关闭 are not invisible", () => {
   const LEGACY = "## 待处理\n\n| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 7 | 未决 | P2 | 遗留表里的一条 |\n\n";
   const mixed = () => file(TEMPLATE.replace("## 索引", `${LEGACY}## 索引`));
