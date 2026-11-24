@@ -2,8 +2,20 @@
   "name": "@blrbiran/issuemd",
   "version": "0.1.0",
   "description": "A CLI for single-file Markdown issue ledgers",
+  "keywords": ["markdown", "issues", "ledger", "cli", "agent", "typescript"],
+  "homepage": "https://github.com/blrbiran/issuemd#readme",
+  "bugs": {
+    "url": "https://github.com/blrbiran/issuemd/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blrbiran/issuemd.git"
+  },
   "type": "module",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "issuemd": "dist/bin/issuemd.js"
   },

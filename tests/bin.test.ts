@@ -83,6 +83,15 @@ test("npm package ships the CLI, the ledger skill, and no removed modules", () =
   expect(paths).not.toContain("dist/src/select.js");
 });
 
+test("the manifest carries the metadata npm needs to render the package page", () => {
+  expect(manifest.repository?.url).toContain("blrbiran/issuemd");
+  expect(manifest.homepage).toContain("github.com/blrbiran/issuemd");
+  expect(manifest.bugs?.url).toContain("issues");
+  expect(Array.isArray(manifest.keywords) && manifest.keywords.length > 0).toBe(true);
+  expect(manifest.description.length).toBeGreaterThan(10);
+  expect(manifest.publishConfig?.access).toBe("public");
+});
+
 test("the omitted pretty formatter is reported as an unknown option", () => {
   const result = run("list", fixture, "--pretty");
   expect(result.status).toBe(2);
