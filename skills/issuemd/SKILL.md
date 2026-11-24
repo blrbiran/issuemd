@@ -95,7 +95,7 @@ Exit code **3** means structural errors. Fix them before reporting anything as d
 
 - `W202` — a short hash pinned in prose (it rots). Commits in the closed table's 判据 column are expected and are not W202; `--verify-commits` checks them and reports `W240` for a commit the repo does not have.
 - `W212` duplicate summary · `W220` undeclared status · `W221` undeclared priority.
-- `W250` — an appendix archive left by `close --keep-body` (or `adopt`): a `### #N <summary>（已关闭，正文保留）` heading ending at `<!-- issuemd:kept-body:end -->`. Intentional, informational, never fails `--strict`. Leave the marker alone: `reopen` restores exactly the text above it. The archive is a frozen snapshot, not a second copy of the criteria. `W251`/`W252` mean someone hand-edited it out of step.
+- `W250` — an appendix archive left by `close --keep-body` (or `adopt`): a `### #N <summary>（已关闭，正文保留）` heading ending at `<!-- issuemd:kept-body:end -->`. Intentional, informational, never fails `--strict`. Leave the marker alone: `reopen` restores exactly the text above it. The archive is a frozen snapshot, not a second copy of the criteria. `W251`/`W252` mean someone hand-edited it out of step. `W253` means a second copy of the same body sits in 附录 (an escaped `\### Issue N:` left by an older `adopt`, or a repeated archive): keep one, delete the other by hand, then `check`.
 
 ### 5. Fix drift mechanically
 

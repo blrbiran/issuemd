@@ -102,7 +102,7 @@ const OPTION_HELP: Record<string, string> = {
   status:
     "--status <S>              list: filter; new/reopen: open status (未决); close: closed status (已修)",
   priority:
-    "--priority <P>            list: filter by priority; new: P0–P3 or \"\" (default P2)",
+    "--priority <P>            list: filter by priority; new: P0–P3 or \"\" (default P2); change later: issuemd priority FILE ID P",
   closed: "--closed                  list: show the closed table instead of the index",
   expand: "--expand                  list: one entry per id (a `20, 24` or `7–20` row becomes several)",
   label: "--label <NAME>            show: print only the **NAME** block",

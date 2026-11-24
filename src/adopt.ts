@@ -21,7 +21,7 @@
 
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { splitCells } from "./ledger.js";
+import { parseLedger, splitCells } from "./ledger.js";
 import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
@@ -502,7 +502,10 @@ export function adopt(src: string): AdoptResult {
   }
   if (rows.length === 0) {
     throw Object.assign(
-      new Error("no issue rows found; this does not look like a ledger, nothing to adopt"),
+      new Error(
+        "no issue rows to migrate (no table with a '#' column and issue ids); file left unchanged. " +
+          "For a notes-only file, start from TEMPLATE.md and keep the prose under '## 附录'",
+      ),
       { code: "no-rows" },
     );
   }
@@ -809,12 +812,17 @@ export function adopt(src: string): AdoptResult {
       (isCanonical(section, "索引") || isCanonical(section, "已关闭") ||
         (isTableSection(section.title) && rowSections.has(section.title))),
   );
+  // An `### Issue N:` block inside a table section is an issue body, not
+  // prose: the body logic already puts it in 正文, an archive or the orphan
+  // list. Copying it here as well would keep it twice (dogfood #50).
+  const bodyStarts = new Set(bodies.map((body) => body.line));
   for (const section of tableSections) {
     const groups = sections.filter((candidate) =>
       candidate.level === 3 && candidate.line_start > section.line_start && candidate.line_start <= section.line_end);
     const starts = [section.line_start, ...groups.map((group) => group.line_start)];
     starts.forEach((start, at) => {
       const end = at + 1 < starts.length ? starts[at + 1]! - 1 : section.line_end;
+      if (at > 0 && bodyStarts.has(start)) return;
       const content: string[] = [];
       for (let line = start + 1; line <= end; line++) {
         if (layoutLines.has(line) || rowLines.has(line)) continue;
@@ -1049,6 +1057,35 @@ export function adopt(src: string): AdoptResult {
       ),
       { code: "lost-content" },
     );
+  }
+
+  // Every issue id the input tables held must be in the output tables too, and
+  // the count goes into the report so a reviewer can see the check ran (#46).
+  const idKeys = (cells: string[]) => {
+    const keys = new Set<string>();
+    for (const cell of cells) {
+      for (const span of parseIds(cell) ?? []) {
+        if (span.end - span.start > 100_000) return undefined;
+        for (let n = span.start; n <= span.end; n++) keys.add(`${n}${span.suffix}`);
+      }
+    }
+    return keys;
+  };
+  const before = idKeys(rows.map((row) => row.idText));
+  const outLedger = parseLedger(out.join("\n"));
+  const outCells = [...outLedger.rows.open, ...outLedger.rows.closed]
+    .map((row) => row.ids.map((span) => span.start === span.end ? `${span.start}${span.suffix}` : `${span.start}–${span.end}`).join(", "));
+  const after = idKeys(outCells);
+  if (before && after) {
+    const missing = [...before].filter((key) => !after.has(key));
+    if (missing.length > 0) {
+      throw Object.assign(
+        new Error(`refusing to convert: ${missing.length} issue id(s) would disappear: ${missing.slice(0, 10).join(", ")}`),
+        { code: "lost-content" },
+      );
+    }
+    const keptLines = lines.filter((text, index) => text.trim() !== "" && !regenerated.has(index + 1)).length;
+    changes.push(`守恒自检：issue ${before.size} → ${after.size}；表格行以外的 ${keptLines} 行原文都在输出里`);
   }
 
   // Decision line numbers were collected while scanning the *input*; report

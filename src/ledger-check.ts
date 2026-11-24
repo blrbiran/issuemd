@@ -221,10 +221,25 @@ function checkAppendix(ledger: Ledger) {
   if (!appendix) return;
   const single = (kind: TableKind, id: string) =>
     rows[kind].find((row) => row.ids.length === 1 && idText(row.ids[0]) === id);
+  // A second copy of one issue's body in 附录: an escaped `\### Issue N:`
+  // (older adopt copied table-section bodies twice, dogfood #50) or a repeated
+  // archive. The first archive of an open issue is W252's business.
+  const seen = new Map<string, number>();
+  const duplicate = (line: number, id: string, archive: boolean) => {
+    const copies = (seen.get(id) ?? 0) + 1;
+    seen.set(id, copies);
+    const others = copies - 1 + (single("open", id) ? 1 : 0);
+    if (others > 0 && (!archive || copies > 1)) {
+      warnings.push({ code: "W253", line, id, message: "Another copy of this issue's body already exists (body, archive or escaped copy in 附录)" });
+    }
+  };
   for (let line = appendix.line_start + 1; line <= appendix.line_end; line++) {
     if (!visible.has(line)) continue;
+    const escaped = /^\\#{1,6}[ \t]+Issue[ \t]+(\d+[a-z]?)[ \t]*:/.exec(lines[line - 1]);
+    if (escaped) duplicate(line, escaped[1], false);
     const match = ARCHIVE_HEADING.exec(lines[line - 1]);
     if (!match) continue;
+    duplicate(line, match[1], true);
     const [, id, summary] = match;
     warnings.push({ code: "W250", line, id, message: "Issue body kept in 附录 by close --keep-body" });
     const closedRow = single("closed", id);

@@ -733,3 +733,70 @@ describe("review: dry-run diff stays bounded on huge rewrites", () => {
     expect(diff.split("\n").filter((l) => l.startsWith("-old")).length).toBe(10000);
   });
 });
+
+describe("#50 adopt keeps a body found inside a table section exactly once", () => {
+  const dup = (status: string) =>
+    "# 台账\n\n## 待处理\n\n| # | 状态 | P | 摘要 |\n|---|---|---|---|\n" +
+    `| 1 | ${status} | P2 | 甲 |\n\n### Issue 1: 甲\n\n**现象**：UNIQUE-50-TOKEN\n\n**验收判据**：x\n`;
+  const count = (path: string) => text(path).split("UNIQUE-50-TOKEN").length - 1;
+
+  for (const status of ["未决", "已修", "决定不改"]) {
+    test(`status ${status}: one copy, no escaped heading`, async () => {
+      const path = file(dup(status));
+      expect((await run(["adopt", path])).code).toBe(0);
+      expect(count(path)).toBe(1);
+      expect(text(path)).not.toContain("\\### Issue 1:");
+      const checked = await run(["check", path, "--json"]);
+      expect(JSON.parse(checked.stdout).errors).toEqual([]);
+    });
+  }
+
+  test("closed body inside a table section stays an archive reopen can restore", async () => {
+    const path = file(dup("已修"));
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toContain("（已关闭，正文保留）");
+    expect((await run(["reopen", path, "1"])).code).toBe(0);
+    expect(count(path)).toBe(1);
+    expect(text(path)).not.toContain("\\### Issue 1:");
+  });
+
+  test("control: a body under 正文 is archived once, as before", async () => {
+    const path = file(
+      "# 台账\n\n## 待处理\n\n| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 1 | 已修 | P2 | 甲 |\n\n" +
+        "## 正文\n\n### Issue 1: 甲\n\n**现象**：UNIQUE-50-TOKEN\n",
+    );
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(count(path)).toBe(1);
+  });
+
+  test("check reports an escaped body copy left in 附录 by an earlier adopt (W253)", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    writeFileSync(path, text(path).replace(/\n*$/, "") + "\n\n\\### Issue 1: 甲\n\n**现象**：a\n");
+    const checked = JSON.parse((await run(["check", path, "--json"])).stdout);
+    expect(checked.warnings.map((w: { code: string }) => w.code)).toContain("W253");
+  });
+});
+
+describe("#41 a prose-only file is refused with an accurate message", () => {
+  test("narrative H3s without rows: exit 3, unchanged, says no rows rather than 'not a ledger'", async () => {
+    const source = "# 台账\n\n## 待处理\n\n### 已在代码与现场同时验证\n\n一些叙述。\n\n### 决定不改\n\n更多叙述。\n";
+    const path = file(source);
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(3);
+    expect(text(path)).toBe(source);
+    expect(result.stderr).toContain("file left unchanged");
+    expect(result.stderr).not.toContain("does not look like a ledger");
+  });
+});
+
+describe("#46 adopt reports its conservation check", () => {
+  test("the report states issue counts before and after and the kept prose lines", async () => {
+    const path = file(
+      "# 台账\n\n## 待处理\n\n| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 1 | 未决 | P2 | 甲 |\n| 2–4 | 已修 | P2 | 乙 |\n\n" +
+        "> 组说明\n\n## 正文\n\n### Issue 1: 甲\n\n**现象**：a\n",
+    );
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout + result.stderr).toMatch(/守恒自检：issue 4 → 4/);
+  });
+});
