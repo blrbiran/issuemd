@@ -1110,3 +1110,20 @@ describe("probe: adopt status words", () => {
     expect(out).toMatch(/\| 5 \| 未分类 \| {2}\| 五 \| ok；原状态：done \|/);
   });
 });
+
+describe("probe: adopt names rows it cannot read as issues", () => {
+  const legacy = "# T\n\n## 已关闭\n\n### 已修\n\n| 9–7 | 反向区间 | x |\n| 1–9007199254740993 | 巨大 | big |\n| 20 | a | b | c | d | e |\n\n## 待处理\n\n| 30 | 开放 |\n";
+
+  test("an id cell that does not parse gets its own decision with the cell text", async () => {
+    const result = await run(["adopt", file(legacy)]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("9–7");
+    expect(result.stdout).toContain("1–9007199254740993");
+    expect(result.stdout).toMatch(/不是合法的编号/);
+  });
+
+  test("cells beyond the header are reported, not silently joined into 判据", async () => {
+    const result = await run(["adopt", file(legacy)]);
+    expect(result.stdout).toMatch(/#20 .*多 \d 格/);
+  });
+});

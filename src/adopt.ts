@@ -98,6 +98,8 @@ type Row = {
   extras: string;
   /** The status cell as written, when formatting had to be stripped to read it. */
   rawStatus?: string;
+  /** Cells past the mapped columns (usually an unescaped `|`); joined into extras. */
+  overflow: number;
   /** The H2 section the row was found in, used to infer its table. */
   section: string;
 };
@@ -239,7 +241,10 @@ function pipeBlocks(lines: string[], sections: Section[]): Block[] {
   return out;
 }
 
-function rowsOf(blocks: Block[]): Row[] {
+/** A table row whose first cell looks like an id but is not one (`9–7`). */
+type BadIdRow = { line: number; idText: string; text: string };
+
+function rowsOf(blocks: Block[], badIds: BadIdRow[] = []): Row[] {
   const out: Row[] = [];
   for (const block of blocks) {
     const { mapping } = block;
@@ -251,7 +256,10 @@ function rowsOf(blocks: Block[]): Row[] {
       // `7–20` is *one* span, not the ids 7 and 20; multi-id means several
       // comma-separated spans.
       const spans = parseIds(idText);
-      if (!spans) return;
+      if (!spans) {
+        if (/^\d/.test(idText)) badIds.push({ line: block.line + index, idText, text: "" });
+        return;
+      }
       const ids = spans.map((span) => span.start);
       const declared = mapping.status != null ? cells[mapping.status]?.trim() : undefined;
       let criteria = (mapping.criteria != null ? cells[mapping.criteria] : "")?.trim() ?? "";
@@ -269,10 +277,12 @@ function rowsOf(blocks: Block[]): Row[] {
       // an unescaped pipe) are text too; they must not vanish with the row.
       const mapped = new Set([mapping.id, mapping.status, mapping.priority, mapping.summary, mapping.criteria,
         ...(mapping.extra ?? []).map(({ index: at }) => at)].filter((at) => at != null));
+      let overflow = 0;
       cells.forEach((cell, at) => {
         const value = cell.trim();
         if (mapped.has(at) || value === "") return;
         extras.push(value);
+        overflow++;
       });
       // Keep the declared string even when it is not in the vocabulary, so
       // the decision report can name what the ledger actually said. A group
@@ -303,6 +313,7 @@ function rowsOf(blocks: Block[]): Row[] {
         criteria,
         extras: extras.join("；"),
         rawStatus,
+        overflow,
         section: block.section,
       });
     });
@@ -514,7 +525,8 @@ export function adopt(src: string): AdoptResult {
 
   // ---- rows ----------------------------------------------------------
   const blocks = pipeBlocks(lines, sections);
-  const rows = rowsOf(blocks);
+  const badIds: BadIdRow[] = [];
+  const rows = rowsOf(blocks, badIds);
   // Lines that became table rows (plus their block's header/separator) are
   // the only input lines adopt is allowed to rewrite rather than copy.
   const rowLines = new Set(rows.map((row) => row.line));
@@ -649,6 +661,15 @@ export function adopt(src: string): AdoptResult {
           (priorities.length > 1 ? `；优先级不一致（${priorities.join(" / ")}），采用 ${merged.priority}` : ""),
       });
     }
+    const overflowing = group.find((row) => row.overflow > 0);
+    if (overflowing && category === "closed") {
+      decisions.push({
+        kind: "extra-columns",
+        id: idText,
+        line: overflowing.line,
+        message: `这一行比表头多 ${overflowing.overflow} 格（多半是没转义的 |）；多出的格已以「；」接在判据后，请人工核对`,
+      });
+    }
     if (merged.ids.length > 1) {
       decisions.push({
         kind: "multi-id-row",
@@ -702,6 +723,17 @@ export function adopt(src: string): AdoptResult {
   if (rows.length !== groups.size) changes.push(`合并重复表行：${rows.length - groups.size} 行`);
 
   // ---- bodies --------------------------------------------------------
+  // A row that looks like an issue but whose id does not parse stays text
+  // (escaped into 附录 with its section). Name it: its ids are not reserved.
+  for (const bad of badIds) {
+    const raw = lines[bad.line - 1]!;
+    decisions.push({
+      kind: "id-range",
+      line: bad.line,
+      anchor: consumedBlockLines.has(bad.line) ? `\\${raw.trimStart()}` : raw,
+      message: `首格「${bad.idText}」不是合法的编号或区间；整行按原文移入附录，其中的编号不会被保留，需人工改正后重新 adopt 或手工补行`,
+    });
+  }
   const bodies = bodyHeadings(sections);
   // Keyed by the full id text (`2` vs `2a`), not the numeric part.
   const bodyById = new Map(bodies.map((body) => [body.idText, body]));
