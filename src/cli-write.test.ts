@@ -675,3 +675,91 @@ describe("second review round", () => {
     expect((await run(["status", path, "3", "已修"])).code).toBe(2);
   });
 });
+
+describe("third review round", () => {
+  test("a second copy of an id-less error is refused, not treated as known", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path).replace("## 正文", "## 正文\n\n### Notes\n\nstray heading\n"));
+    const baseline = (await clean(path)).report.errors.filter((e: { code: string }) => e.code === "E110");
+    expect(baseline.length).toBe(1);
+    const body = join(dir, "duplicate-error.md");
+    writeFileSync(body, "### Sub heading\n\n**现象**：x。\n");
+    const before = readFileSync(path);
+    const result = await run(["new", path, "--title", "fresh", "--body-file", body]);
+    expect(result.code).toBe(3);
+    expect(readFileSync(path)).toEqual(before);
+  });
+
+  test("close --keep-body works when 附录 precedes 索引", async () => {
+    const path = ledger();
+    const source = text(path);
+    const indexAt = source.indexOf("## 索引");
+    const appendixAt = source.indexOf("## 附录");
+    writeFileSync(path, source.slice(0, indexAt) + source.slice(appendixAt).replace(/\n+$/, "") +
+      "\n\n" + source.slice(indexAt, appendixAt).replace(/\n+$/, "") + "\n");
+    expect((await clean(path)).code).toBe(0);
+    const result = await run(["close", path, "2", "--keep-body"]);
+    expect(result.code).toBe(0);
+    const after = text(path);
+    expect(after).toContain("### #2 ");
+    expect(after).not.toContain("| 2 | 未决");
+    expect((await clean(path)).code).toBe(0);
+  });
+
+  test("an id too large for a safe integer is a usage error, not a crash", async () => {
+    const path = ledger();
+    const before = readFileSync(path);
+    const result = await run(["new", path, "--title", "big", "--id", "99999999999999999999"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("99999999999999999999");
+    expect(readFileSync(path)).toEqual(before);
+  });
+
+  test("a BOM at the start of --body-file does not leak into the ledger", async () => {
+    const path = ledger();
+    const body = join(dir, "bom-body.md");
+    writeFileSync(body, "﻿**现象**：来自 Windows。\r\n");
+    const result = await run(["new", path, "--title", "bom body", "--body-file", body]);
+    expect(result.code).toBe(0);
+    expect(text(path).slice(1)).not.toContain("﻿");
+    const shown = await run(["show", path, "21", "--label", "现象"]);
+    expect(shown.code).toBe(0);
+    expect(shown.stdout).toContain("来自 Windows");
+  });
+
+  test("a top-level heading in --body-file is refused instead of splitting the issue", async () => {
+    const path = ledger();
+    const body = join(dir, "h2-body.md");
+    writeFileSync(body, "**现象**：x。\n\n## Design notes\n\nlong text\n");
+    const before = readFileSync(path);
+    const result = await run(["new", path, "--title", "h2 body", "--body-file", body]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("## Design notes");
+    expect(readFileSync(path)).toEqual(before);
+  });
+
+  test("a title ending in a hash is refused with an explanation, not E106", async () => {
+    const path = ledger();
+    const created = await run(["new", path, "--title", "Port to C #"]);
+    expect(created.code).toBe(2);
+    expect(created.stderr).toContain("ends with '#'");
+    const renamed = await run(["rename", path, "2", "Escape #"]);
+    expect(renamed.code).toBe(2);
+    expect(renamed.stderr).toContain("ends with '#'");
+  });
+
+  test("a write refuses a file that is not valid UTF-8", async () => {
+    const path = ledger();
+    writeFileSync(path, Buffer.concat([
+      readFileSync(path),
+      Buffer.from("\nlatin1: caf", "utf8"), Buffer.from([0xe9]), Buffer.from("\n", "utf8"),
+    ]));
+    const before = readFileSync(path);
+    const result = await run(["status", path, "2", "观察"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("UTF-8");
+    expect(readFileSync(path)).toEqual(before);
+    // Reads still work.
+    expect((await run(["check", path])).code).not.toBe(2);
+  });
+});

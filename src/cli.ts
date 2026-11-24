@@ -21,6 +21,7 @@
 
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { readFileSync, writeFileSync } from "node:fs";
+import { TextDecoder } from "node:util";
 
 import { scan } from "./scan.js";
 import { buildSections, countLines } from "./sections.js";
@@ -36,6 +37,7 @@ import {
   insertLines,
   removeLines,
   endsInFence,
+  fencedLines,
   replaceCell,
   rewriteBlock,
   statusBlockLines,
@@ -388,9 +390,31 @@ function cmdRead(rest: string[]): CliResult {
 type Loaded = { doc: Document; lines: string[] };
 
 /** Load a file for writing. Stdin is refused: there is nothing to write back. */
+/**
+ * The read path decodes UTF-8 with replacement, which is harmless for `check`
+ * but destructive on write: every invalid byte would be replaced by U+FFFD in
+ * the file. Refuse the write instead — the user can convert the file first.
+ */
+function isUtf8File(file: string): boolean {
+  try {
+    new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(file));
+    return true;
+  } catch (error) {
+    if ((error as { code?: string }).code === "ERR_ENCODING_INVALID_ENCODED_DATA") return false;
+    throw error;
+  }
+}
+
 function loadWritable(file: string): Loaded | CliResult {
   if (file === "-") return err("issuemd: write commands do not support stdin ('-')\n", 2);
   try {
+    if (!isUtf8File(file)) {
+      return err(
+        `issuemd: refusing to write '${file}': it is not valid UTF-8, and rewriting it would corrupt the bytes. ` +
+          "Convert it to UTF-8 first.\n",
+        2,
+      );
+    }
     const doc = readDocument(file);
     // Split without the trailing sentinel: `joinDocument` adds the final
     // newline back, so keeping the "" would double it on every rewrite.
@@ -436,8 +460,21 @@ function commit(
   const newLines = terminate(candidate, loaded.doc);
   const content = joinDocument(newLines, loaded.doc);
   const after = checkLedger(content, file).errors;
-  const known = new Set(before.map(diagnosticKey));
-  const introduced = after.filter((diagnostic) => !known.has(diagnosticKey(diagnostic)));
+  // Count, don't set: several codes (E110, E108, E122, …) carry no id, so a
+  // second copy of an error that already exists must still be refused. One
+  // baseline error buys exactly one identical candidate error, no more.
+  const budget = new Map<string, number>();
+  for (const diagnostic of before) {
+    const key = diagnosticKey(diagnostic);
+    budget.set(key, (budget.get(key) ?? 0) + 1);
+  }
+  const introduced = after.filter((diagnostic) => {
+    const key = diagnosticKey(diagnostic);
+    const remaining = budget.get(key) ?? 0;
+    if (remaining === 0) return true;
+    budget.set(key, remaining - 1);
+    return false;
+  });
   if (introduced.length > 0) {
     return err(
       `issuemd: refusing to write; the change would introduce ${introduced.length} error(s):\n` +
@@ -502,16 +539,43 @@ function statusCategory(status: string): "open" | "closed" | undefined {
     : undefined;
 }
 
+/**
+ * A title ending in a whitespace-separated `#` cannot round-trip through a
+ * heading: CommonMark strips the trailing `#` as a closing sequence, so the
+ * body title the tool just wrote would no longer match the table summary
+ * (E106). Refuse before writing, with a message that says why.
+ */
+function titleEndsWithHash(title: string): string | null {
+  if (!/\s#+\s*$/.test(title)) return null;
+  return "the title ends with '#'; Markdown strips a trailing '#' as a heading's closing marker, " +
+    `so the body title would not match the summary. Rephrase it (e.g. '${title.replace(/\s*#+\s*$/, "")} # (hash)').`;
+}
+
 /** `--body-file PATH|-` wins over the default skeleton; a bare `-` is stdin. */
 function readBodyFile(spec: string): { lines: string[] } | CliResult {
   try {
-    const src = spec === "-" ? readFileSync(0, "utf8") : readFileSync(spec, "utf8");
+    const raw = spec === "-" ? readFileSync(0, "utf8") : readFileSync(spec, "utf8");
+    // A UTF-8 BOM is an encoding marker, not body text. Left in place it ends
+    // up mid-document and breaks label matching on the first line.
+    const src = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
     const lines = src.replaceAll("\r\n", "\n").split("\n");
     if (lines.at(-1) === "") lines.pop();
     // An unclosed fence would swallow every heading after the body — including
     // `## 附录` — and `check` would still pass, so refuse it up front.
     if (endsInFence(lines)) {
       return err("issuemd new: --body-file ends inside an unclosed code fence\n", 2);
+    }
+    // A top-level heading inside a body ends the issue block early: `show`
+    // stops at it and `close` leaves it behind as orphaned content, all while
+    // `check` stays green.
+    const fenced = fencedLines(lines);
+    const heading = lines.findIndex((line, index) => !fenced[index] && /^ {0,3}#{1,2}(?:[ \t]|$)/.test(line));
+    if (heading !== -1) {
+      return err(
+        `issuemd new: --body-file may not contain a top-level heading (## or #): '${lines[heading]!.trim()}'.\n` +
+          "Use **bold labels** inside an issue body.\n",
+        2,
+      );
     }
     return { lines };
   } catch (e) {
@@ -526,6 +590,8 @@ function cmdNew(rest: string[], v: Values): CliResult {
   }
   if (v.title == null || v.title.trim() === "") return err("issuemd new: --title is required\n", 2);
   const title = v.title.trim().replace(/\s+/g, " ").replace(/\\\|/g, "|");
+  const badTitle = titleEndsWithHash(title);
+  if (badTitle) return err(`issuemd new: ${badTitle}\n`, 2);
   const status = v.status ?? "未决";
   const priority = v.priority ?? "P2";
   const category = statusCategory(status);
@@ -544,7 +610,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   let reusedNumber = false;
   if (v.id != null) {
     // Ids are `\d+[a-z]?` (the real ledgers contain `393b`), not plain ints.
-    if (!/^[1-9]\d*[a-z]?$/.test(v.id)) {
+    if (!/^[1-9]\d*[a-z]?$/.test(v.id) || parseId(v.id) == null) {
       return err(`issuemd new: --id expects a positive id like 42 or 393b, got '${v.id}'\n`, 2);
     }
     idText = v.id;
@@ -672,8 +738,14 @@ function cmdClose(rest: string[], v: Values): CliResult {
       lines = insertLines(lines, lines.length + 1, ["", "## 附录", "", ...archive]);
     }
   }
-  // 索引 precedes 正文, so its line number survived the body deletion.
-  lines = removeLines(lines, found.row.line, 1);
+  // The row is located again after the archive insertion: 附录 may sit above
+  // 索引, in which case the insertion shifts the row. Using the stale line
+  // number would delete the wrong line (and the gate would refuse with a
+  // confusing E102/E104 pointing at the user's ledger).
+  const afterArchive = parseLedger(lines.join("\n"));
+  const rowNow = findRow(afterArchive, idText);
+  if (!rowNow) return err(`issuemd close: #${idText} disappeared from the index during the edit\n`, 2);
+  lines = removeLines(lines, rowNow.row.line, 1);
   const closedAt = tableRange(parseLedger(lines.join("\n")), "closed");
   if (!closedAt) return err("issuemd close: the 已关闭 table is missing\n", 3);
   lines = insertLines(lines, closedAt.end + 1, [
@@ -793,6 +865,8 @@ function cmdRename(rest: string[], v: Values): CliResult {
   }
   const next = title.trim().replace(/\s+/g, " ").replace(/\\\|/g, "|");
   if (next === "") return err("issuemd rename: title must not be empty\n", 2);
+  const badTitle = titleEndsWithHash(next);
+  if (badTitle) return err(`issuemd rename: ${badTitle}\n`, 2);
   const opened = openLedger(file);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
