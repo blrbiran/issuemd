@@ -8,4 +8,7 @@ issuemd_dogfooding
 
 .dist-staging/
 .dist-retired-*/
+.dist-test/
+.dist-test-staging/
+.dist-test-retired-*/
 .cafe

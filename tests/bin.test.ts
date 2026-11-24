@@ -2,10 +2,14 @@ import { expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { built } from "./built.js";
 
 const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-const bin = fileURLToPath(new URL(`../${manifest.bin.issuemd}`, import.meta.url));
+// The manifest's bin lives under dist/; the tests run the same file from the
+// test build so they never touch the dist/ a global install is using (#21).
+const binRel = (manifest.bin.issuemd as string).replace(/^dist\//, "");
+const bin = built(binRel);
 const cwd = fileURLToPath(new URL("../fixtures/", import.meta.url));
 const fixture = "canonical-clean.md";
 
@@ -73,14 +77,17 @@ test("npm package ships the CLI, the ledger skill, and no removed modules", () =
   expect(result.status).toBe(0);
   const [pack] = JSON.parse(result.stdout);
   const paths = pack.files.map(({ path }: { path: string }) => path);
-  expect(paths).toContain(manifest.bin.issuemd);
   expect(paths).toContain("skills/issuemd/SKILL.md");
   expect(paths).toContain("TEMPLATE.md");
   expect(paths).toContain("THIRD_PARTY_NOTICES.md");
-  // Generic Markdown modules were deleted from src/; a stale dist/ must not
-  // smuggle them back into the tarball.
-  expect(paths).not.toContain("dist/src/render.js");
-  expect(paths).not.toContain("dist/src/select.js");
+  // dist/ itself is built by prepack at publish time, so check that the
+  // manifest ships it and that a build has the bin and none of the deleted
+  // generic Markdown modules (the build swaps in a fresh directory).
+  expect(manifest.files).toContain("dist");
+  expect(manifest.bin.issuemd).toStartWith("dist/");
+  expect(existsSync(bin)).toBe(true);
+  expect(existsSync(built("src/render.js"))).toBe(false);
+  expect(existsSync(built("src/select.js"))).toBe(false);
 });
 
 test("the manifest carries the metadata npm needs to render the package page", () => {
@@ -93,12 +100,14 @@ test("the manifest carries the metadata npm needs to render the package page", (
 });
 
 test("the package resolves as a library entry, with type declarations", async () => {
-  const api = await import("@blrbiran/issuemd");
+  const entry = manifest.exports["."];
+  expect(entry.import).toBe("./dist/src/index.js");
+  expect(entry.types).toBe("./dist/src/index.d.ts");
+  const api = await import(pathToFileURL(built("src/index.js")).href);
   expect(typeof api.checkLedger).toBe("function");
   expect(typeof api.parseLedger).toBe("function");
   expect(typeof api.writeAtomically).toBe("function");
-  const types = fileURLToPath(new URL("../dist/src/index.d.ts", import.meta.url));
-  expect(existsSync(types)).toBe(true);
+  expect(existsSync(built("src/index.d.ts"))).toBe(true);
 });
 
 test("the omitted pretty formatter is reported as an unknown option", () => {

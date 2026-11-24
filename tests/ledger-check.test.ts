@@ -3,10 +3,11 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { run } from "../src/cli.js";
+import { built } from "./built.js";
 
 const fixture = new URL("../fixtures/canonical-clean.md", import.meta.url);
 const canonical = readFileSync(fixture, "utf8");
-const bin = fileURLToPath(new URL("../dist/bin/issuemd.js", import.meta.url));
+const bin = built("bin/issuemd.js");
 
 type Diagnostic = { code: string; line: number; id?: string };
 function check(source: string, ...args: string[]) {

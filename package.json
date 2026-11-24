@@ -36,7 +36,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && bun test src tests",
+    "test": "node scripts/build.mjs --out .dist-test && bun test src tests",
     "prepack": "npm run build"
   },
   "devDependencies": {

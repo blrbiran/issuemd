@@ -10,13 +10,13 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 
 import { run } from "../src/cli.js";
+import { built } from "../tests/built.js";
 
 const fixture = new URL("../fixtures/canonical-clean.md", import.meta.url);
 const TEMPLATE = readFileSync(new URL("../TEMPLATE.md", import.meta.url), "utf8");
-const bin = fileURLToPath(new URL("../dist/bin/issuemd.js", import.meta.url));
+const bin = built("bin/issuemd.js");
 const dir = mkdtempSync(join(tmpdir(), "issuemd-write-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 

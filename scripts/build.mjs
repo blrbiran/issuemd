@@ -20,16 +20,25 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const staging = join(root, ".dist-staging");
-const dist = join(root, "dist");
-const retired = join(root, `.dist-retired-${process.pid}`);
+// `--out .dist-test` is what `npm test` uses: tests never rebuild the dist/
+// that a linked or global `issuemd` is running (dogfood #21).
+const flag = process.argv.indexOf("--out");
+const out = flag >= 0 ? process.argv[flag + 1] : "dist";
+if (!out || out.includes("/") || out.startsWith("-")) {
+  console.error("build: --out expects a directory name in the package root, e.g. --out .dist-test");
+  process.exit(2);
+}
+const name = out.replace(/^\./, "");
+const staging = join(root, `.${name}-staging`);
+const dist = join(root, out);
+const retired = join(root, `.${name}-retired-${process.pid}`);
 
 rmSync(staging, { recursive: true, force: true });
 const tsc = createRequire(import.meta.url).resolve("typescript/bin/tsc");
 const result = spawnSync(process.execPath, [tsc, "--outDir", staging], { cwd: root, stdio: "inherit" });
 if (result.status !== 0) {
   rmSync(staging, { recursive: true, force: true });
-  console.error("build: tsc failed; the existing dist/ was left untouched");
+  console.error(`build: tsc failed; the existing ${out}/ was left untouched`);
   process.exit(result.status ?? 1);
 }
 

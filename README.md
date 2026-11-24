@@ -56,7 +56,7 @@ issuemd list fixtures/canonical-clean.md
 issuemd check fixtures/canonical-clean.md
 ```
 
-With Bun available, run `npm test` to build the CLI and run its tests. `npm run build` compiles into a staging directory and swaps it in, so a linked `issuemd` keeps working while someone rebuilds, and a type error leaves the previous `dist/` in place. The npm package name is `@blrbiran/issuemd` (not yet published).
+With Bun available, run `npm test` to compile into `.dist-test/` and run the tests; it never touches `dist/`, so a linked `issuemd` keeps running the last real build while you test work in progress. `npm run build` (also run by `prepack`) is what updates `dist/`: it compiles into a staging directory and swaps it in, so the linked CLI keeps working during a rebuild, and a type error leaves the previous `dist/` in place. The npm package is [`@blrbiran/issuemd`](https://www.npmjs.com/package/@blrbiran/issuemd).
 
 ### As a library
 

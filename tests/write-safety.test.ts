@@ -13,6 +13,8 @@ import { chmodSync, mkdtempSync, readFileSync, readdirSync, renameSync, statSync
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
+import { built } from "./built.js";
 
 import { readDocument, joinDocument, writeAtomically } from "../src/io.js";
 import { scan } from "../src/scan.js";
@@ -128,7 +130,7 @@ describe("write safety", () => {
 
   test("a change during temp-file fsync aborts the replacement and cleans up", () => {
     const path = file("publish-race.md", "# Original\n");
-    const io = new URL("../dist/src/io.js", import.meta.url).href;
+    const io = pathToFileURL(built("src/io.js")).href;
     const child = spawnSync("node", ["--input-type=module", "-e", `
       import fs from "node:fs";
       import { syncBuiltinESMExports } from "node:module";
