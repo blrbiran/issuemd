@@ -82,7 +82,7 @@ const COMMANDS = {
   show: { usage: "issuemd show    FILE ID [--json] [--label NAME]", options: ["json", "label"] },
   counts: { usage: "issuemd counts  FILE [--json]", options: ["json"] },
   read: { usage: "issuemd read    FILE <H2 heading>", options: [] },
-  new: { usage: "issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]", options: ["title", "id", "status", "priority", "body-file", "dry-run", "if-unchanged"] },
+  new: { usage: "issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-] [--allow-duplicate-title]", options: ["title", "id", "status", "priority", "body-file", "allow-duplicate-title", "dry-run", "if-unchanged"] },
   close: { usage: "issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]", options: ["status", "criteria", "criteria-from-body", "no-criteria", "keep-body", "dry-run", "if-unchanged"] },
   reopen: { usage: "issuemd reopen  FILE ID [--status S]", options: ["status", "dry-run", "if-unchanged"] },
   status: { usage: "issuemd status  FILE ID NEW_STATUS", options: ["dry-run", "if-unchanged"] },
@@ -109,6 +109,8 @@ const OPTION_HELP: Record<string, string> = {
   label: "--label <NAME>            show: print only the **NAME** block",
   title: "--title <T>               new: summary/body title (starts with '-'? write --title=\"-…\")",
   id: "--id <N>                  new: explicit issue id",
+  "allow-duplicate-title":
+    "--allow-duplicate-title   new: file it even though an open issue has the same summary",
   "body-file": "--body-file <path|->      new/body: body text under the heading (no `### Issue` line), or '-' for stdin",
   criteria: "--criteria <TEXT>         close: criteria column text",
   "criteria-from-body":
@@ -186,6 +188,7 @@ const OPTIONS = {
   // new
   title: { type: "string" },
   id: { type: "string" },
+  "allow-duplicate-title": { type: "boolean" },
   "body-file": { type: "string" },
   // close
   criteria: { type: "string" },
@@ -862,6 +865,19 @@ function cmdNew(rest: string[], v: Values): CliResult {
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
 
+  // A retried `new` (the first call landed, its reply was lost) is the usual
+  // way a ledger grows a duplicate. Refuse and name the existing issue so the
+  // caller can treat it as filed (dogfood #34); closed rows never block.
+  const twin = ledger.rows.open.find((row) => summaryKey(row.summary) === summaryKey(title));
+  if (twin && !v["allow-duplicate-title"]) {
+    const ids = twin.ids.map(spanText).join(", ");
+    return err(
+      `issuemd new: open issue #${ids} already has this summary ('${twin.summary}'); nothing written. ` +
+        "If this is a retry, it is already filed. To file another one anyway, add --allow-duplicate-title\n",
+      2,
+    );
+  }
+
   const max = maxIssueId(ledger.rows, ledger.unreadable);
   let idText = String(max + 1);
   if (v.id == null && !Number.isSafeInteger(max + 1)) {
@@ -925,12 +941,6 @@ function cmdNew(rest: string[], v: Values): CliResult {
   }
   if (title.includes("|")) {
     warnings.push("W205: the title contains a pipe; it was escaped in the table cell\n");
-  }
-  const twin = ledger.rows.open.find((row) => summaryKey(row.summary) === summaryKey(title));
-  if (twin) {
-    warnings.push(
-      `W212: #${twin.ids.map(spanText).join(", ")} already has this summary; if this is a retry, the issue may now exist twice\n`,
-    );
   }
   return result.code === 0 && warnings.length > 0 ? { ...result, stderr: result.stderr + warnings.join("") } : result;
 }

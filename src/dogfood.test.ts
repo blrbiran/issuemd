@@ -594,14 +594,40 @@ describe("#40 one archive format, kept in step with rename", () => {
   });
 });
 
-describe("#34 duplicate titles are visible", () => {
-  test("new warns and check reports W212", async () => {
+describe("#34 duplicate titles", () => {
+  test("new refuses a title an open issue already has (normalised), naming it", async () => {
     const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
-    const second = await run(["new", path, "--title", " 甲 "]);
+    const before = text(path);
+    for (const title of ["甲", " 甲 ", "甲\t"]) {
+      for (const extra of [[], ["--dry-run"]]) {
+        const again = await run(["new", path, "--title", title, ...extra]);
+        expect(again.code).toBe(2);
+        expect(again.stderr).toContain("#1");
+        expect(again.stderr).toContain("--allow-duplicate-title");
+      }
+    }
+    expect(text(path)).toBe(before);
+  });
+
+  test("full-width / case variants count as the same title", async () => {
+    const path = file();
+    expect((await run(["new", path, "--title", "Login Ａbc"])).code).toBe(0);
+    expect((await run(["new", path, "--title", "login abc"])).code).toBe(2);
+  });
+
+  test("--allow-duplicate-title files it without W212; check still reports the pair", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    const second = await run(["new", path, "--title", "甲", "--allow-duplicate-title"]);
     expect(second.code).toBe(0);
-    expect(second.stderr).toContain("W212");
+    expect(second.stderr).not.toContain("W212");
     const report = JSON.parse((await run(["check", path, "--json"])).stdout);
     expect(report.warnings.filter((w: { code: string }) => w.code === "W212").length).toBeGreaterThan(0);
+  });
+
+  test("a closed issue with the same title does not block", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    expect((await run(["close", path, "1"])).code).toBe(0);
+    expect((await run(["new", path, "--title", "甲"])).code).toBe(0);
   });
 });
 
@@ -716,7 +742,7 @@ describe("review: write verbs", () => {
 
   test("W212 ignores a duplicate that was already closed as 并入", async () => {
     const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
-    await run(["new", path, "--title", "甲", "--body-file", body("**验收判据**：y\n")]);
+    await run(["new", path, "--title", "甲", "--allow-duplicate-title", "--body-file", body("**验收判据**：y\n")]);
     await run(["close", path, "2", "--status", "并入", "--criteria", "dup of #1"]);
     expect((await run(["check", path, "--strict"])).code).toBe(0);
   });
