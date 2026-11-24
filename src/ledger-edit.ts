@@ -167,16 +167,6 @@ export function endsInFence(lines: string[]): boolean {
   return fence !== undefined;
 }
 
-/** Indices of `needle` occurrences that sit outside every fence. */
-function unfencedIndexes(lines: string[], needle: string): number[] {
-  const fenced = fencedLines(lines);
-  const out: number[] = [];
-  lines.forEach((line, index) => {
-    if (line.trim() === needle && !fenced[index]) out.push(index);
-  });
-  return out;
-}
-
 // ---- bodies ------------------------------------------------------------
 
 export function bodySkeleton(id: string, title: string, criteria = ""): string[] {
@@ -241,18 +231,49 @@ export function guideBlockLines(): string[] {
 }
 
 /**
+ * Locate `begin` / `end` markers, optionally only inside one section
+ * (`range` is a 1-indexed inclusive line span). Markers in another section —
+ * even indented inside a list item — must not count: only the section that
+ * owns the block decides whether the pair is valid.
+ */
+export function markerPair(
+  lines: string[],
+  begin: string,
+  end: string,
+  range?: { start: number; end: number },
+): { begin: number; end: number } | null {
+  const fenced = fencedLines(lines);
+  const lo = range ? range.start - 1 : 0;
+  const hi = range ? Math.min(range.end, lines.length) : lines.length;
+  const indexes = (needle: string) => {
+    const out: number[] = [];
+    for (let index = Math.max(0, lo); index < hi; index++) {
+      if (!fenced[index] && lines[index]!.trim() === needle) out.push(index);
+    }
+    return out;
+  };
+  const begins = indexes(begin);
+  const ends = indexes(end);
+  if (begins.length !== 1 || ends.length !== 1) return null;
+  if (ends[0]! <= begins[0]!) return null;
+  return { begin: begins[0]!, end: ends[0]! };
+}
+
+/**
  * Replace the lines strictly between `begin` and `end` markers. Returns the
  * input unchanged when either marker is missing or duplicated — the checker
  * reports that as E112, and a write verb should never guess.
  */
-export function rewriteBlock(lines: string[], begin: string, end: string, content: string[]): string[] {
+export function rewriteBlock(
+  lines: string[],
+  begin: string,
+  end: string,
+  content: string[],
+  range?: { start: number; end: number },
+): string[] {
   // Only real markers count. A marker pair quoted inside a fenced example in
   // the appendix must not be mistaken for the controlled block.
-  const begins = unfencedIndexes(lines, begin);
-  const ends = unfencedIndexes(lines, end);
-  if (begins.length !== 1 || ends.length !== 1) return lines;
-  const first = begins[0]!;
-  const last = ends[0]!;
-  if (last <= first) return lines;
-  return [...lines.slice(0, first + 1), ...content, ...lines.slice(last)];
+  const pair = markerPair(lines, begin, end, range);
+  if (!pair) return lines;
+  return [...lines.slice(0, pair.begin + 1), ...content, ...lines.slice(pair.end)];
 }

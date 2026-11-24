@@ -35,6 +35,7 @@ import {
   formatRow,
   guideBlockLines,
   insertLines,
+  markerPair,
   removeLines,
   endsInFence,
   fencedLines,
@@ -229,6 +230,15 @@ function formatDiagnostics(diagnostics: Diagnostic[]): string {
   return diagnostics
     .map(({ code, line, id, message }) => `  L${line}${id ? ` #${id}` : ""} ${code}: ${message}`)
     .join("\n");
+}
+
+/** Drop leading and trailing blank lines; internal ones are content. */
+function trimBlank(lines: string[]): string[] {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && lines[start]!.trim() === "") start++;
+  while (end > start && lines[end - 1]!.trim() === "") end--;
+  return lines.slice(start, end);
 }
 
 // ---- read commands -----------------------------------------------------
@@ -785,7 +795,25 @@ function cmdReopen(rest: string[], v: Values): CliResult {
 
   const priority = found.row.priority || "P2";
   const criteria = found.row.criteria.trim();
-  let lines = removeLines(loaded.lines, found.row.line, 1);
+  // `close --keep-body` archived the body in 附录 precisely so it could be
+  // recovered. Restore it instead of leaving an empty skeleton and a W250
+  // heading that claims the (now open) issue still has a kept body.
+  const archiveHeading = new RegExp(`^#${idText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} .*（已关闭，正文保留）$`);
+  const archived = ledger.sections.find(
+    (section) => section.level === 3 && archiveHeading.test(section.title),
+  );
+  const restored = archived
+    ? trimBlank(loaded.lines.slice(archived.line_start, archived.line_end)
+      .filter((line) => !/^>\s*关闭时以 --keep-body/.test(line)))
+    : undefined;
+
+  // Remove the later block first so the earlier coordinates stay valid.
+  const removals = [
+    { line: found.row.line, count: 1 },
+    ...(archived ? [{ line: archived.line_start, count: archived.line_end - archived.line_start + 1 }] : []),
+  ].sort((a, b) => b.line - a.line);
+  let lines = loaded.lines;
+  for (const removal of removals) lines = removeLines(lines, removal.line, removal.count);
 
   const fresh = parseLedger(lines.join("\n"));
   const index = tableRange(fresh, "open");
@@ -808,7 +836,10 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   );
   if (!bodySection) return err("issuemd reopen: the 正文 section is missing\n", 3);
   const bodyAt = bodyInsertAt(reopened, found.span, bodySection.line_end);
-  lines = insertLines(lines, bodyAt, bodySkeleton(spanText(found.span), found.row.summary, criteria));
+  const bodyLines = restored && restored.length > 0
+    ? [`### Issue ${spanText(found.span)}: ${found.row.summary}`, "", ...restored]
+    : bodySkeleton(spanText(found.span), found.row.summary, criteria);
+  lines = insertLines(lines, bodyAt, bodyLines);
 
   return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
@@ -997,8 +1028,27 @@ function cmdSync(rest: string[], v: Values): CliResult {
   let lines = loaded.lines;
 
   if (v.guide) {
-    lines = rewriteBlock(lines, "<!-- issuemd:guide:begin -->", "<!-- issuemd:guide:end -->", guideBlockLines());
-    lines = rewriteBlock(lines, "<!-- issuemd:statuses:begin -->", "<!-- issuemd:statuses:end -->", statusBlockLines());
+    // Only the owning section counts. A lookalike marker indented under a
+    // list in 附录 used to make the rewrite silently do nothing ("(no
+    // changes)", exit 0) while check kept failing. Each block is rewritten
+    // against a fresh parse because the first rewrite shifts every later line.
+    const blocks = [
+      { title: "怎么用", begin: "<!-- issuemd:guide:begin -->", end: "<!-- issuemd:guide:end -->", content: guideBlockLines() },
+      { title: "状态口径", begin: "<!-- issuemd:statuses:begin -->", end: "<!-- issuemd:statuses:end -->", content: statusBlockLines() },
+    ];
+    for (const block of blocks) {
+      const section = parseLedger(lines.join("\n")).sections
+        .find((candidate) => candidate.level === 2 && candidate.title === block.title);
+      if (!section) return err(`issuemd sync --guide: the ${block.title} section is missing\n`, 3);
+      const range = { start: section.line_start, end: section.line_end };
+      if (!markerPair(lines, block.begin, block.end, range)) {
+        return err(
+          `issuemd sync --guide: 「${block.title}」 must contain exactly one ordered ${block.begin} / ${block.end} pair\n`,
+          3,
+        );
+      }
+      lines = rewriteBlock(lines, block.begin, block.end, block.content, range);
+    }
     return commit(file, loaded, errors, lines, !!v["dry-run"]);
   }
 

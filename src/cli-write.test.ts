@@ -417,6 +417,28 @@ describe("sync --guide", () => {
     expect((await clean(path)).code).toBe(0);
   });
 
+  test("a marker lookalike outside the section does not disable the rewrite", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path)
+      .replace("| 关闭 | `issuemd close FILE ID --criteria-from-body` |\n", "")
+      .replace("## 附录", "## 附录\n\n- 标记示例\n\n  <!-- issuemd:guide:begin -->\n  <!-- issuemd:guide:end -->"));
+    const result = await run(["sync", path, "--guide"]);
+    expect(result.code).toBe(0);
+    expect(text(path)).toContain("| 关闭 | `issuemd close FILE ID --criteria-from-body` |");
+    // The lookalike stays where it was.
+    expect(text(path)).toContain("  <!-- issuemd:guide:begin -->");
+  });
+
+  test("a broken marker pair is an error, not a silent no-op", async () => {
+    const path = ledger();
+    writeFileSync(path, text(path).replace("<!-- issuemd:guide:end -->\n", ""));
+    const before = readFileSync(path);
+    const result = await run(["sync", path, "--guide"]);
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain("exactly one ordered");
+    expect(readFileSync(path)).toEqual(before);
+  });
+
   test("a second sync --guide is a no-op", async () => {
     const path = ledger();
     await run(["sync", path, "--guide"]);
@@ -746,6 +768,22 @@ describe("third review round", () => {
     const renamed = await run(["rename", path, "2", "Escape #"]);
     expect(renamed.code).toBe(2);
     expect(renamed.stderr).toContain("ends with '#'");
+  });
+
+  test("reopen restores the body kept by close --keep-body", async () => {
+    const path = ledger();
+    expect((await run(["close", path, "2", "--keep-body"])).code).toBe(0);
+    expect(text(path)).toContain("（已关闭，正文保留）");
+    const result = await run(["reopen", path, "2"]);
+    expect(result.code).toBe(0);
+    const after = text(path);
+    expect(after).not.toContain("（已关闭，正文保留）");
+    expect(after).toContain("### Issue 2: 侧栏宽度不可调");
+    expect(after).toContain("**现象**：侧栏固定 240px，无法拖拽。");
+    expect(after).toContain("**验收判据**：重启后保持上次宽度。");
+    const { report } = await clean(path);
+    expect(report.errors).toEqual([]);
+    expect(report.warnings.filter((warning: { code: string }) => warning.code === "W250")).toEqual([]);
   });
 
   test("a write refuses a file that is not valid UTF-8", async () => {
