@@ -76,7 +76,7 @@ Usage:
 
 Options:
   --json                    machine-readable JSON output
-  --strict                  check: fail on warnings
+  --strict                  check: fail on warnings (W250 is informational and never fails)
   --verify-commits          check: verify commit references in the ledger directory
   --status <S>              list: filter by status
   --priority <P>            list: filter by priority
