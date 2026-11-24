@@ -1239,3 +1239,17 @@ test("probe: close --keep-body refuses a hand-written unfenced marker in the bod
   expect((await run(["close", path, "1", "--keep-body"])).code).toBe(3);
   expect(text(path)).toBe(before);
 });
+
+test("probe: writes refuse a read-only ledger; dry-run still previews", async () => {
+  const { chmodSync } = await import("node:fs");
+  const path = file();
+  chmodSync(path, 0o444);
+  const before = text(path);
+  const dry = await run(["new", path, "--title", "t", "--dry-run"]);
+  expect(dry.code).toBe(0);
+  const real = await run(["new", path, "--title", "t"]);
+  expect(real.code).toBe(2);
+  expect(real.stderr).toContain("read-only");
+  expect(text(path)).toBe(before);
+  chmodSync(path, 0o644);
+});

@@ -131,6 +131,7 @@ Writes are optimistic: each command re-checks the file just before replacing it.
 - **The summary and the body title are the same string.** Don't shorten one; `rename` changes both.
 - **Escape pipes inside cells** as `\|` — including inside backticks. Too many cells is `E108`, whose message says so.
 - **A title may not end with ` #`** — Markdown strips the trailing hash from the body heading, so it could never match the table summary. `new` / `rename` refuse it up front.
+- **Writes respect a read-only file** (`chmod 444`): exit `2`, nothing written; `--dry-run` still previews.
 - **Writes refuse files they would corrupt.** A ledger that is not valid UTF-8, or that mixes LF and CRLF, gets exit `2` with an explanation instead of a silently re-encoded rewrite.
 - **Ids are `\d+[a-z]?`** (`393b` is real) and are never recycled. `new FILE --id N` with `N` at or below the highest existing id still writes, but prints `W211` — don't reuse a number just because its row is gone.
 - **`--body-file` may not contain `#` / `##` headings** (they would end the issue block while `check` still passed) and may not end inside an open fence; `###` or Setext headings are refused by the write gate (`E110`). A leading BOM and leading blank lines are stripped, so writing back `body.text` minus its heading changes nothing. The line `<!-- issuemd:kept-body:end -->` is refused outside a code fence.

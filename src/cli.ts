@@ -21,7 +21,7 @@
 
 import { createHash } from "node:crypto";
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
@@ -725,6 +725,8 @@ function commit(
   const unchanged = newLines.length === loaded.lines.length &&
     newLines.every((line, index) => line === loaded.lines[index]);
   if (unchanged) return ok("");
+  const readOnly = readOnlyRefusal(file, loaded);
+  if (readOnly) return readOnly;
   try {
     const written = writeAtomically(loaded.path, content, loaded.doc.stat);
     if (!written.ok) {
@@ -734,6 +736,20 @@ function commit(
     return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
   }
   return { code: 0, stdout: "", stderr: hardLinkNote(file, loaded) };
+}
+
+/**
+ * An atomic replace only needs the directory to be writable, so a ledger
+ * someone made read-only (chmod 444, to protect it) would be rewritten
+ * anyway. Honour the mode: dry-runs still work, real writes do not.
+ */
+function readOnlyRefusal(file: string, loaded: Loaded): CliResult | undefined {
+  try {
+    accessSync(loaded.path, fsConstants.W_OK);
+    return undefined;
+  } catch {
+    return err(`issuemd: refusing to write '${file}': the file is read-only (make it writable first); nothing written\n`, 2);
+  }
 }
 
 /** The atomic rename gives the ledger a new inode; other hard links keep the old one. */
@@ -1487,6 +1503,8 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
   const unchanged = result.lines.length === loaded.lines.length &&
     result.lines.every((line, index) => line === loaded.lines[index]);
   if (!unchanged) {
+    const readOnly = readOnlyRefusal(file, loaded);
+    if (readOnly) return readOnly;
     try {
       const written = writeAtomically(loaded.path, target, loaded.doc.stat);
       if (!written.ok) return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 4);
