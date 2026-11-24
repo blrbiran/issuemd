@@ -19,6 +19,7 @@
  *   3  ledger validation failed
  */
 
+import { createHash } from "node:crypto";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -81,16 +82,16 @@ const COMMANDS = {
   show: { usage: "issuemd show    FILE ID [--json] [--label NAME]", options: ["json", "label"] },
   counts: { usage: "issuemd counts  FILE [--json]", options: ["json"] },
   read: { usage: "issuemd read    FILE <H2 heading>", options: [] },
-  new: { usage: "issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]", options: ["title", "id", "status", "priority", "body-file", "dry-run"] },
-  close: { usage: "issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]", options: ["status", "criteria", "criteria-from-body", "no-criteria", "keep-body", "dry-run"] },
-  reopen: { usage: "issuemd reopen  FILE ID [--status S]", options: ["status", "dry-run"] },
-  status: { usage: "issuemd status  FILE ID NEW_STATUS", options: ["dry-run"] },
-  rename: { usage: "issuemd rename  FILE ID \"NEW TITLE\"", options: ["dry-run"] },
-  body: { usage: "issuemd body    FILE ID --body-file PATH|-", options: ["body-file", "dry-run"] },
-  priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run"] },
-  split: { usage: "issuemd split   FILE ID", options: ["dry-run"] },
-  sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress]]", options: ["guide", "fix-tables", "titles", "prefer", "move-progress", "drop-progress", "dry-run"] },
-  adopt: { usage: "issuemd adopt   FILE [--dry-run] [--report PATH]", options: ["dry-run", "report"] },
+  new: { usage: "issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]", options: ["title", "id", "status", "priority", "body-file", "dry-run", "if-unchanged"] },
+  close: { usage: "issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]", options: ["status", "criteria", "criteria-from-body", "no-criteria", "keep-body", "dry-run", "if-unchanged"] },
+  reopen: { usage: "issuemd reopen  FILE ID [--status S]", options: ["status", "dry-run", "if-unchanged"] },
+  status: { usage: "issuemd status  FILE ID NEW_STATUS", options: ["dry-run", "if-unchanged"] },
+  rename: { usage: "issuemd rename  FILE ID \"NEW TITLE\"", options: ["dry-run", "if-unchanged"] },
+  body: { usage: "issuemd body    FILE ID --body-file PATH|-", options: ["body-file", "dry-run", "if-unchanged"] },
+  priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run", "if-unchanged"] },
+  split: { usage: "issuemd split   FILE ID", options: ["dry-run", "if-unchanged"] },
+  sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress]]", options: ["guide", "fix-tables", "titles", "prefer", "move-progress", "drop-progress", "dry-run", "if-unchanged"] },
+  adopt: { usage: "issuemd adopt   FILE [--dry-run] [--report PATH]", options: ["dry-run", "report", "if-unchanged"] },
 } as const satisfies Record<string, { usage: string; options: readonly string[] }>;
 type Command = keyof typeof COMMANDS;
 
@@ -122,7 +123,10 @@ const OPTION_HELP: Record<string, string> = {
   "move-progress": "--move-progress           sync --titles: move progress text into the body",
   "drop-progress": "--drop-progress           sync --titles: discard progress text",
   report: "--report <path>           adopt: write the decision list to a new file (or over an earlier report)",
-  "dry-run": "--dry-run                 write: print a unified diff, don't modify the file",
+  "dry-run": "--dry-run                 write: print a unified diff, don't modify the file; stderr gives its snapshot",
+  "if-unchanged":
+    "--if-unchanged <S>        write: exit 4 unless the file still has snapshot S (printed by --dry-run;\n" +
+    "                            also the `snapshot` field of JSON views), so you apply what you reviewed",
 };
 
 const READ_COMMANDS: Command[] = ["check", "list", "show", "counts", "read"];
@@ -178,6 +182,7 @@ const OPTIONS = {
   label: { type: "string" },
   // shared write options
   "dry-run": { type: "boolean" },
+  "if-unchanged": { type: "string" },
   // new
   title: { type: "string" },
   id: { type: "string" },
@@ -236,6 +241,10 @@ export async function run(argv: string[]): Promise<CliResult> {
     }
   } else if (values.help) {
     return ok(HELP);
+  }
+  const expected = values["if-unchanged"];
+  if (expected != null && !SNAPSHOT.test(expected)) {
+    return err(`issuemd: --if-unchanged expects the 16-hex-digit snapshot printed by --dry-run or a --json view, got '${expected}'\n`, 2);
   }
 
   switch (head) {
@@ -335,7 +344,9 @@ function cmdCheck(rest: string[], v: Values): CliResult {
       verifyCommits: v["verify-commits"],
     });
     const code = report.ok ? 0 : 3;
-    if (v.json) return { code, stdout: JSON.stringify(report, null, 2) + "\n", stderr: "" };
+    if (v.json) {
+      return { code, stdout: JSON.stringify({ ...report, snapshot: snapshotOf(loaded.src) }, null, 2) + "\n", stderr: "" };
+    }
     const lines = [`file: ${file}`, summaryLine(report.counts)];
     for (const [severity, diagnostics] of [["error", report.errors], ["warning", report.warnings]] as const) {
       const groups = new Map<string, Diagnostic[]>();
@@ -406,6 +417,7 @@ function cmdList(rest: string[], v: Values): CliResult {
     const body = JSON.stringify(
       {
         file,
+        snapshot: snapshotOf(loaded.src),
         table,
         rowCount: rows.length,
         issueCount: issues.reduce((sum, issue) => sum + issue.count, 0),
@@ -447,7 +459,7 @@ function cmdCounts(rest: string[], v: Values): CliResult {
   const unusable = unusableLedger(ledger);
   if (unusable) return unusable;
   const stderr = unreadableNote(ledger);
-  if (v.json) return { code: 0, stdout: JSON.stringify({ file, counts: report.counts }, null, 2) + "\n", stderr };
+  if (v.json) return { code: 0, stdout: JSON.stringify({ file, snapshot: snapshotOf(loaded.src), counts: report.counts }, null, 2) + "\n", stderr };
   return { code: 0, stdout: summaryLine(report.counts) + "\n", stderr };
 }
 
@@ -491,11 +503,11 @@ function cmdShow(rest: string[], v: Values): CliResult {
         stderr: `label ${v.label} in #${view.id} exists but is empty (L${found.line})\n`,
       };
     }
-    if (v.json) return ok(JSON.stringify({ ...view, paragraph: found.text }, null, 2));
+    if (v.json) return ok(JSON.stringify({ ...view, paragraph: found.text, snapshot: snapshotOf(loaded.src) }, null, 2));
     return ok(found.lines.join("\n"));
   }
 
-  if (v.json) return ok(JSON.stringify(view, null, 2));
+  if (v.json) return ok(JSON.stringify({ ...view, snapshot: snapshotOf(loaded.src) }, null, 2));
 
   const lines = [`#${view.id}  ${view.status}  ${view.priority || "-"}  ${view.summary}`];
   lines.push(`L${view.body?.line ?? view.line}-${view.body?.end ?? view.end}`);
@@ -549,7 +561,22 @@ function cmdRead(rest: string[]): CliResult {
  * rename (dogfood #19). `links` > 1 means other hard links exist; they keep
  * the old inode after a rename, which callers are warned about.
  */
-type Loaded = { doc: Document; lines: string[]; path: string; links: number };
+type Loaded = { doc: Document; lines: string[]; path: string; links: number; snapshot: string };
+
+/**
+ * A short content hash of the file's bytes (dogfood #18). Read views report
+ * it, `--dry-run` prints it, and `--if-unchanged` refuses a write when the
+ * file no longer has it — closing the gap between a reviewed preview and the
+ * real run that E130 (which only guards one command's own read) cannot see.
+ */
+export function snapshotOf(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex").slice(0, 16);
+}
+const SNAPSHOT = /^[0-9a-f]{16}$/;
+
+function snapshotNote(loaded: Loaded): string {
+  return `snapshot: ${loaded.snapshot} (apply exactly this preview: add --if-unchanged ${loaded.snapshot})\n`;
+}
 
 /** Load a file for writing. Stdin is refused: there is nothing to write back. */
 /**
@@ -579,7 +606,7 @@ function writeBlockReason(file: string): "utf8" | "eol" | undefined {
   return undefined;
 }
 
-function loadWritable(file: string): Loaded | CliResult {
+function loadWritable(file: string, expected?: string): Loaded | CliResult {
   if (file === "-") return err("issuemd: write commands do not support stdin ('-')\n", 2);
   try {
     const path = lstatSync(file).isSymbolicLink() ? realpathSync(file) : file;
@@ -605,7 +632,15 @@ function loadWritable(file: string): Loaded | CliResult {
     const lines = doc.text === ""
       ? []
       : (doc.finalNewline ? doc.text.slice(0, -1) : doc.text).split("\n");
-    return { doc, lines, path, links };
+    const snapshot = snapshotOf(joinDocument(lines, doc));
+    if (expected != null && expected !== snapshot) {
+      return err(
+        `issuemd: E130 '${file}' changed since snapshot ${expected} (now ${snapshot}); ` +
+          "re-read or re-run the dry-run, review again, then retry\n",
+        4,
+      );
+    }
+    return { doc, lines, path, links, snapshot };
   } catch (e) {
     return err(`issuemd: cannot open '${file}': ${(e as Error).message}\n`, 2);
   }
@@ -673,7 +708,7 @@ function commit(
   }
   if (dryRun) {
     const diff = unifiedDiff(loaded.lines, newLines, file);
-    return ok(diff || "(no changes)\n");
+    return { code: 0, stdout: diff || "(no changes)\n", stderr: snapshotNote(loaded) };
   }
   const unchanged = newLines.length === loaded.lines.length &&
     newLines.every((line, index) => line === loaded.lines[index]);
@@ -697,8 +732,11 @@ function hardLinkNote(file: string, loaded: Loaded): string {
 }
 
 /** Ledger view plus the exact bytes it came from, for write verbs. */
-function openLedger(file: string): { loaded: Loaded; ledger: ReturnType<typeof parseLedger>; errors: Diagnostic[] } | CliResult {
-  const loaded = loadWritable(file);
+function openLedger(
+  file: string,
+  expected?: string,
+): { loaded: Loaded; ledger: ReturnType<typeof parseLedger>; errors: Diagnostic[] } | CliResult {
+  const loaded = loadWritable(file, expected);
   if ("code" in loaded) return loaded;
   const ledger = parseLedger(loaded.lines.join("\n"));
   const unusable = unusableLedger(ledger);
@@ -820,7 +858,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
     );
   }
 
-  const opened = openLedger(file);
+  const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
 
@@ -907,7 +945,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
   if (criteriaFlags > 1) {
     return err("issuemd close: choose one of --criteria, --criteria-from-body, --no-criteria\n", 2);
   }
-  const opened = openLedger(file);
+  const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
 
@@ -1027,7 +1065,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   if (statusCategory(reopenStatus) !== "open") {
     return err(`issuemd reopen: --status expects an open status (未决 / 部分解决 / 观察), got '${reopenStatus}'\n`, 2);
   }
-  const opened = openLedger(file);
+  const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
 
@@ -1121,7 +1159,7 @@ function cmdStatus(rest: string[], v: Values): CliResult {
     return err("usage: issuemd status FILE ID NEW_STATUS\n", 2);
   }
   if (!statusCategory(next)) return err(`issuemd status: unknown status '${next}'\n`, 2);
-  const opened = openLedger(file);
+  const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
 
@@ -1159,7 +1197,7 @@ function cmdRename(rest: string[], v: Values): CliResult {
   if (next === "") return err("issuemd rename: title must not be empty\n", 2);
   const badTitle = titleEndsWithHash(next);
   if (badTitle) return err(`issuemd rename: ${badTitle}\n`, 2);
-  const opened = openLedger(file);
+  const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
 
@@ -1201,7 +1239,7 @@ function cmdBody(rest: string[], v: Values): CliResult {
   }
   const read = readBodyFile(v["body-file"], "body");
   if ("code" in read) return read;
-  const opened = openLedger(file);
+  const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
   const found = findRow(ledger, idText);
@@ -1235,7 +1273,7 @@ function cmdPriority(rest: string[], v: Values): CliResult {
   if (!PRIORITIES.includes(next)) {
     return err(`issuemd priority: expected one of ${PRIORITIES.filter(Boolean).join(", ")} or "", got '${next}'\n`, 2);
   }
-  const opened = openLedger(file);
+  const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
   const found = findRow(ledger, idText);
@@ -1255,7 +1293,7 @@ function cmdPriority(rest: string[], v: Values): CliResult {
 function cmdSplit(rest: string[], v: Values): CliResult {
   const [file, idText] = rest;
   if (file == null || idText == null || rest.length !== 2) return err(`usage: ${COMMANDS.split.usage}\n`, 2);
-  const opened = openLedger(file);
+  const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
   const found = findRow(ledger, idText);
@@ -1296,7 +1334,7 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
   if (file == null || rest.length !== 1) {
     return err("usage: issuemd adopt FILE [--dry-run] [--report PATH]\n", 2);
   }
-  const loaded = loadWritable(file);
+  const loaded = loadWritable(file, v["if-unchanged"]);
   if ("code" in loaded) return loaded;
   if (v.report != null) {
     const refused = reportTargetProblem(file, v.report);
@@ -1348,7 +1386,7 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
     const failed = writeReport();
     if (failed) return failed;
     const diff = unifiedDiff(loaded.lines, result.lines, file);
-    return ok((diff || "(no changes)\n") + "\n" + report);
+    return { code: 0, stdout: (diff || "(no changes)\n") + "\n" + report, stderr: snapshotNote(loaded) };
   }
   const unchanged = result.lines.length === loaded.lines.length &&
     result.lines.every((line, index) => line === loaded.lines[index]);
@@ -1457,7 +1495,7 @@ function cmdSync(rest: string[], v: Values): CliResult {
     return err(`issuemd sync: --prefer expects body or table, got '${prefer}'\n`, 2);
   }
 
-  const opened = openLedger(file);
+  const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
   let lines = loaded.lines;

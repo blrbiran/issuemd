@@ -113,7 +113,7 @@ If `--titles` reports W260 (a table summary carries progress text the body title
 
 Writes are optimistic: each command re-checks the file just before replacing it. If someone else wrote in between, it refuses with **exit `4`** (`E130 … changed after it was read`) and changes nothing. Then: re-read (`show` / `list`), decide again, retry the command. Exit `4` is the only retryable code — `2` is your usage error, `3` is the ledger.
 
-- `--dry-run` previews the file *as it is now*; it is not a lock. A later real write still re-checks and may exit `4`.
+- `--dry-run` previews the file *as it is now*; it is not a lock. It prints `snapshot: S` on stderr. To apply exactly what you reviewed, run the real command with `--if-unchanged S`: if anyone wrote in between, it exits `4` and changes nothing — re-run the dry-run and review again. Every `--json` read view (`show`, `list`, `counts`, `check`) carries the same `snapshot` field, so "read, decide, write" works the same way: `show --json` → decide → `close … --if-unchanged S`.
 - Don't have two agents edit the same issue at once; if a `close` says "already closed", someone else closed it — re-read before acting.
 - Use one path for a shared ledger. A symlink is fine (writes go through to the target); a hard link is not (the other name keeps the old content after a write — you get a warning).
 

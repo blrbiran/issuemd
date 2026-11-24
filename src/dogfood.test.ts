@@ -878,3 +878,52 @@ describe("#52 issue tables outside 索引/已关闭 are not invisible", () => {
     expect(appendix).not.toContain("| # |");
   });
 });
+
+describe("#18 --if-unchanged applies exactly what was reviewed", () => {
+  const snapshotOf = (stderr: string) => /snapshot: ([0-9a-f]{16})/.exec(stderr)?.[1];
+
+  test("dry-run prints a snapshot; the real run with it succeeds", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    const preview = await run(["status", path, "1", "观察", "--dry-run"]);
+    expect(preview.code).toBe(0);
+    const token = snapshotOf(preview.stderr);
+    expect(token).toBeDefined();
+    expect((await run(["status", path, "1", "观察", "--if-unchanged", token!])).code).toBe(0);
+    expect(text(path)).toContain("| 1 | 观察 |");
+  });
+
+  test("a write in between makes the reviewed run exit 4, bytes untouched", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    const token = snapshotOf((await run(["close", path, "1", "--dry-run"])).stderr)!;
+    expect((await run(["status", path, "1", "部分解决"])).code).toBe(0);
+    const before = text(path);
+    for (const args of [["close", path, "1"], ["close", path, "1", "--dry-run"]]) {
+      const result = await run([...args, "--if-unchanged", token]);
+      expect(result.code).toBe(4);
+      expect(result.stderr).toContain("changed since");
+    }
+    expect(text(path)).toBe(before);
+  });
+
+  test("read --json views carry the same snapshot", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    const token = snapshotOf((await run(["rename", path, "1", "乙", "--dry-run"])).stderr);
+    expect(token).toMatch(/^[0-9a-f]{16}$/);
+    for (const args of [["show", path, "1"], ["list", path], ["counts", path], ["check", path]]) {
+      expect(JSON.parse((await run([...args, "--json"])).stdout).snapshot).toBe(token);
+    }
+  });
+
+  test("adopt honours it too", async () => {
+    const path = file(TEMPLATE.replace("## 索引", "## 待处理\n\n| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 7 | 未决 | P2 | 旧 |\n\n## 索引"));
+    const before = text(path);
+    expect((await run(["adopt", path, "--if-unchanged", "0000000000000000"])).code).toBe(4);
+    expect(text(path)).toBe(before);
+  });
+
+  test("a malformed token is a usage error; read commands reject the flag", async () => {
+    const path = await withIssue("**现象**：a\n\n**验收判据**：x\n");
+    expect((await run(["status", path, "1", "观察", "--if-unchanged", "abc"])).code).toBe(2);
+    expect((await run(["list", path, "--if-unchanged", "0000000000000000"])).code).toBe(2);
+  });
+});
