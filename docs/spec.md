@@ -420,6 +420,14 @@ error: #56 当前 观察（open），目标 已修（closed）跨分类，请用
 
 从已关闭表删行 → 索引插入行 → 正文插入骨架（判据回填进 `**验收判据**`）。若 `close --keep-body` 在附录留了 `### #N …（已关闭，正文保留）` 归档（以 `<!-- issuemd:kept-body:end -->` 收尾；没有该标记的旧归档取到该 H3 结束），则原样恢复该正文并删掉归档，`close --keep-body` + `reopen` 逐字节还原；否则原文不可恢复，只保留判据——这是「关闭即删正文」的已知代价，`--keep-body` 是逃生口。
 
+### 7.5a `body` / `priority` / `split`（2026-11-24 补齐，设计见 `docs/superpowers/specs/2026-11-24-ledger-verbs-design.md`）
+
+- `body FILE ID --body-file PATH|-`：替换开放 issue 标题以下的正文；输入规则同 `new --body-file`；已关闭 id exit 2；缺正文块时按编号位置新建。
+- `priority FILE ID P`：只改 `P` 单元格，开放/已关闭都行；`P` 只能是 `P0`–`P3` 或空。
+- `split FILE ID`：把 ID 所在的多号行或区间行拆成每号一行（字段原样复制、升序原位）；开放表里拆出的号没有正文时补骨架；单号行 exit 2；超过 1000 个号 exit 2。
+- `reopen --status S`：S 必须是开放分类，默认 `未决`。
+- 所有 per-id 命令（close/reopen/status/rename/body/priority）对多号行、区间行用同一句话拒绝，并给出 `issuemd split FILE <id>`；`close`/`reopen` 先判行形状、再判开关状态。
+
 ### 7.6 `counts`
 
 ```bash
@@ -482,9 +490,12 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 台账写（全部 --dry-run，原子写且保持 BOM/行尾/模式位）
   issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]
   issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]
-  issuemd reopen  FILE ID
+  issuemd reopen  FILE ID [--status S]
   issuemd status  FILE ID NEW_STATUS
   issuemd rename  FILE ID "NEW TITLE"
+  issuemd body    FILE ID --body-file PATH|-
+  issuemd priority FILE ID P0|P1|P2|P3|""
+  issuemd split   FILE ID
   issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
                         [--move-progress | --drop-progress]]
 

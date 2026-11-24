@@ -83,9 +83,12 @@ const COMMANDS = {
   read: { usage: "issuemd read    FILE <H2 heading>", options: [] },
   new: { usage: "issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]", options: ["title", "id", "status", "priority", "body-file", "dry-run"] },
   close: { usage: "issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]", options: ["status", "criteria", "criteria-from-body", "no-criteria", "keep-body", "dry-run"] },
-  reopen: { usage: "issuemd reopen  FILE ID", options: ["dry-run"] },
+  reopen: { usage: "issuemd reopen  FILE ID [--status S]", options: ["status", "dry-run"] },
   status: { usage: "issuemd status  FILE ID NEW_STATUS", options: ["dry-run"] },
   rename: { usage: "issuemd rename  FILE ID \"NEW TITLE\"", options: ["dry-run"] },
+  body: { usage: "issuemd body    FILE ID --body-file PATH|-", options: ["body-file", "dry-run"] },
+  priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run"] },
+  split: { usage: "issuemd split   FILE ID", options: ["dry-run"] },
   sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress]]", options: ["guide", "fix-tables", "titles", "prefer", "move-progress", "drop-progress", "dry-run"] },
   adopt: { usage: "issuemd adopt   FILE [--dry-run] [--report PATH]", options: ["dry-run", "report"] },
 } as const satisfies Record<string, { usage: string; options: readonly string[] }>;
@@ -97,7 +100,7 @@ const OPTION_HELP: Record<string, string> = {
   strict: "--strict                  check: fail on warnings (W250 is informational and never fails)",
   "verify-commits": "--verify-commits          check: verify commit references in the ledger directory (W240)",
   status:
-    "--status <S>              list: filter; new: initial open status (未决); close: closed status (已修)",
+    "--status <S>              list: filter; new/reopen: open status (未决); close: closed status (已修)",
   priority:
     "--priority <P>            list: filter by priority; new: P0–P3 or \"\" (default P2)",
   closed: "--closed                  list: show the closed table instead of the index",
@@ -105,7 +108,7 @@ const OPTION_HELP: Record<string, string> = {
   label: "--label <NAME>            show: print only the **NAME** block",
   title: "--title <T>               new: summary/body title (starts with '-'? write --title=\"-…\")",
   id: "--id <N>                  new: explicit issue id",
-  "body-file": "--body-file <path|->      new: body text under the heading (no `### Issue` line), or '-' for stdin",
+  "body-file": "--body-file <path|->      new/body: body text under the heading (no `### Issue` line), or '-' for stdin",
   criteria: "--criteria <TEXT>         close: criteria column text",
   "criteria-from-body":
     "--criteria-from-body      close: lift the **验收判据** block into the column (the default\n" +
@@ -256,6 +259,12 @@ export async function run(argv: string[]): Promise<CliResult> {
       return cmdStatus(positionals.slice(1), values);
     case "rename":
       return cmdRename(positionals.slice(1), values);
+    case "body":
+      return cmdBody(positionals.slice(1), values);
+    case "priority":
+      return cmdPriority(positionals.slice(1), values);
+    case "split":
+      return cmdSplit(positionals.slice(1), values);
     case "sync":
       return cmdSync(positionals.slice(1), values);
     case "adopt":
@@ -719,6 +728,17 @@ function bodyInsertAt(
   return last ? last.end + 1 : bodySectionEnd + 1;
 }
 
+/**
+ * A row holding several ids, or a range, cannot be changed for one id. Every
+ * per-id verb refuses it the same way and names the command that fixes it.
+ */
+function perIdRefusal(verb: string, idText: string, found: NonNullable<ReturnType<typeof findRow>>): CliResult | null {
+  if (!found.inRange && found.row.ids.length === 1) return null;
+  const ids = found.row.ids.map(spanText).join(", ");
+  const what = found.row.ids.length > 1 ? `shares a row with other ids (${ids})` : `is inside the range ${ids}`;
+  return err(`issuemd ${verb}: #${idText} ${what}; split the row first: issuemd split FILE ${idText}\n`, 2);
+}
+
 /** Rows in `status`'s category, used by close/reopen/status decisions. */
 function statusCategory(status: string): "open" | "closed" | undefined {
   return Object.hasOwn(STATUS_CLASSES, status)
@@ -745,7 +765,7 @@ function titleEndsWithHash(title: string): string | null {
 }
 
 /** `--body-file PATH|-` wins over the default skeleton; a bare `-` is stdin. */
-function readBodyFile(spec: string): { lines: string[] } | CliResult {
+function readBodyFile(spec: string, verb = "new"): { lines: string[] } | CliResult {
   try {
     const raw = spec === "-" ? readFileSync(0, "utf8") : readFileSync(spec, "utf8");
     // A UTF-8 BOM is an encoding marker, not body text. Left in place it ends
@@ -756,7 +776,7 @@ function readBodyFile(spec: string): { lines: string[] } | CliResult {
     // An unclosed fence would swallow every heading after the body — including
     // `## 附录` — and `check` would still pass, so refuse it up front.
     if (endsInFence(lines)) {
-      return err("issuemd new: --body-file ends inside an unclosed code fence\n", 2);
+      return err(`issuemd ${verb}: --body-file ends inside an unclosed code fence\n`, 2);
     }
     // A top-level heading inside a body ends the issue block early: `show`
     // stops at it and `close` leaves it behind as orphaned content, all while
@@ -765,7 +785,7 @@ function readBodyFile(spec: string): { lines: string[] } | CliResult {
     const heading = lines.findIndex((line, index) => !fenced[index] && /^ {0,3}#{1,2}(?:[ \t]|$)/.test(line));
     if (heading !== -1) {
       return err(
-        `issuemd new: --body-file may not contain a top-level heading (## or #): '${lines[heading]!.trim()}'.\n` +
+        `issuemd ${verb}: --body-file may not contain a top-level heading (## or #): '${lines[heading]!.trim()}'.\n` +
           "Use **bold labels** inside an issue body.\n",
         2,
       );
@@ -893,20 +913,11 @@ function cmdClose(rest: string[], v: Values): CliResult {
 
   const found = findRow(ledger, idText);
   if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  // Same row, same diagnosis for every per-id verb: check the row shape
+  // before "already closed", or a multi-id closed row reads as a state error.
+  const refused = perIdRefusal("close", idText, found);
+  if (refused) return refused;
   if (found.table === "closed") return err(`issuemd close: #${idText} is already closed\n`, 2);
-  if (found.inRange) {
-    return err(
-      `issuemd close: #${idText} is inside retired range ${spanText(found.span)}; close a concrete issue instead\n`,
-      2,
-    );
-  }
-  if (found.row.ids.length > 1) {
-    return err(
-      `issuemd close: #${idText} shares a row with other ids (${found.row.ids.map(spanText).join(", ")}); ` +
-        "split the row first\n",
-      2,
-    );
-  }
   const status = v.status ?? "已修";
   if (statusCategory(status) !== "closed") {
     return err(`issuemd close: '${status}' is not a closed status\n`, 2);
@@ -1010,7 +1021,11 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   const file = rest[0];
   const idText = rest[1];
   if (file == null || idText == null || rest.length !== 2) {
-    return err("usage: issuemd reopen FILE ID\n", 2);
+    return err(`usage: ${COMMANDS.reopen.usage}\n`, 2);
+  }
+  const reopenStatus = v.status ?? "未决";
+  if (statusCategory(reopenStatus) !== "open") {
+    return err(`issuemd reopen: --status expects an open status (未决 / 部分解决 / 观察), got '${reopenStatus}'\n`, 2);
   }
   const opened = openLedger(file);
   if ("code" in opened) return opened;
@@ -1018,17 +1033,9 @@ function cmdReopen(rest: string[], v: Values): CliResult {
 
   const found = findRow(ledger, idText);
   if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  const refused = perIdRefusal("reopen", idText, found);
+  if (refused) return refused;
   if (found.table === "open") return err(`issuemd reopen: #${idText} is already open\n`, 2);
-  if (found.inRange) {
-    return err(`issuemd reopen: #${idText} is a range; reopen is not supported\n`, 2);
-  }
-  if (found.row.ids.length > 1) {
-    return err(
-      `issuemd reopen: #${idText} shares a row with other ids (${found.row.ids.map(spanText).join(", ")}); ` +
-        "split the row first\n",
-      2,
-    );
-  }
 
   const priority = found.row.priority || "P2";
   const criteria = found.row.criteria.trim();
@@ -1087,7 +1094,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
     return index.end + 1;
   })();
   lines = insertLines(lines, insertAt, [
-    formatRow([spanText(found.span), "未决", priority, found.row.summary]),
+    formatRow([spanText(found.span), reopenStatus, priority, found.row.summary]),
   ]);
 
   // Coordinates for the body block are taken after the index edit landed,
@@ -1120,16 +1127,8 @@ function cmdStatus(rest: string[], v: Values): CliResult {
 
   const found = findRow(ledger, idText);
   if (!found) return noMatch(`(no such issue: ${idText})\n`);
-  if (found.inRange) {
-    return err(`issuemd status: #${idText} is a range; change a concrete issue\n`, 2);
-  }
-  if (found.row.ids.length > 1) {
-    return err(
-      `issuemd status: #${idText} shares a row with other ids (${found.row.ids.map(spanText).join(", ")}); ` +
-        "split the row first\n",
-      2,
-    );
-  }
+  const refused = perIdRefusal("status", idText, found);
+  if (refused) return refused;
   // `status` is also the repair verb for a typo'd word: an undeclared status
   // has no category, so fall back to the table the row actually lives in.
   const from = statusCategory(found.row.status);
@@ -1166,16 +1165,8 @@ function cmdRename(rest: string[], v: Values): CliResult {
 
   const found = findRow(ledger, idText);
   if (!found) return noMatch(`(no such issue: ${idText})\n`);
-  if (found.inRange) {
-    return err(`issuemd rename: #${idText} is a range; rename a concrete issue\n`, 2);
-  }
-  if (found.row.ids.length > 1) {
-    return err(
-      `issuemd rename: #${idText} shares a row with other ids (${found.row.ids.map(spanText).join(", ")}); ` +
-        "split the row first\n",
-      2,
-    );
-  }
+  const refused = perIdRefusal("rename", idText, found);
+  if (refused) return refused;
 
   const lines = [...loaded.lines];
   lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 3, next);
@@ -1195,6 +1186,109 @@ function cmdRename(rest: string[], v: Values): CliResult {
     return { ...result, stderr: result.stderr + "W205: the new title contains a pipe; it was escaped in the table cell\n" };
   }
   return result;
+}
+
+/**
+ * Replace the text under an open issue's heading. The heading stays (it is
+ * the summary); input rules are `new --body-file`'s. Without this verb every
+ * body edit was a hand edit that skipped the write gate (dogfood #16/#24).
+ */
+function cmdBody(rest: string[], v: Values): CliResult {
+  const file = rest[0];
+  const idText = rest[1];
+  if (file == null || idText == null || rest.length !== 2 || v["body-file"] == null) {
+    return err(`usage: ${COMMANDS.body.usage}\n`, 2);
+  }
+  const read = readBodyFile(v["body-file"], "body");
+  if ("code" in read) return read;
+  const opened = openLedger(file);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
+  const found = findRow(ledger, idText);
+  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  const refused = perIdRefusal("body", idText, found);
+  if (refused) return refused;
+  if (found.table === "closed") {
+    return err(`issuemd body: #${idText} is closed; a closed issue has no body (reopen it first)\n`, 2);
+  }
+  const block = bodyBlocks(ledger).find((candidate) => `${candidate.id.start}${candidate.id.suffix}` === idText);
+  let lines = loaded.lines;
+  if (block) {
+    const heading = lines[block.line - 1]!;
+    lines = removeLines(lines, block.line, block.end - block.line + 1);
+    lines = insertBlock(lines, block.line, [heading, "", ...read.lines]);
+  } else {
+    const section = ledger.sections.find((candidate) => candidate.level === 2 && candidate.title === "正文");
+    if (!section) return err("issuemd body: the 正文 section is missing\n", 3);
+    const at = bodyInsertAt(ledger, found.span, section.line_end);
+    lines = insertBlock(lines, at, [`### Issue ${idText}: ${found.row.summary}`, "", ...read.lines]);
+  }
+  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+}
+
+/** Change one row's priority; the only row field that had no verb (dogfood #30). */
+function cmdPriority(rest: string[], v: Values): CliResult {
+  const [file, idText, next] = rest;
+  if (file == null || idText == null || next == null || rest.length !== 3) {
+    return err(`usage: ${COMMANDS.priority.usage}\n`, 2);
+  }
+  if (!PRIORITIES.includes(next)) {
+    return err(`issuemd priority: expected one of ${PRIORITIES.filter(Boolean).join(", ")} or "", got '${next}'\n`, 2);
+  }
+  const opened = openLedger(file);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
+  const found = findRow(ledger, idText);
+  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  const refused = perIdRefusal("priority", idText, found);
+  if (refused) return refused;
+  const lines = [...loaded.lines];
+  lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 2, next);
+  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+}
+
+/**
+ * Split a multi-id (`20, 24, 29`) or range (`7–9`) row into one row per id,
+ * copying every field, so the per-id verbs can act on each (dogfood #44).
+ * Open ids that end up without a body get the label skeleton.
+ */
+function cmdSplit(rest: string[], v: Values): CliResult {
+  const [file, idText] = rest;
+  if (file == null || idText == null || rest.length !== 2) return err(`usage: ${COMMANDS.split.usage}\n`, 2);
+  const opened = openLedger(file);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
+  const found = findRow(ledger, idText);
+  if (!found) return noMatch(`(no such issue: ${idText})\n`);
+  if (!found.inRange && found.row.ids.length === 1) {
+    return err(`issuemd split: #${idText} already has a row of its own\n`, 2);
+  }
+  const LIMIT = 1000;
+  const total = found.row.ids.reduce((sum, span) => sum + (span.end - span.start + 1), 0);
+  if (total > LIMIT) {
+    return err(`issuemd split: the row holds ${total} ids; splitting more than ${LIMIT} is refused (split it by hand in parts)\n`, 2);
+  }
+  const spans: IdSpan[] = found.row.ids
+    .flatMap((span) => Array.from({ length: span.end - span.start + 1 }, (_, at): IdSpan => (
+      span.start === span.end ? span : { start: span.start + at, end: span.start + at, suffix: "" })))
+    .sort(compareIds);
+  const { row, table } = found;
+  const cells = (id: string) => table === "open"
+    ? [id, row.status, row.priority, row.summary]
+    : [id, row.status, row.priority, row.summary, row.criteria];
+  let lines = removeLines(loaded.lines, row.line, 1);
+  lines = insertLines(lines, row.line, spans.map((span) => formatRow(cells(spanText(span)))));
+  if (table === "open") {
+    for (const span of spans) {
+      const fresh = parseLedger(lines.join("\n"));
+      const has = bodyBlocks(fresh).some((block) => compareIds(block.id, span) === 0);
+      if (has) continue;
+      const section = fresh.sections.find((candidate) => candidate.level === 2 && candidate.title === "正文");
+      if (!section) return err("issuemd split: the 正文 section is missing\n", 3);
+      lines = insertBlock(lines, bodyInsertAt(fresh, span, section.line_end), bodySkeleton(spanText(span), row.summary));
+    }
+  }
+  return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
 
 function cmdAdopt(rest: string[], v: Values): CliResult {

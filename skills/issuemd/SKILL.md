@@ -8,7 +8,7 @@ description: |
 
 `issuemd` keeps three places in agreement: the status table, the body blocks, and the criteria. It is a ledger tool only — it has no generic Markdown editing verbs, so every command below is about issues.
 
-The rule that matters: **never hand-edit a status table.** A ledger has structure; use the command that changes all affected places at once, then prove it with `check`. Body *prose* (adding a repro step, updating a root cause) has no dedicated verb yet: edit it by hand, then run `issuemd check FILE` immediately.
+The rule that matters: **never hand-edit a ledger.** A ledger has structure; use the command that changes all affected places at once, then prove it with `check`. That includes body prose: `issuemd body` replaces an open issue's body through the same gate.
 
 ## Check the tool first
 
@@ -64,16 +64,19 @@ issuemd close  FILE 57                                     # promotes the body's
 issuemd close  FILE 57 --status 延后 --criteria "owner: 转设计"
 issuemd close  FILE 57 --keep-body                         # archive the body under 附录
 issuemd status FILE 56 部分解决                            # open→open or closed→closed only
-issuemd reopen FILE 57                                     # back to 未决
+issuemd reopen FILE 57 --status 观察                       # default 未决
 issuemd rename FILE 16 "new summary"                       # table + body title + archive heading
+issuemd body   FILE 16 --body-file new-body.md             # replace an open issue's body text
+issuemd priority FILE 16 P1                                # P0–P3 or ""
+issuemd split  FILE 24                                     # `20, 24, 29` → three rows
 ```
 
 Every one of these is atomic and supports `--dry-run` (a unified diff, one hunk per changed region). Use `--dry-run` first whenever the file is not a scratch copy.
 
 - **`close` never drops criteria silently.** With no flag it promotes the body's `**验收判据**`; if there is none it refuses (exit `2`) — pass `--criteria TEXT`, `--keep-body`, or `--no-criteria` to close without criteria on purpose. `--criteria-from-body` refuses when the block is missing or empty (a fenced example does not count). Lists are joined with `；` in the cell.
 - **`status` refuses to cross the open/closed boundary** — that is a `close`/`reopen`, because crossing changes three places, not one. It also repairs a typo'd status word (`W220`) inside the same table.
-- **`reopen`** puts the issue back as `未决`; the previous open status is not kept. If the body was kept with `--keep-body`, it is restored verbatim and the archive removed; otherwise you get the label skeleton with the criteria filled in.
-- **`--body-file`** is the text that goes *under* `### Issue N: <title>` — never include the heading yourself (it would be a second heading: E105). Minimal file: `printf '**现象**：…\n\n**验收判据**：…\n' > body.md`.
+- **`reopen`** puts the issue back as `未决` (or `--status 观察` / `部分解决`); the status it had before closing is not recorded anywhere. If the body was kept with `--keep-body`, it is restored verbatim and the archive removed; otherwise you get the label skeleton with the criteria filled in.
+- **`--body-file`** (for `new` and `body`) is the text that goes *under* `### Issue N: <title>` — never include the heading yourself (it would be a second heading: E105). Minimal file: `printf '**现象**：…\n\n**验收判据**：…\n' > body.md`. To change one paragraph: take `show FILE ID --json` → `body.text`, drop the heading line, edit, pipe it back with `issuemd body FILE ID --body-file -`.
 - **A title starting with `-`** must be attached with `=`: `--title="--body-file 的语义"`; otherwise you get `Option '--title' argument is ambiguous`.
 - **Priorities are `P0`–`P3` or empty.** `new` refuses anything else; `check` warns `W221` about existing ones.
 - `new` with a summary that already exists prints `W212` (possible duplicate, e.g. after a retry) — check `list` before filing again.
@@ -130,14 +133,13 @@ Writes are optimistic: each command re-checks the file just before replacing it.
 - **Ids are `\d+[a-z]?`** (`393b` is real) and are never recycled. `new FILE --id N` with `N` at or below the highest existing id still writes, but prints `W211` — don't reuse a number just because its row is gone.
 - **`--body-file` may not contain `#` / `##` headings** (they would end the issue block while `check` still passed) and may not end inside an open fence; `###` or Setext headings are refused by the write gate (`E110`). A leading BOM is stripped.
 - **`read` matches a top-level `##` heading exactly** — no regex, no substring, no chain. A duplicate or missing title exits `2` and lists the candidates.
-- **A row that holds several ids, or a range, is read-only for per-id verbs.** `close`, `reopen`, `status` and `rename` all refuse it with exit `2`:
+- **A row that holds several ids, or a range, is read-only for per-id verbs.** `close`, `reopen`, `status`, `rename`, `body` and `priority` all refuse it with exit `2` and the same message:
 
   ```text
-  issuemd reopen: #20 shares a row with other ids (20, 24, 29); split the row first
-  issuemd status: #10 is a range; change a concrete issue
+  issuemd reopen: #20 shares a row with other ids (20, 24, 29); split the row first: issuemd split FILE 20
   ```
 
-  There is no split verb yet: split the row by hand (one row per id, same status/summary/criteria), then `issuemd check`.
+  `issuemd split FILE 20` gives every id its own row (fields copied; open ids get a body skeleton). Ranges over 1000 ids are refused.
 
 ## Writing issues an owner can act on
 

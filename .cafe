@@ -1,0 +1,6 @@
+name: issuemd
+description: issuemd — a CLI and library for single-file Markdown issue ledgers (status table, one "### Issue N:" block per open issue, closed table with acceptance criteria). Ask about ledger format, check/list/show/new/close/status commands, validation errors and warnings.
+tags: [issuemd, issue-ledger, markdown, cli]
+scope: [src, bin, docs, skills, tests]
+role: barista
+concurrency: 1

@@ -586,7 +586,7 @@ export function adopt(src: string): AdoptResult {
         kind: "multi-id-row",
         id: idText,
         line: merged.line,
-        message: `一格多号（${idText}）；已原样保留`,
+        message: `一格多号（${idText}）；已原样保留，需要逐条操作时用 issuemd split FILE ${idText.split(/[,，、\s]+/)[0]} 拆行`,
       });
     }
     if (/[–~-]/.test(idText)) {
@@ -729,7 +729,7 @@ export function adopt(src: string): AdoptResult {
         kind: "id-range",
         id: row.idText,
         line: row.line,
-        message: `索引区间/多号行 ${row.idText} 无法生成正文标题；已留在索引，需人工拆行`,
+        message: `索引区间/多号行 ${row.idText} 无法生成正文标题；已留在索引，用 issuemd split 拆行后会补正文骨架`,
       });
       continue;
     }

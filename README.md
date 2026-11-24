@@ -13,9 +13,12 @@ issuemd read    FILE <H2 heading>
 
 issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-]
 issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]
-issuemd reopen  FILE ID
+issuemd reopen  FILE ID [--status S]
 issuemd status  FILE ID NEW_STATUS
 issuemd rename  FILE ID "NEW TITLE"
+issuemd body    FILE ID --body-file PATH|-
+issuemd priority FILE ID P0|P1|P2|P3|""
+issuemd split   FILE ID
 issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
                       [--move-progress | --drop-progress]]
 issuemd adopt   FILE [--dry-run] [--report PATH]
