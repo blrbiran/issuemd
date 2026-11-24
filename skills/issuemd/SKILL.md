@@ -120,6 +120,7 @@ Writes are optimistic: each command re-checks the file just before replacing it.
 ## Format rules that will bite you
 
 - **A ledger needs `## 索引`, `## 已关闭` and `## 正文`** (plus `## 怎么用` / `## 状态口径`). Missing any of the three core sections is `E120` — "not a ledger"; start from `TEMPLATE.md`.
+- **Issue rows live only in `## 索引` and `## 已关闭`.** An issue table under any other heading (an old `## 待处理`) is not read: `check` reports `E124` per row, its ids are reserved, and `show` exits `3`. Run `issuemd adopt FILE` to move the rows in.
 - **Every table needs a `|---|` separator row.** A block of `|`-lines without it is not a table — it renders as one paragraph of literal pipes (`E122`).
 - **Count issues by id, not by row.** One cell may hold several ids (`| 20, 24, 29 |` is three) or a retired range (`| 1–199 |`).
 - **No headings inside an issue body.** Use `**bold labels**`; `####` inside a body is `E110`. Read one labelled block with `show --label`.

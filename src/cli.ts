@@ -401,7 +401,7 @@ function cmdList(rest: string[], v: Values): CliResult {
   }
   if (v.json) {
     const unreadableRows = ledger.unreadable
-      .filter((row) => row.table === table)
+      .filter((row) => row.table === table || row.table === "stray")
       .map(({ line, reason, ids }) => ({ line, reason, ...(ids ? { ids: ids.map(spanText) } : {}) }));
     const body = JSON.stringify(
       {
@@ -847,7 +847,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
     reusedNumber = /^\d+$/.test(idText) && Number.parseInt(idText, 10) <= max;
     if (findRow(ledger, idText)) return err(`issuemd new: id ${idText} already exists\n`, 2);
     const bad = unreadableHolding(ledger, idText);
-    if (bad) return err(`issuemd new: id ${idText} already exists in an unreadable row (L${bad.line}); fix that row first\n`, 2);
+    if (bad) return err(`issuemd new: id ${idText} already exists in an unreadable row (L${bad.line}: ${bad.reason})\n`, 2);
   }
   const span = parseId(idText);
   if (!span) return err(`issuemd new: '${idText}' is not a valid issue id\n`, 2);

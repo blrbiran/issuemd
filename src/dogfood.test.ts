@@ -800,3 +800,81 @@ describe("#46 adopt reports its conservation check", () => {
     expect(result.stdout + result.stderr).toMatch(/守恒自检：issue 4 → 4/);
   });
 });
+
+describe("#52 issue tables outside 索引/已关闭 are not invisible", () => {
+  const LEGACY = "## 待处理\n\n| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 7 | 未决 | P2 | 遗留表里的一条 |\n\n";
+  const mixed = () => file(TEMPLATE.replace("## 索引", `${LEGACY}## 索引`));
+  const HEADERLESS = "## 待处理\n\n| 7 | 遗留 |\n| 8 | 另一条 |\n\n";
+
+  test("check reports E124 at the stray row and fails (also --strict)", async () => {
+    const path = mixed();
+    const result = await run(["check", path, "--json"]);
+    expect(result.code).toBe(3);
+    const errors = JSON.parse(result.stdout).errors as { code: string; line: number; message: string }[];
+    const e124 = errors.filter((e) => e.code === "E124");
+    expect(e124.length).toBe(1);
+    expect(text(path).split("\n")[e124[0].line - 1]).toStartWith("| 7 |");
+    expect(e124[0].message).toContain("待处理");
+    expect((await run(["check", path, "--strict"])).code).toBe(3);
+  });
+
+  test("a header-less id table under a ledger-table heading counts too", async () => {
+    const path = file(TEMPLATE.replace("## 索引", `${HEADERLESS}## 索引`));
+    const errors = JSON.parse((await run(["check", path, "--json"])).stdout).errors as { code: string }[];
+    expect(errors.filter((e) => e.code === "E124").length).toBe(2);
+  });
+
+  test("tables in 正文/附录 and non-issue tables elsewhere stay quiet", async () => {
+    const notes = "## 复核记录\n\n| 日期 | 结论 |\n|---|---|\n| 2026-11-24 | 通过 |\n\n";
+    const path = file(TEMPLATE.replace("## 索引", `${notes}## 索引`));
+    expect((await run(["new", path, "--title", "甲", "--body-file",
+      body("**现象**：见表\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 3 | 未决 | 引用 |\n")])).code).toBe(0);
+    const errors = JSON.parse((await run(["check", path, "--json"])).stdout).errors as { code: string }[];
+    expect(errors.map((e) => e.code)).not.toContain("E124");
+  });
+
+  test("default numbering skips stray ids", async () => {
+    const path = mixed();
+    expect((await run(["new", path, "--title", "新"])).code).toBe(0);
+    expect(text(path)).toContain("| 8 | 未决 | P2 | 新 |");
+  });
+
+  test("new --id with a stray id is refused, bytes unchanged", async () => {
+    const path = mixed();
+    const before = text(path);
+    const result = await run(["new", path, "--title", "撞号", "--id", "7"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("待处理");
+    expect(text(path)).toBe(before);
+  });
+
+  test("read commands say the result is incomplete; show points at the row", async () => {
+    const path = mixed();
+    const listed = await run(["list", path]);
+    expect(listed.stderr).toContain("待处理");
+    const counts = await run(["counts", path]);
+    expect(counts.stderr).toContain("待处理");
+    const shown = await run(["show", path, "7"]);
+    expect(shown.code).toBe(3);
+    expect(shown.stderr).toContain("adopt");
+  });
+
+  test("adopt migrates the stray row instead of calling the file canonical", async () => {
+    const path = mixed();
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    const shown = await run(["show", path, "7", "--json"]);
+    expect(shown.code).toBe(0);
+    expect(JSON.parse(shown.stdout).status).toBe("未决");
+    expect((await run(["check", path])).code).toBe(0);
+  });
+
+  test("adopt does not copy the empty canonical table headers into 附录", async () => {
+    const path = mixed();
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain("section-prose");
+    const appendix = text(path).split("## 附录")[1]!;
+    expect(appendix).not.toContain("| # |");
+  });
+});

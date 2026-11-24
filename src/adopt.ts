@@ -21,7 +21,7 @@
 
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { parseLedger, splitCells } from "./ledger.js";
+import { isTableSection, parseLedger, splitCells } from "./ledger.js";
 import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
@@ -98,13 +98,6 @@ type Row = {
 const STATUS_WORDS = new Set(Object.keys(STATUS_CLASSES));
 /** A `## 已关闭`-style section, whatever it is exactly called. */
 const isClosedSection = (title: string) => /已关闭|closed/i.test(title);
-/**
- * H2 titles whose tables are ledger data. Verified against the two real
- * layouts: cafe uses `## 状态总览`, orca uses `## 待处理` / `## 已关闭`.
- * A header-less block anywhere else (a body, 附录, an intro section) is prose
- * that happens to use pipes, never a row.
- */
-const isTableSection = (title: string) => /索引|总览|待处理|待办|已关闭|closed|open|issues?/i.test(title);
 /** Sections adopt regenerates itself; every other H2 is preserved verbatim. */
 const KNOWN_SECTION = /^(怎么用|状态口径|索引|已关闭|正文|附录)(?:\s*[（(][^）)]*[）)])?$/;
 /**
@@ -498,6 +491,15 @@ export function adopt(src: string): AdoptResult {
       consumedBlockLines.add(block.line + at);
       const cells = block.cells[at]!;
       if (isSeparator(cells) || isHeader(cells)) layoutLines.add(block.line + at);
+    }
+  }
+  // An empty canonical table (header + separator, no rows) is regenerated
+  // too; a mixed file — canonical skeleton plus a legacy `## 待处理` table
+  // (dogfood #52) — otherwise had both empty headers copied into 附录.
+  for (const block of blocks) {
+    if (consumedBlocks.includes(block) || !isTableSection(block.section)) continue;
+    if (block.cells.every((cells) => isSeparator(cells) || isHeader(cells))) {
+      for (let at = 0; at < block.length; at++) layoutLines.add(block.line + at);
     }
   }
   if (rows.length === 0) {

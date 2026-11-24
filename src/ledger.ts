@@ -27,7 +27,54 @@ export type LedgerRow = {
  * It is not in `rows`, but its ids — when the first cell still parses — are
  * real and must not be reused or reported as missing (dogfood #36).
  */
-export type UnreadableRow = { line: number; table: TableKind; reason: string; ids?: IdSpan[] };
+export type UnreadableRow = { line: number; table: TableKind | "stray"; reason: string; ids?: IdSpan[] };
+
+/**
+ * H2 titles whose tables are ledger data in the pre-canonical layouts (cafe
+ * `## 状态总览`, orca `## 待处理`). adopt migrates them; check reports them.
+ */
+export const isTableSection = (title: string) => /索引|总览|待处理|待办|已关闭|closed|open|issues?/i.test(title);
+const OWN_TABLES = new Set(["怎么用", "状态口径", "索引", "已关闭", "正文", "附录"]);
+const ID_COLUMN = ["#", "编号", "ID", "Id", "id"];
+
+/**
+ * Issue rows sitting under an H2 the ledger does not read (dogfood #52). They
+ * are invisible to every view, so they become E124 + unreadable rows: their
+ * ids are reserved and `show` points at them instead of "no such issue".
+ */
+function strayRows(
+  blocks: PipeBlock[],
+  h2s: Section[],
+  errors: Diagnostic[],
+  unreadable: UnreadableRow[],
+) {
+  for (const block of blocks) {
+    const h2 = h2s.filter((section) => section.line_start < block.line).at(-1);
+    if (!h2 || OWN_TABLES.has(h2.title.replace(/\s*[（(][^）)]*[）)]\s*$/, "").trim())) continue;
+    let idAt: number;
+    let first: number;
+    if (block.header) {
+      const header = block.rows[0];
+      idAt = header.findIndex((cell) => ID_COLUMN.includes(cell));
+      const known = header.some((cell) => ["状态", "摘要", "标题"].includes(cell));
+      if (idAt < 0 || !known) continue;
+      first = 2;
+    } else {
+      const width = block.rows[0].length;
+      if (!isTableSection(h2.title) || width < 2 || width > 5) continue;
+      idAt = 0;
+      first = 0;
+    }
+    block.rows.slice(first).forEach((cells, index) => {
+      const ids = parseIds(cells[idAt] ?? "");
+      if (!ids) return;
+      const line = block.line + first + index;
+      const reason = `issue row under '## ${h2.title}' (outside 索引/已关闭) is not read; run 'issuemd adopt FILE' to move it`;
+      errors.push({ code: "E124", line, message: reason });
+      unreadable.push({ line, table: "stray", reason, ids });
+    });
+  }
+}
 
 type PipeBlock = { line: number; rows: string[][]; header: boolean; separator: boolean };
 export type { PipeBlock };
@@ -213,6 +260,7 @@ export function parseLedger(src: string) {
     if (tables.length !== 1) errors.push({ code: "E112", line: section.line_start, message: `${title} must contain one table` });
     rows[kind] = tables.flatMap((table) => readRows(table, kind, errors, warnings, unreadable));
   }
+  strayRows(blocks, h2s, errors, unreadable);
   return { lines, visible, sections, rows, unreadable, blocks, errors, warnings };
 }
 
