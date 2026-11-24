@@ -998,3 +998,29 @@ describe("#18 --if-unchanged applies exactly what was reviewed", () => {
     expect((await run(["list", path, "--if-unchanged", "0000000000000000"])).code).toBe(2);
   });
 });
+
+/** Round nine: findings from an internal black-box probe (no dogfood number). */
+describe("probe: adopt keeps every row's summary visible", () => {
+  const legacy = (rows: string, closed = "") =>
+    `# T\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n${rows}\n## 已关闭\n\n| # | 状态 | 摘要 | 判据 |\n|---|---|---|---|\n${closed}`;
+
+  test("an issue that stays open keeps the index summary; the closed copy's is reported", async () => {
+    const path = file(legacy("| 11 | 未决 | 开放表的摘要 |\n", "| 11 | 已修 | 关闭表的摘要 | 已在 v2 修复 |\n"));
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    expect(text(path)).toContain("| 11 | 未决 |  | 开放表的摘要 |");
+    expect(text(path)).toContain("### Issue 11: 开放表的摘要");
+    expect(result.stdout).toContain("关闭表的摘要");
+  });
+
+  test("two rows in one table: the dropped summary is named, not called 多张表", async () => {
+    const path = file(legacy("| 12 | 未决 | 甲 |\n| 12 | 未决 | 乙 |\n"));
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    expect(text(path)).toContain("| 12 | 未决 |  | 甲 |");
+    const line = result.stdout.split("\n").find((l) => l.includes("#12") && l.includes("合并"));
+    expect(line).toBeDefined();
+    expect(line).not.toContain("多张表");
+    expect(result.stdout).toContain("乙");
+  });
+});

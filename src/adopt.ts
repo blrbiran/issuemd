@@ -541,7 +541,9 @@ export function adopt(src: string): AdoptResult {
       ...group[0]!,
       idText,
       status,
-      summary: (closedSection ?? group[0]!).summary || group[0]!.summary,
+      // The summary follows the table the issue ends up in: a closed issue
+      // keeps the closed table's wording, one that stays open the index's.
+      summary: ((category === "closed" ? closedSection : indexCopy) ?? group[0]!).summary || group[0]!.summary,
       // Every distinct criterion survives: closed-table copy first (that is
       // where criteria live), then the others.
       criteria: [...new Set([closedSection, ...group].filter((row): row is Row => row != null)
@@ -574,12 +576,27 @@ export function adopt(src: string): AdoptResult {
     }
     if (group.length > 1) {
       const declaredStatuses = [...new Set(group.map((row) => row.status).filter((value) => value != null))];
+      const where = new Set(group.map((row) => row.section)).size > 1
+        ? "在多张表里各有一行"
+        : `在同一张表里有 ${group.length} 行`;
+      // Only one summary survives; every other wording is named here so the
+      // merge never loses text silently. The closed-vs-index pair of a closed
+      // issue is reported (with both texts) as closed-title-conflict below.
+      const coveredByConflict = (row: Row) =>
+        category === "closed" && closedSection != null && !isClosedSection(row.section);
+      const dropped = [...new Set(
+        group.filter((row) => !coveredByConflict(row) && row.summary !== "" && fold(row.summary) !== fold(merged.summary))
+          .map((row) => row.summary),
+      )];
       decisions.push({
         kind: "duplicate-row",
         id: idText,
         line: group[1]!.line,
         message:
-          `#${idText} 在多张表里各有一行；已按字段合并（状态与优先级取索引，各处不同的判据都保留，以「；」连接）` +
+          `#${idText} ${where}；已按字段合并（状态与优先级取索引，各处不同的判据都保留，以「；」连接）` +
+          (dropped.length > 0
+            ? `；摘要取「${merged.summary}」，未采用：${dropped.map((text) => `「${text}」`).join("、")}`
+            : "") +
           (declaredStatuses.length > 1
             ? `；两处状态矛盾（${declaredStatuses.join(" / ")}），需人工确认`
             : "") +
