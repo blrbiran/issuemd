@@ -170,7 +170,14 @@ function noMatch(s: string): CliResult {
 }
 /** A write verb's "no such issue": stderr, so it never mixes into a --dry-run diff on stdout. */
 function missingIssue(verb: string, id: string): CliResult {
+  const bad = badIdText(verb, id);
+  if (bad) return bad;
   return { code: 1, stdout: "", stderr: `issuemd ${verb}: no such issue: ${id}\n` };
+}
+/** `4-x` is not "absent", it is not an id at all: a usage error (exit 2). */
+function badIdText(verb: string, id: string): CliResult | undefined {
+  if (parseId(id)) return undefined;
+  return err(`issuemd ${verb}: '${id}' is not an issue id (expected something like 42 or 393b)\n`, 2);
 }
 function err(s: string, code = 1): CliResult {
   return { code, stdout: "", stderr: s };
@@ -488,7 +495,7 @@ function cmdShow(rest: string[], v: Values): CliResult {
     if (bad) {
       return err(`issuemd show: #${id} is in an unreadable table row (L${bad.line}: ${bad.reason}); fix it, then re-run\n`, 3);
     }
-    return noMatch(`(no such issue: ${id})\n`);
+    return badIdText("show", id) ?? noMatch(`(no such issue: ${id})\n`);
   }
   // The same id may also sit in a row show cannot read (an old 待处理 table,
   // E124): this view is then only one of two conflicting records.

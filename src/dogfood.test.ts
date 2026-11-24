@@ -1315,3 +1315,11 @@ test("probe: reopen of a closed summary that cannot be a heading says to rename 
   }
   expect((await run(["new", file(), "--title", "缓存（3）"])).code).toBe(2);
 });
+
+test("probe: a malformed id is a usage error (2), an absent one is 1", async () => {
+  const path = await withIssue("**验收判据**：x\n");
+  expect((await run(["show", path, "4-x"])).code).toBe(2);
+  expect((await run(["show", path, "9"])).code).toBe(1);
+  expect((await run(["close", path, "abc", "--no-criteria"])).code).toBe(2);
+  expect((await run(["close", path, "9", "--no-criteria"])).code).toBe(1);
+});
