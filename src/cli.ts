@@ -232,6 +232,9 @@ function formatDiagnostics(diagnostics: Diagnostic[]): string {
     .join("\n");
 }
 
+/** Ends a `close --keep-body` archive in 附录; `reopen` restores up to it. */
+const KEPT_BODY_END = "<!-- issuemd:kept-body:end -->";
+
 /** Drop leading and trailing blank lines; internal ones are content. */
 function trimBlank(lines: string[]): string[] {
   let start = 0;
@@ -759,6 +762,9 @@ function cmdClose(rest: string[], v: Values): CliResult {
         `> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。`,
         "",
         ...kept,
+        // An explicit end: text appended to 附录 later would otherwise belong
+        // to this H3, and `reopen` would pull it into the issue body.
+        KEPT_BODY_END,
       ];
     }
     lines = removeLines(lines, block.line, block.end - block.line + 1);
@@ -828,15 +834,34 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   const archived = ledger.sections.find(
     (section) => section.level === 3 && archiveHeading.test(section.title),
   );
-  const restored = archived
-    ? trimBlank(loaded.lines.slice(archived.line_start, archived.line_end)
-      .filter((line) => !/^>\s*关闭时以 --keep-body/.test(line)))
-    : undefined;
+  // The archive spans heading → end marker. Archives written before the
+  // marker existed fall back to the H3's extent, minus trailing blank lines
+  // (those separate it from whatever follows and must stay).
+  let archiveSpan: { start: number; end: number } | undefined;
+  let restored: string[] | undefined;
+  if (archived) {
+    const fenced = fencedLines(loaded.lines);
+    let end = archived.line_end;
+    for (let line = archived.line_start + 1; line <= archived.line_end; line++) {
+      if (!fenced[line - 1] && loaded.lines[line - 1]!.trim() === KEPT_BODY_END) {
+        end = line;
+        break;
+      }
+    }
+    while (end > archived.line_start && loaded.lines[end - 1]!.trim() === "") end--;
+    restored = trimBlank(loaded.lines.slice(archived.line_start, end)
+      .filter((line) => line.trim() !== KEPT_BODY_END && !/^>\s*关闭时以 --keep-body/.test(line)));
+    // `close` inserted one blank line before the archive; take it back.
+    const start = archived.line_start > 1 && loaded.lines[archived.line_start - 2]!.trim() === ""
+      ? archived.line_start - 1
+      : archived.line_start;
+    archiveSpan = { start, end };
+  }
 
   // Remove the later block first so the earlier coordinates stay valid.
   const removals = [
     { line: found.row.line, count: 1 },
-    ...(archived ? [{ line: archived.line_start, count: archived.line_end - archived.line_start + 1 }] : []),
+    ...(archiveSpan ? [{ line: archiveSpan.start, count: archiveSpan.end - archiveSpan.start + 1 }] : []),
   ].sort((a, b) => b.line - a.line);
   let lines = loaded.lines;
   for (const removal of removals) lines = removeLines(lines, removal.line, removal.count);
@@ -863,7 +888,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   if (!bodySection) return err("issuemd reopen: the 正文 section is missing\n", 3);
   const bodyAt = bodyInsertAt(reopened, found.span, bodySection.line_end);
   const bodyLines = restored && restored.length > 0
-    ? [`### Issue ${spanText(found.span)}: ${found.row.summary}`, "", ...restored]
+    ? [`### Issue ${spanText(found.span)}: ${found.row.summary}`, "", ...restored, ""]
     : bodySkeleton(spanText(found.span), found.row.summary, criteria);
   lines = insertLines(lines, bodyAt, bodyLines);
 

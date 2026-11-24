@@ -828,3 +828,26 @@ describe("fourth review round", () => {
     expect(renamed.stderr).toContain("ends with '#'");
   });
 });
+
+describe("keep-body round trip", () => {
+  test("close --keep-body then reopen restores the file byte for byte", async () => {
+    const path = ledger();
+    const before = readFileSync(path);
+    for (let cycle = 0; cycle < 3; cycle++) {
+      expect((await run(["close", path, "2", "--keep-body"])).code).toBe(0);
+      expect((await run(["reopen", path, "2"])).code).toBe(0);
+    }
+    expect(readFileSync(path).toString("utf8")).toBe(before.toString("utf8"));
+  });
+
+  test("appendix text added after an archive is not pulled into the reopened body", async () => {
+    const path = ledger();
+    expect((await run(["close", path, "2", "--keep-body"])).code).toBe(0);
+    writeFileSync(path, text(path).replace(/\n*$/, "\n\nUnrelated appendix note added later.\n"));
+    expect((await run(["reopen", path, "2"])).code).toBe(0);
+    const shown = await run(["show", path, "2"]);
+    expect(shown.stdout).not.toContain("Unrelated appendix note");
+    expect(text(path)).toContain("Unrelated appendix note added later.");
+    expect((await clean(path)).code).toBe(0);
+  });
+});
