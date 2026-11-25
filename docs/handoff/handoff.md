@@ -17,8 +17,8 @@
 
 `issuemd` P0–P5 早已完成；`0.1.0` 已发布到 npm。dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`，现 74 条，**不在本仓库、不要改它，状态由测试者自己更新**）的 #1–#74 均已处理：修好，或经用户裁定不做（#55/#58/#59/#68/#74 是复测记录；其建议见各轮总结）。
 
-- 第十二轮及之前的提交已由用户 push（第十三轮开始时 `origin/main` = 第十二轮 handoff 提交）。
-- 第十三轮的提交 ff 合入本地 `main`，**尚未 push、尚未发版**（用户 2026-11-25：暂不发版，时机由用户定）。第八–十三轮合起来有：新错误码（W225、W261）、新选项（`--with-body`）、新的输出约定（`citedRows`、`(no changes)`、读命令 `diagnostics`、`show` 的 `body.id`）、写锁文件、`split` 语义修正、E121 口径变化，下次发版建议 `npm version minor`（0.2.0）。
+- 第十三轮的功能与文档提交已由用户 push；**复审(16) 的修复提交尚未 push**（本轮收尾时 `origin/main` 是第十三轮的 docs 提交）。
+- 第十三轮的提交 ff 合入本地 `main`，**尚未发版**（用户 2026-11-25：暂不发版，时机由用户定）。第八–十三轮合起来有：新错误码（W225、W261）、新选项（`--with-body`）、新的输出约定（`citedRows`、`(no changes)`、读命令 `diagnostics`、`show` 的 `body.id`）、写锁文件、`split` 语义修正、E121 口径变化，下次发版建议 `npm version minor`（0.2.0）。
 - 测试全绿（数量以 `npm test` 末行为准，第十三轮末 507）。`dist/` 已用 `main` 重新 build。
 - 当前没有进行中的开发任务；下一轮输入通常是测试者的新条目或复测。没有新条目时，可照第九轮的做法派黑盒 subagent 自测。
 
@@ -34,7 +34,7 @@
 
 ## 等待用户决策 / 动作
 
-1. **push**：第十三轮的提交在本地 `main` 上，需用户 `git push`。
+1. **push**：第十三轮的功能/文档提交已由用户 push；**复审(16) 的修复提交仍在本地 `main`**，需用户再 `git push`（`git rev-list --count origin/main..main` 现查）。
 2. **发版（用户决定时机，2026-11-25 明确「暂不发版」）**：`npm version minor` → `npm publish`（`prepack` 会自动 build `dist/`）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`、`.dist-test`。
 3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。#53 建议把已达标条目与「owner 裁定不做」的判据在台账里标注出来，这同样留给测试者。
 4. `.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。其他 clone 拉到那次提交时，git 会删掉它们工作区里的 `.cafe`，需从上一提交恢复（`git show <移出前的提交>:.cafe > .cafe`）。
