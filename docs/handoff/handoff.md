@@ -19,7 +19,7 @@
 
 - 第十三轮的功能与文档提交已由用户 push；第十四轮的修复提交**仍在本地 `main`，尚未 push**（`git rev-list --count origin/main..main` 现查）。
 - 第十三、十四轮的提交 ff 合入本地 `main`，**尚未发版**（用户 2026-11-25：暂不发版，时机由用户定）。第八–十四轮合起来有：新错误码（W225、W261）、新选项（`--with-body`）、新的输出约定（`citedRows`、`(no changes)`、读命令 `diagnostics`、`show` 的 `body.id`）、写锁文件、`split` 语义修正、E121 口径变化（第十四轮：小节缺失时也报）、E124 带 `id`、`close` 对表格无法表示的判据拒绝写入、`reopen`/`rename`/`adopt` 的无操作口径、`show` 借正文支持区间内部号，下次发版建议 `npm version minor`（0.2.0）。
-- 测试全绿（数量以 `npm test` 末行为准，第十四轮末 539）。`dist/` 已用 `main` 重新 build。
+- 测试全绿（数量以 `npm test` 末行为准，第十四轮末 545）。`dist/` 已用 `main` 重新 build。
 - 当前没有进行中的开发任务；下一轮输入通常是测试者的新条目或复测。没有新条目时，可照第九轮/第十四轮的做法派黑盒 subagent 自测（三个方向：写命令、读命令、check/adopt）。
 
 ## 工作流约定（用户明确要求）
@@ -51,7 +51,7 @@
    - Q8 台账 #56–#74 由测试者复测（我们不写台账）。
 8. **第十四轮报审（全部按推荐执行，请复核）**：
    - `close` 现在**拒绝**晋升「反斜杠紧邻竖线」的判据（exit 2、不写），提示 `--criteria` 或 `--keep-body --no-criteria`；`--criteria` 输入按标题约定解转义（`\|` = 字面竖线）。
-   - `reopen` 已开放项：同状态是 `(no changes)`；`--status` 换另一个开放状态会直接改状态（原来 exit 2）。
+   - `reopen` 已开放项：不带 `--status` 或同状态是 `(no changes)`；只有显式 `--status` 换另一个开放状态才改状态（原来 exit 2）。
    - `rename` 改到自己当前摘要是 `(no changes)`（不再被重复摘要拒绝）。
    - `adopt` 无改动时 stdout 先打 `(no changes)` 再打报告（与 `--dry-run` 一致）。
    - 读视图：纯坏行台账上 `show` 也给 check 计数 note（N = 全部 error）；`show` 借区间内部号的正文；closed 的 `--with-body` 带 `criteriaSource`；`show --json --label` 错误时 stdout 为空。
@@ -67,7 +67,7 @@
 | 来源 | 问题 | 处理 |
 |---|---|---|
 | A1 | `close` 晋升 fence 判据 `echo a \| b` 后，文件写的是 `\|`，但 `show --json`/`reopen` 读回 `echo a | b`：单元格的转义模型只能表示「字面竖线」，无法表示「奇数个反斜杠紧邻竖线」 | 写入前做往返检查 `unescapeCell(escapeCell(criteria)) !== criteria` → **exit 2 不写**，提示 `--criteria` 或 `--keep-body --no-criteria`；`--criteria` 输入按标题约定先 `unescapeCell`（`\|` = 字面竖线）。不再静默改判据 |
-| A2 | `reopen` 对已开放项 exit 2（与无操作契约冲突） | 目标状态与本行相同 → `(no changes)`、exit 0（dry-run 同样并给 `snapshot`）；`--status` 给另一个开放状态 → 按 `status` 更新单元格，不做重复摘要检查（本行已是开放项，不会新增第二个开放行） |
+| A2 | `reopen` 对已开放项 exit 2（与无操作契约冲突） | 不带 `--status` 或目标状态与本行相同 → `(no changes)`、exit 0（dry-run 同样并给 `snapshot`）；只有**显式** `--status` 给另一个开放状态才按 `status` 更新单元格，不做重复摘要检查（本行已是开放项，不会新增第二个开放行；复审(17) 7 补：不带 `--status` 不动 `观察`） |
 | A4 | 已用 `--allow-duplicate-title` 放行的重复摘要项，`rename` 到自己当前摘要仍 exit 2 | 目标与当前摘要逐字相同 → 跳过重复检查，commit 出 `(no changes)` |
 | A5 | `adopt` 无改动时真运行只打报告，`--dry-run` 却先打 `(no changes)` | 真运行也先打一行 `(no changes)` 再打报告，两个模式一致 |
 | B1 | 错误全在不可读行（E108/E109/E124）时 `show` 完全不提示；混合时 note 的 N 只数非坏行 | `structureNote` 的 N = `check` 的全部 error 数，且不再整体抑制；`known` 只用于挑「first」（同一行的逐条说明仍在 `unreadableNote` / `diagnostics`） |
@@ -82,9 +82,25 @@
 
 **判为「不是缺陷」的 4 项**（按现有契约接受，见「仍然接受的已知项」）：`close` 同传两个判据选项 exit 2（签名互斥）；`list --expand` 保持表格行序（文档只承诺「一个 id 一行」）；snapshot 是原始字节的 SHA-256 前 16 位（跨编码不同，同文件内一致）；`--with-body` 在缺判据/缺正文时省略键（与 `show --json` 同口径）。
 
-验证：`npm run typecheck && npm test` 全绿（本轮末 539）；三份真实台账 check 计数不变——dogfood 0 error / 8 warning（W261 5 + W202 3）、cafe 0/71（W202 66 + W260 2 + W221 1 + W201 1 + W261 1）、`../orca_archived_files/issue-20261023.md` 0/158（W202 132 + W261 16 + W201 4 + W250 4 + W206 2），`adopt --dry-run` 均 `(no changes)`；BOM 台账（含 BOM+CRLF+无尾换行）的 dry-run diff 经 `patch(1)` 应用后与真实写入逐字节相同；A 组原脚本现在 `close exit=2`、判据原样保留；`dist/` 已重新 build。
+验证：`npm run typecheck && npm test` 全绿（本轮末 545）；三份真实台账 check 计数不变——dogfood 0 error / 8 warning（W261 5 + W202 3）、cafe 0/71（W202 66 + W260 2 + W221 1 + W201 1 + W261 1）、`../orca_archived_files/issue-20261023.md` 0/158（W202 132 + W261 16 + W201 4 + W250 4 + W206 2），`adopt --dry-run` 均 `(no changes)`；BOM 台账（含 BOM+CRLF+无尾换行）的 dry-run diff 经 `patch(1)` 应用后与真实写入逐字节相同；A 组原脚本现在 `close exit=2`、判据原样保留；`dist/` 已重新 build。
 
 **更新到新契约的旧用例**：`src/round13.test.ts`「an unreadable row is reported once…」改为「逐行说明一次 + check 计数照常出现」；`src/cli-write.test.ts`「reopen a range/an open id/unknown」改为「已开放项是无操作」。
+
+### 复审(17)（合入后独立复审本轮 diff，7 条发现全部处理）
+
+复审在 `/tmp/review14` 的副本上复现（只读，不改仓库）；每条都先写失败用例（`src/round14.test.ts` 的 `review 14` 组，6 条）。
+
+| # | 发现 | 处理 |
+|---|---|---|
+| 1 | 高：BOM 随首行移动（首行是「BOM + 空行」，adopt 删掉后 H1 成为新首行）时，diff 把 BOM 加在「只有一侧是首行」的上下文行上，`patch` 失败 | `unifiedDiff` 遇到上下文行「只有一侧是首行」（`oldText !== newText`）时，与换行差异一样拆成 `-`/`+`，BOM 只落在该侧的首行 |
+| 2 | 高：注释判定在压平文本上贪婪匹配，`<!-- x --> 正文 <!-- y -->` 被当空块；fence 里的字面注释也被当空 | `blockHasVisibleContent(found.lines)` 按行判断：注释外的可见文字算内容、fence 里的字面内容一律算；跨行注释仍能识别为空 |
+| 3 | 中：`rename` 的 no-op 只跳过重复检查，仍走写路径——把 `### Issue 1: a \| b` 重写成 `a | b`（字节变化、stdout 空） | 规范化后的目标摘要与当前摘要相同时**直接返回** `(no changes)`（dry-run 带 snapshot），不再触碰字节 |
+| 4 | 中：坏台账里区间行与独立行编号重叠（E103）时，`show 5` 把独立行 #6 的正文/判据当「同行」借出（`list --with-body` 同样） | `mayBorrow`：某个 id 若有**别的行**自己登记，区间/逗号行不借；`viewIssue` 与 `withBody` 同口径 |
+| 5 | 低：合法的多行 `--criteria`（`甲\n乙`）触发假的「反斜杠紧邻竖线」诊断 | `--criteria` 输入先按 `escapeCell` 同规则折叠换行，再做往返检查（读回 `甲 乙`） |
+| 6 | 低：adopt 的计数改名明细只列前 5 处，而本轮文档写「逐处点名」 | 文档改为「最多列前 5 处，其余以 `…` 省略」，代码不变 |
+| 7 | 低：SKILL 的 reopen 行没说「必须显式 `--status`」；adopt 实际转换的 stdout 说明有歧义 | 实现按「只有显式 `--status` 不同才改」修正；SKILL 三处措辞修正（reopen、注释判据、adopt 的 `(no changes)`） |
+
+复审验证：BOM 首行移动（LF/CRLF、有无尾换行）的 dry-run diff 经 `patch` 后与真实写入逐字节相同；6 个 repro 修后全部符合预期（注释+正文保留、fence 注释算内容、`rename` 字节不变、重叠区间不借正文、多行 `--criteria` 读回 `甲 乙`、`reopen` 不带 `--status` 不动 `观察`）。
 
 ## 第十三轮（2026-11-25）
 

@@ -324,7 +324,7 @@ Ledger
 | W252 | 归档对应的 issue 已重新开放（`reopen` 正常会收回归档，手改才会出现） |
 | W253 | 同一 issue 的正文在附录里还有另一份（转义的 `\### Issue N:` 副本，或重复归档）；旧版 `adopt` 会把表格小节里的正文存两份 |
 | W260 | 索引摘要含进展词（`已落地/仍缺/仍无/仍逐/仍走`），应移入正文 |
-| W261 | 开放项的正文没有非空的 `**验收判据**` 块（`new` 不带 `--body-file` 写出的空骨架、判据被删掉的正文都算）。`close` 用 `--criteria-from-body` 时本来就会拒绝它，但空壳会一直留在 `list` 里（dogfood #62）。warning 级、`--strict` 失败；已关闭项不判（判据在表格列），正文缺失另有 E102。整块只有一条 HTML 注释（渲染后什么也没有）不算非空，`close --criteria-from-body` 同样拒绝（第十四轮） |
+| W261 | 开放项的正文没有非空的 `**验收判据**` 块（`new` 不带 `--body-file` 写出的空骨架、判据被删掉的正文都算）。`close` 用 `--criteria-from-body` 时本来就会拒绝它，但空壳会一直留在 `list` 里（dogfood #62）。warning 级、`--strict` 失败；已关闭项不判（判据在表格列），正文缺失另有 E102。整块只有 HTML 注释（渲染后什么也没有；注释外的可见文字、fence 里的字面内容都算）不算非空，`close --criteria-from-body` 同样拒绝（第十四轮） |
 
 ### 6.3 `--verify-commits`（默认关）
 
@@ -401,7 +401,7 @@ issuemd close FILE 57 --criteria-from-body   # 或 --criteria "…"
 
 | 参数 | 行为 |
 |---|---|
-| `--criteria TEXT` | 用给定文本；按标题约定解转义（`\|` 表示字面竖线，第十四轮）；空串或全空白 → exit 2（多半是变量没设，要空判据请用 `--no-criteria`） |
+| `--criteria TEXT` | 用给定文本；按标题约定解转义（`\|` 表示字面竖线），换行折叠为空格（单元格不能换行），二者都在第十四轮；空串或全空白 → exit 2（多半是变量没设，要空判据请用 `--no-criteria`） |
 | `--criteria-from-body` | 提升正文 `**验收判据**` 块（`**验收判据：**` 写法等同；标签下 fence 里的内容属于判据；多段或列表以 `；` 连接，条目已以 `；`/`;` 结尾时不重复）；块不存在或为空（fence 里出现的标签行是示例，不算）→ exit 2，不写 |
 | `--no-criteria` | 明确以空判据关闭 |
 | 都不给 | 正文有非空判据 → 自动提升；没有 → `--keep-body` 时允许空判据（正文整体保留，信息不丢），否则 exit 2，要求三选一 |
@@ -427,13 +427,13 @@ error: #56 当前 观察（open），目标 已修（closed）跨分类，请用
 
 ### 7.4 `rename`
 
-同时改索引摘要、正文 H3，以及附录里同号的 `--keep-body` 归档标题，一次事务、要么都不改。新标题含 `|` 时自动转义并 warn W205。开放 issue 改成另一条**开放** issue 的摘要（与 `new` 同一规范化）时 exit 2、不写，并点名那条；确需如此加 `--allow-duplicate-title`。已关闭 issue 的改名、改成已关闭项的摘要都不拦。改成本行当前摘要（逐字相同）是无操作：`(no changes)`、exit 0，不触发重复摘要拒绝（第十四轮）。
+同时改索引摘要、正文 H3，以及附录里同号的 `--keep-body` 归档标题，一次事务、要么都不改。新标题含 `|` 时自动转义并 warn W205。开放 issue 改成另一条**开放** issue 的摘要（与 `new` 同一规范化）时 exit 2、不写，并点名那条；确需如此加 `--allow-duplicate-title`。已关闭 issue 的改名、改成已关闭项的摘要都不拦。参数按标题规则规范化后与本行当前摘要相同是无操作：`(no changes)`、exit 0，不触发重复摘要拒绝，也不改写正文标题的转义写法（第十四轮；复审后补）。
 
 ### 7.5 `reopen`
 
 从已关闭表删行 → 索引插入行 → 正文插入骨架（判据回填进 `**验收判据**`）。若 `close --keep-body` 在附录留了 `### #N …（已关闭，正文保留）` 归档（以 `<!-- issuemd:kept-body:end -->` 收尾；没有该标记的旧归档取到该 H3 结束），则原样恢复该正文并删掉归档，`close --keep-body` + `reopen` 逐字节还原；否则原文不可恢复，只保留判据——这是「关闭即删正文」的已知代价，`--keep-body` 是逃生口。
 
-已是开放项时不再 exit 2：目标状态与本行相同则是无操作（stdout `(no changes)`、exit 0；`--dry-run` 同样并给 `snapshot`），`--status` 给出另一个开放状态则按 `status` 更新该单元格，不做重复摘要检查——本行已是开放项，不会新增第二个开放行（第十四轮）。
+已是开放项时不再 exit 2：不带 `--status`、或目标状态与本行相同，都是无操作（stdout `(no changes)`、exit 0；`--dry-run` 同样并给 `snapshot`）；只有**显式** `--status` 给出另一个开放状态时，才按 `status` 更新该单元格（不做重复摘要检查——本行已是开放项，不会新增第二个开放行）（第十四轮；复审后明确「不带 --status 不改 `观察`」）。
 
 ### 7.5a `body` / `priority` / `split`（2026-11-24 补齐，设计见 `docs/superpowers/specs/2026-11-24-ledger-verbs-design.md`）
 
@@ -527,7 +527,7 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 
 **读视图与 `check` 的一致性（第十三轮，dogfood #63）**：`check` 有 error 时，`list` / `counts` / `show` 的退出码仍是 0/1（读一份坏台账去修它是正当用法），但会在 stderr 写一行 `note: 'issuemd check' reports N error(s) (first: CODE L… )`；三者的 `--json` 顶层附 `diagnostics: { errors: [...] }`（仅在有 error 时出现，字段与 `check --json` 的 error 相同，含 E106 的 `expected` / `actual`），机器消费者不必再跑一次 `check`。`N` 是 `check` 报告的全部 error 数（包括不可读行）；错误全部落在不可读行上时也照常出现，只是与 `unreadableNote` 的逐行说明并列（第十四轮）。
 
-**正文归属（dogfood #69）**：`show` 先找本号自己的 `### Issue N:` 块；找不到时沿用「同一行只在首号写一段正文」的历史写法，借同一行其他号的正文——逗号行任一 id、区间行任一被覆盖的 id（`5–7` 的正文挂在 `6` 也算）——但 `--json` 的 `body` 带 `id`（正文真正属于哪个号）与 `inherited: true`，`criteria` 另带 `criteriaFrom`，文本模式在 stderr 写 `note: the body shown belongs to #N`、stdout 写明「正文属于 #N」。`check` 仍对没有自己正文的号报 E102。
+**正文归属（dogfood #69）**：`show` 先找本号自己的 `### Issue N:` 块；找不到时沿用「同一行只在首号写一段正文」的历史写法，借同一行其他号的正文——逗号行任一 id、区间行任一被覆盖的 id（`5–7` 的正文挂在 `6` 也算）——但某个 id 自己有独立行时（重复编号，E103）不借它的正文，`show` 与 `list --with-body` 同口径（第十四轮复审）；`--json` 的 `body` 带 `id`（正文真正属于哪个号）与 `inherited: true`，`criteria` 另带 `criteriaFrom`，文本模式在 stderr 写 `note: the body shown belongs to #N`、stdout 写明「正文属于 #N」。`check` 仍对没有自己正文的号报 E102。
 
 **`list --json --with-body`（dogfood #67）**：每项附 `labels`（与 `show --json` 同源）、开放项的 `criteria` / `criteriaSource: "body"`，已关闭项的 `criteria` 带 `criteriaSource: "table"`；正文来自同行的兄弟号时附 `bodyFrom`。所有条目来自同一次解析，顶层 `snapshot` 一份，批量分析不必逐条 `show`。`--with-body` 必须配 `--json`（否则 exit 2）。
 
@@ -549,7 +549,7 @@ issuemd adopt old.md --dry-run --report decisions.md
 
 1. 补全骨架节（`## 索引` / `## 已关闭` / `## 正文` / `## 附录`）。
 2. 删掉索引中 `closed` 分类的行（信息已在已关闭表）。
-3. 去掉所有标题末尾的 `（N）` 计数（与 E121 同一规则：`（2025）` 这类四位年份保留）。报告里这一条逐处点名 `源 L…`，`### Issue N:` 标题另带 `#N` 与新旧标题（第十四轮）。
+3. 去掉所有标题末尾的 `（N）` 计数（与 E121 同一规则：`（2025）` 这类四位年份保留）。报告里这一条点名（最多列前 5 处，其余以 `…` 省略）`源 L…`，`### Issue N:` 标题另带 `#N` 与新旧标题（第十四轮）。
 4. 给所有管道块补分隔行。
 5. 把正文块内的 `####` 小标题降级为 `**加粗标签**`。正文块 = 从 `Issue` 标题（H1–H3；旧 cafe 用 `## Issue N:` 加 `### 期望` 子节）到下一个同级或更高级标题；外来小节里的 `####` 原样保留（第十二轮）。标题行首可有 0–3 个空格、`#` 后可以是制表符，与 CommonMark 和 check 的读法一致。开放项摘要与正文标题用同一规则去掉末尾计数，两边都带计数时不报 `open-title-conflict`。
 6. 索引加 `状态` 列；已关闭表加 `状态` 列（由原 H3 分组名映射到词表）。
