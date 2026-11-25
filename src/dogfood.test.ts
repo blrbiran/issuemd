@@ -4,6 +4,7 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -1763,5 +1764,67 @@ describe("review12: numeric headers, narrative tables and the status guess", () 
     const path = withSection("待处理", "| 7 | 观察（等上游） | 上游修复后重测 |\n");
     expect((await run(["adopt", path])).code).toBe(0);
     expect(text(path)).toContain("| 7 | 未决 |  | 观察（等上游） |");
+  });
+});
+
+describe("probe11: black-box findings after round eleven", () => {
+  const before = (section: string) => file(TEMPLATE.replace("## 正文", `${section}\n## 正文`));
+  type Diag = { code: string; line: number };
+  const check = async (path: string) =>
+    JSON.parse((await run(["check", path, "--json"])).stdout) as { errors: Diag[]; warnings: Diag[] };
+
+  test("header-less issue rows above a real separator under 待处理 are E124 and migrate", async () => {
+    const path = before("## 待处理\n\n| 7 | 甲 | 乙 |\n|---|---|---|\n| 8 | 丙 | 丁 |\n");
+    expect((await check(path)).errors.filter((e) => e.code === "E124").length).toBe(2);
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toMatch(/\| 7 \| 未决 \|  \| 甲 \|/);
+    expect(text(path)).toMatch(/\| 8 \| 未决 \|  \| 丙 \|/);
+  });
+
+  test("the status guess is per row: a status word in one row does not reshape the others", async () => {
+    const path = before("## 待处理\n\n| 7 | 已修 | 甲 |\n|---|---|---|\n| 8 | 乙 | 丙 |\n");
+    expect((await run(["adopt", path])).code).toBe(0);
+    const out = text(path);
+    expect(out).toMatch(/\| 7 \| 已修 \|  \| 甲 \|/);
+    expect(out).toMatch(/\| 8 \| 未决 \|  \| 乙 \|/);
+  });
+
+  for (const heading of ["## 索引（旧）", "## 已关闭（2025）", "## 索引"]) {
+    test(`a table under '${heading}' (not the one the ledger reads) is E124 and its ids are reserved`, async () => {
+      const path = before(`${heading}\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 7 | 未决 | 七 |\n`);
+      expect((await check(path)).errors.map((e) => e.code)).toContain("E124");
+      expect((await run(["new", file(text(path)), "--title", "新七", "--id", "7"])).code).toBe(2);
+      const adopted = await run(["adopt", path]);
+      expect(adopted.code).toBe(0);
+      expect(text(path)).toContain("七");
+      expect((await check(path)).errors).toEqual([]);
+    });
+  }
+
+  test("list --expand refuses a huge range without building it", async () => {
+    const path = file(TEMPLATE.replace("|---|---|---|---|\n", "|---|---|---|---|\n| 3–900000000 | 未决 | P2 | 区间 |\n"));
+    const result = await run(["list", path, "--expand"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("100000");
+  });
+
+  test("the H3 group report says the open-table default (未决), not 未分类", async () => {
+    const path = before("## 待处理\n\n### 第一轮\n\n| # | 摘要 |\n|---|---|\n| 7 | 甲 |\n");
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.stdout).toContain("| 7 | 未决 |");
+    expect(result.stdout).toMatch(/第一轮[^\n]*开放表里记为「未决」/);
+  });
+
+  test("a dry-run diff of a file without a final newline applies with patch(1)", async () => {
+    const path = file();
+    expect((await run(["new", path, "--title", "甲"])).code).toBe(0);
+    expect(text(path).endsWith("\n")).toBe(false);
+    const dry = await run(["close", path, "1", "--criteria", "x", "--keep-body", "--dry-run"]);
+    expect(dry.stdout).toContain("\\ No newline at end of file");
+    const out = `${path}.patched`;
+    const patched = spawnSync("patch", ["-s", "-o", out, path], { input: dry.stdout });
+    expect(patched.status).toBe(0);
+    await run(["close", path, "1", "--criteria", "x", "--keep-body"]);
+    expect(readFileSync(out, "utf8")).toBe(text(path));
   });
 });

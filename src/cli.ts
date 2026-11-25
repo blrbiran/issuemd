@@ -755,7 +755,7 @@ function commit(
     );
   }
   if (dryRun) {
-    const diff = unifiedDiff(loaded.lines, newLines, file);
+    const diff = unifiedDiff(loaded.lines, newLines, file, loaded.doc.finalNewline);
     return { code: 0, stdout: diff || "(no changes)\n", stderr: snapshotNote(loaded) };
   }
   const unchanged = newLines.length === loaded.lines.length &&
@@ -1698,7 +1698,7 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
     // is never the ledger and never someone else's file (checked above).
     const failed = writeReport();
     if (failed) return failed;
-    const diff = unifiedDiff(loaded.lines, result.lines, file);
+    const diff = unifiedDiff(loaded.lines, result.lines, file, loaded.doc.finalNewline);
     return { code: 0, stdout: (diff || "(no changes)\n") + "\n" + report, stderr: snapshotNote(loaded) };
   }
   const unchanged = result.lines.length === loaded.lines.length &&

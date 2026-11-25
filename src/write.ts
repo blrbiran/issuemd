@@ -109,6 +109,8 @@ export function unifiedDiff(
   old: string[],
   next: string[],
   path: string,
+  /** False when the file has no final newline (both sides: writes keep it). */
+  finalNewline = true,
 ): string {
   const CONTEXT = 3;
   const ops = editScript(old, next);
@@ -152,7 +154,24 @@ export function unifiedDiff(
     const oldStart = oldCount === 0 ? oldAt[start]! : oldAt[start]! + 1;
     const newStart = newCount === 0 ? newAt[start]! : newAt[start]! + 1;
     out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
-    for (const op of slice) out.push(`${op.kind}${op.text}`);
+    const NO_EOL = "\\ No newline at end of file";
+    slice.forEach((op, at) => {
+      const k = start + at;
+      const oldLast = !finalNewline && op.kind !== "+" && oldAt[k] === old.length - 1;
+      const newLast = !finalNewline && op.kind !== "-" && newAt[k] === next.length - 1;
+      // patch(1) needs the marker after the line that lacks a newline. A
+      // context line that is last on only one side differs in its newline,
+      // so it is spelled as a removal plus an addition.
+      if (op.kind === " " && oldLast !== newLast) {
+        out.push(`-${op.text}`);
+        if (oldLast) out.push(NO_EOL);
+        out.push(`+${op.text}`);
+        if (newLast) out.push(NO_EOL);
+        return;
+      }
+      out.push(`${op.kind}${op.text}`);
+      if (oldLast || newLast) out.push(NO_EOL);
+    });
   }
   return out.join("\n") + "\n";
 }

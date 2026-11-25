@@ -127,6 +127,9 @@ type Block = {
   mapping: Mapping;
   /** Status declared by the enclosing H3 group, if any. */
   groupStatus?: string;
+  /** Header-less width 3: a row whose 2nd cell is a status word is read as
+   * `# | 状态 | 摘要`, the others as `# | 摘要 | 判据` (#56, probe 11). */
+  rowStatus?: boolean;
   /** Which H2 section the block sits in. */
   section: string;
 };
@@ -146,13 +149,8 @@ function pipeBlocks(lines: string[], sections: Section[], synthetic: Set<number>
     // means data. `tableHeader` is the rule check's E124 uses too (#56).
     const header = tableHeader(block.cells, synthetic.has(start + 1));
     const width = (header ?? block.cells[0] ?? []).length;
-    let mapping = mappingFor(header, width);
-    // Header-less width 3 is the orca `# | 摘要 | 判据` shape — unless every
-    // row's second cell is a status word (`| 7 | 未决 | 甲 |`, #56).
-    const data = block.cells.filter((cells) => !isSeparator(cells) && !isHeader(cells));
-    if (!header && width === 3 && data.length > 0 && data.every((cells) => isStatusWord(cells[1] ?? ""))) {
-      mapping = { id: 0, status: 1, summary: 2 };
-    }
+    const mapping = mappingFor(header, width);
+    const rowStatus = !header && width === 3;
     if (mapping) {
       const h2 = sections.filter((s) => s.level === 2 && s.line_start < start).at(-1);
       // Width-only mappings are a guess; only trust them inside a section that
@@ -173,6 +171,7 @@ function pipeBlocks(lines: string[], sections: Section[], synthetic: Set<number>
         length: block.cells.length,
         cells: block.cells,
         mapping,
+        rowStatus,
         groupStatus: h3 ? statusFromHeading(h3.title) : undefined,
         section: h2?.title ?? "",
       });
@@ -199,11 +198,13 @@ type BadIdRow = { line: number; idText: string; text: string };
 function rowsOf(blocks: Block[], badIds: BadIdRow[] = []): Row[] {
   const out: Row[] = [];
   for (const block of blocks) {
-    const { mapping } = block;
     block.cells.forEach((cells, index) => {
       // A header row (`# | 状态 | P | 摘要`) carries no number; it is layout,
       // not an issue, and must never become a data row.
       if (isSeparator(cells) || isHeader(cells)) return;
+      const mapping: Mapping = block.rowStatus && isStatusWord(cells[1] ?? "")
+        ? { id: 0, status: 1, summary: 2 }
+        : block.mapping;
       const idText = (cells[mapping.id] ?? "").trim();
       // `7–20` is *one* span, not the ids 7 and 20; multi-id means several
       // comma-separated spans.
@@ -786,7 +787,7 @@ export function adopt(src: string): AdoptResult {
       line: section.line_start,
       message:
         `分组标题「${section.title}」不对应任何状态词；其下 ${ids.length} 行（${ids.join("、")}）` +
-        "按行内状态处理，行内也没有的记为「未分类」，需人工确认",
+        "按行内状态处理；行内也没有的，在开放表里记为「未决」、在已关闭表里记为「未分类」，需人工确认",
     });
   }
 

@@ -119,8 +119,10 @@ export function isStatusWord(cell: string): boolean {
  * - a first row with no digit at all is a header;
  * - a first row above a real separator is a header (`| 2026 | 开放 | 关闭 |`,
  *   `负责人2`) unless it is plainly an issue row written where the header goes:
- *   its first cell is an id and its second cell is a status word, or nothing
- *   follows the separator (`| 7 | 未决 | 甲 |` + `|---|`);
+ *   its first cell is an id next to text, and its second cell is a status
+ *   word, or nothing follows the separator, or every row below is such an id
+ *   row too (`| 7 | 甲 | 乙 |` + `|---|` + `| 8 | 丙 | 丁 |`; a stats table
+ *   `| 2026 | 开放 | 关闭 |` over `| 12 | 3 | 4 |` stays a header);
  * - `synthetic`: adopt inserted that separator itself (fixSeparators, under
  *   the first row of a header-less block), so a row with a digit-leading cell
  *   is still data.
@@ -131,7 +133,12 @@ export function tableHeader(rows: string[][], synthetic = false): string[] | und
   if (first.every((cell) => !/\d/.test(cell))) return first;
   if (!rows[1] || !isSeparatorRow(rows[1])) return undefined;
   if (synthetic) return first.every((cell) => !/^\d/.test(cell)) ? first : undefined;
-  const issueRow = parseIds(first[0] ?? "") != null && (rows.length === 2 || isStatusWord(first[1] ?? ""));
+  // An id plus some text (not just numbers): `| 7 | 甲 |` yes, `| 12 | 3 | 4 |` no.
+  const issueLike = (cells: string[]) =>
+    parseIds(cells[0] ?? "") != null && cells.slice(1).some((cell) => cell !== "" && !/^[\d.,%\s-]+$/.test(cell));
+  const below = rows.slice(2);
+  const issueRow = issueLike(first) &&
+    (below.length === 0 || isStatusWord(first[1] ?? "") || below.every(issueLike));
   return issueRow ? undefined : first;
 }
 
@@ -141,8 +148,6 @@ function dataRows(rows: string[][], header: string[] | undefined): { cells: stri
     (header && index === 0) || isSeparatorRow(cells) ? [] : [{ cells, index }]);
 }
 
-/** `## 索引（开放）` → 索引: one of the ledger's own sections? */
-export const isOwnSection = (title: string) => OWN_TABLES.has(title.replace(/\s*[（(][^）)]*[）)]\s*$/, "").trim());
 
 /**
  * Issue rows sitting under an H2 the ledger does not read (dogfood #52). They
@@ -170,7 +175,9 @@ function strayRows(
 ) {
   for (const block of blocks) {
     const h2 = h2s.filter((section) => section.line_start < block.line).at(-1);
-    if (!h2 || isOwnSection(h2.title)) continue;
+    // Only the section the ledger actually reads is skipped: `## 索引（旧）`,
+    // `## 已关闭（2025）` or a second `## 索引` hide rows otherwise (probe 11).
+    if (!h2 || (OWN_TABLES.has(h2.title) && h2s.find((section) => section.title === h2.title) === h2)) continue;
     const header = tableHeader(block.rows);
     const width = (header ?? block.rows[0]).length;
     if (!isTableSection(h2.title)) {

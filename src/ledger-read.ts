@@ -64,6 +64,9 @@ export function expandIssues(issues: ListedIssue[], limit = 100_000): ListedIssu
   for (const issue of issues) {
     for (const spelled of issue.ids) {
       const range = /^(\d+)–(\d+)$/.exec(spelled);
+      // Size first: building a 900-million-entry array just to count it
+      // crashed the process (probe 11).
+      if (range && Number(range[2]) - Number(range[1]) + 1 + out.length > limit) return undefined;
       const ids = range
         ? Array.from({ length: Number(range[2]) - Number(range[1]) + 1 }, (_, at) => String(Number(range[1]) + at))
         : [spelled];
