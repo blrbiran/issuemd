@@ -111,6 +111,8 @@ export function unifiedDiff(
   path: string,
   /** False when the file has no final newline (both sides: writes keep it). */
   finalNewline = true,
+  /** The file's line ending; CRLF content lines carry their `\r`. */
+  eol: "\n" | "\r\n" = "\n",
 ): string {
   const CONTEXT = 3;
   const ops = editScript(old, next);
@@ -155,23 +157,41 @@ export function unifiedDiff(
     const newStart = newCount === 0 ? newAt[start]! : newAt[start]! + 1;
     out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`);
     const NO_EOL = "\\ No newline at end of file";
+    // One item per output line; `bare` marks the line that has no newline.
+    type Item = { kind: "-" | "+" | " "; text: string; bare: boolean };
+    const items: Item[] = [];
     slice.forEach((op, at) => {
       const k = start + at;
       const oldLast = !finalNewline && op.kind !== "+" && oldAt[k] === old.length - 1;
       const newLast = !finalNewline && op.kind !== "-" && newAt[k] === next.length - 1;
-      // patch(1) needs the marker after the line that lacks a newline. A
-      // context line that is last on only one side differs in its newline,
+      // A context line that is last on only one side differs in its newline,
       // so it is spelled as a removal plus an addition.
       if (op.kind === " " && oldLast !== newLast) {
-        out.push(`-${op.text}`);
-        if (oldLast) out.push(NO_EOL);
-        out.push(`+${op.text}`);
-        if (newLast) out.push(NO_EOL);
-        return;
+        items.push({ kind: "-", text: op.text, bare: oldLast }, { kind: "+", text: op.text, bare: newLast });
+      } else {
+        items.push({ kind: op.kind, text: op.text, bare: oldLast || newLast });
       }
-      out.push(`${op.kind}${op.text}`);
-      if (oldLast || newLast) out.push(NO_EOL);
     });
+    // patch(1) accepts the no-newline marker only at the end of a side, so
+    // within a run of changes all removals come before all additions.
+    const ordered: Item[] = [];
+    for (let i = 0; i < items.length;) {
+      if (items[i]!.kind === " ") {
+        ordered.push(items[i++]!);
+        continue;
+      }
+      let j = i;
+      while (j < items.length && items[j]!.kind !== " ") j++;
+      const run = items.slice(i, j);
+      ordered.push(...run.filter((item) => item.kind === "-"), ...run.filter((item) => item.kind === "+"));
+      i = j;
+    }
+    // CRLF files: keep the `\r` so the diff applies to the real bytes.
+    const cr = eol === "\r\n" ? "\r" : "";
+    for (const item of ordered) {
+      out.push(`${item.kind}${item.text}${item.bare ? "" : cr}`);
+      if (item.bare) out.push(NO_EOL);
+    }
   }
   return out.join("\n") + "\n";
 }

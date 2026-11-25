@@ -120,25 +120,27 @@ export function isStatusWord(cell: string): boolean {
  * - a first row above a real separator is a header (`| 2026 | 开放 | 关闭 |`,
  *   `负责人2`) unless it is plainly an issue row written where the header goes:
  *   its first cell is an id next to text, and its second cell is a status
- *   word, or nothing follows the separator, or every row below is such an id
+ *   word, or nothing follows the separator, or some row below is such an id
  *   row too (`| 7 | 甲 | 乙 |` + `|---|` + `| 8 | 丙 | 丁 |`; a stats table
  *   `| 2026 | 开放 | 关闭 |` over `| 12 | 3 | 4 |` stays a header);
- * - `synthetic`: adopt inserted that separator itself (fixSeparators, under
- *   the first row of a header-less block), so a row with a digit-leading cell
- *   is still data.
+ * - no separator, or `synthetic` (adopt inserted it under the first row of a
+ *   header-less block): a row with a digit-leading cell is data.
  */
 export function tableHeader(rows: string[][], synthetic = false): string[] | undefined {
   const first = rows[0];
   if (!first || first.length === 0) return undefined;
   if (first.every((cell) => !/\d/.test(cell))) return first;
-  if (!rows[1] || !isSeparatorRow(rows[1])) return undefined;
-  if (synthetic) return first.every((cell) => !/^\d/.test(cell)) ? first : undefined;
+  // No separator: adopt puts one under the first row (fixSeparators), so read
+  // it exactly as adopt will (review 13: `| 负责人2 | … |` over `| 7 | … |`).
+  if (!rows[1] || !isSeparatorRow(rows[1]) || synthetic) {
+    return first.every((cell) => !/^\d/.test(cell)) ? first : undefined;
+  }
   // An id plus some text (not just numbers): `| 7 | 甲 |` yes, `| 12 | 3 | 4 |` no.
   const issueLike = (cells: string[]) =>
     parseIds(cells[0] ?? "") != null && cells.slice(1).some((cell) => cell !== "" && !/^[\d.,%\s-]+$/.test(cell));
   const below = rows.slice(2);
   const issueRow = issueLike(first) &&
-    (below.length === 0 || isStatusWord(first[1] ?? "") || below.every(issueLike));
+    (below.length === 0 || isStatusWord(first[1] ?? "") || below.some(issueLike));
   return issueRow ? undefined : first;
 }
 

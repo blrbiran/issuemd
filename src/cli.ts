@@ -755,7 +755,7 @@ function commit(
     );
   }
   if (dryRun) {
-    const diff = unifiedDiff(loaded.lines, newLines, file, loaded.doc.finalNewline);
+    const diff = unifiedDiff(loaded.lines, newLines, file, loaded.doc.finalNewline, loaded.doc.eol);
     return { code: 0, stdout: diff || "(no changes)\n", stderr: snapshotNote(loaded) };
   }
   const unchanged = newLines.length === loaded.lines.length &&
@@ -1078,7 +1078,12 @@ function cmdNew(rest: string[], v: Values): CliResult {
   // one instead of jumping past the largest (an error-code table citing 500
   // must not move the next issue to 501).
   let next = max + 1;
-  while (unreadableHolding(ledger, String(next), ledger.cited)) next++;
+  for (let cited = unreadableHolding(ledger, String(next), ledger.cited); cited;
+    cited = unreadableHolding(ledger, String(next), ledger.cited)) {
+    // Step over the whole cited span at once (`1–900000000` must not loop).
+    const span = (cited.ids ?? []).find((s) => s.suffix === "" && s.start <= next && next <= s.end);
+    next = span ? span.end + 1 : next + 1;
+  }
   let idText = String(next);
   if (v.id == null && !Number.isSafeInteger(next)) {
     return err(
@@ -1698,7 +1703,7 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
     // is never the ledger and never someone else's file (checked above).
     const failed = writeReport();
     if (failed) return failed;
-    const diff = unifiedDiff(loaded.lines, result.lines, file, loaded.doc.finalNewline);
+    const diff = unifiedDiff(loaded.lines, result.lines, file, loaded.doc.finalNewline, loaded.doc.eol);
     return { code: 0, stdout: (diff || "(no changes)\n") + "\n" + report, stderr: snapshotNote(loaded) };
   }
   const unchanged = result.lines.length === loaded.lines.length &&
@@ -1746,7 +1751,7 @@ function reportTargetProblem(ledgerPath: string, reportPath: string): string | n
 }
 
 /** Decisions that only record where unrecognised text was kept verbatim. */
-const KEPT_KINDS = new Set<Decision["kind"]>(["cited-table", "foreign-section", "preamble", "orphan-body", "section-prose", "kept-section-text"]);
+const KEPT_KINDS = new Set<Decision["kind"]>(["cited-table", "kept-row", "foreign-section", "preamble", "orphan-body", "section-prose", "kept-section-text"]);
 
 /**
  * Three parts (dogfood #17): what changed mechanically, what was kept

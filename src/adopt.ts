@@ -45,7 +45,8 @@ export type DecisionKind =
   | "section-prose"
   | "kept-section-text"
   | "extra-columns"
-  | "cited-table";
+  | "cited-table"
+  | "kept-row";
 
 export type Decision = {
   kind: DecisionKind;
@@ -132,6 +133,8 @@ type Block = {
   rowStatus?: boolean;
   /** Which H2 section the block sits in. */
   section: string;
+  /** The first row is the table header (layout, regenerated). */
+  header: boolean;
 };
 
 /** Group consecutive `|`-lines into blocks and attach the enclosing group status. */
@@ -172,6 +175,7 @@ function pipeBlocks(lines: string[], sections: Section[], synthetic: Set<number>
         cells: block.cells,
         mapping,
         rowStatus,
+        header: header != null,
         groupStatus: h3 ? statusFromHeading(h3.title) : undefined,
         section: h2?.title ?? "",
       });
@@ -195,13 +199,19 @@ function pipeBlocks(lines: string[], sections: Section[], synthetic: Set<number>
 /** A table row whose first cell looks like an id but is not one (`9–7`). */
 type BadIdRow = { line: number; idText: string; text: string };
 
-function rowsOf(blocks: Block[], badIds: BadIdRow[] = []): Row[] {
+function rowsOf(blocks: Block[], badIds: BadIdRow[] = [], plainRows: number[] = []): Row[] {
   const out: Row[] = [];
   for (const block of blocks) {
     block.cells.forEach((cells, index) => {
       // A header row (`# | 状态 | P | 摘要`) carries no number; it is layout,
       // not an issue, and must never become a data row.
-      if (isSeparator(cells) || isHeader(cells)) return;
+      if (isSeparator(cells) || (index === 0 && block.header)) return;
+      // A row with no id at all (`| 备注 | a | b |`) is not an issue; it is
+      // kept as text and named, never dropped as if it were layout (review 13).
+      if (isHeader(cells)) {
+        plainRows.push(block.line + index);
+        return;
+      }
       const mapping: Mapping = block.rowStatus && isStatusWord(cells[1] ?? "")
         ? { id: 0, status: 1, summary: 2 }
         : block.mapping;
@@ -484,7 +494,8 @@ export function adopt(src: string): AdoptResult {
   // ---- rows ----------------------------------------------------------
   const blocks = pipeBlocks(lines, sections, separated.synthetic);
   const badIds: BadIdRow[] = [];
-  const rows = rowsOf(blocks, badIds);
+  const plainRows: number[] = [];
+  const rows = rowsOf(blocks, badIds, plainRows);
   // Lines that became table rows (plus their block's header/separator) are
   // the only input lines adopt is allowed to rewrite rather than copy.
   const rowLines = new Set(rows.map((row) => row.line));
@@ -496,7 +507,7 @@ export function adopt(src: string): AdoptResult {
     for (let at = 0; at < block.length; at++) {
       consumedBlockLines.add(block.line + at);
       const cells = block.cells[at]!;
-      if (isSeparator(cells) || isHeader(cells)) layoutLines.add(block.line + at);
+      if (isSeparator(cells) || (at === 0 && block.header)) layoutLines.add(block.line + at);
     }
   }
   // An empty canonical table (header + separator, no rows) is regenerated
@@ -690,6 +701,15 @@ export function adopt(src: string): AdoptResult {
       line: bad.line,
       anchor: consumedBlockLines.has(bad.line) ? `\\${raw.trimStart()}` : raw,
       message: `首格「${bad.idText}」不是合法的编号或区间；整行按原文移入附录，其中的编号不会被保留，需人工改正后重新 adopt 或手工补行`,
+    });
+  }
+  for (const line of plainRows) {
+    if (!consumedBlockLines.has(line)) continue;
+    decisions.push({
+      kind: "kept-row",
+      line,
+      anchor: `\\${lines[line - 1]!.trimStart()}`,
+      message: `表里「${lines[line - 1]!.trim()}」这一行没有编号，不是 issue 行；按原文移入附录，需人工确认`,
     });
   }
   // An `### Issue N:` already inside 附录 is history (an old archive, a

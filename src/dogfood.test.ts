@@ -1828,3 +1828,72 @@ describe("probe11: black-box findings after round eleven", () => {
     expect(readFileSync(out, "utf8")).toBe(text(path));
   });
 });
+
+describe("review13: header rule, cited ranges, diffs, kept rows", () => {
+  const before = (section: string) => file(TEMPLATE.replace("## 正文", `${section}\n## 正文`));
+  type Diag = { code: string; line: number };
+  const errorsOf = async (path: string) =>
+    (JSON.parse((await run(["check", path, "--json"])).stdout) as { errors: Diag[] }).errors;
+
+  test("one odd row below the separator does not turn issue rows into a header", async () => {
+    for (const odd of ["| 9 |  |  |", "| 说明 | 无 | 无 |"]) {
+      const path = before(`## 待处理\n\n| 7 | 甲 | 乙 |\n|---|---|---|\n| 8 | 丙 | 丁 |\n${odd}\n`);
+      const e124 = (await errorsOf(path)).filter((e) => e.code === "E124").length;
+      expect(e124).toBeGreaterThanOrEqual(2);
+      expect((await run(["new", file(text(path)), "--title", "撞", "--id", "7"])).code).toBe(2);
+      expect((await run(["adopt", path])).code).toBe(0);
+      expect(text(path)).toMatch(/\| 7 \| 未决 \|  \| 甲 \|/);
+    }
+  });
+
+  test("new steps over a cited range in one go", async () => {
+    const path = before("## 变更记录\n\n| # | 说明 |\n|---|---|\n| 1–900000000 | 区间 |\n");
+    const started = Date.now();
+    expect((await run(["new", path, "--title", "z"])).stdout.trim()).toBe("900000001");
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  const applies = async (content: string, args: string[]) => {
+    const path = file(content);
+    const dry = await run([args[0]!, path, ...args.slice(1), "--dry-run"]);
+    expect(dry.code).toBe(0);
+    const out = `${path}.patched`;
+    const patched = spawnSync("patch", ["-s", "-o", out, path], { input: dry.stdout });
+    expect(patched.stderr.toString() + patched.stdout.toString()).toBe("");
+    expect(patched.status).toBe(0);
+    expect((await run([args[0]!, path, ...args.slice(1)])).code).toBe(0);
+    expect(readFileSync(out)).toEqual(readFileSync(path));
+  };
+
+  test("a dry-run diff that removes the last lines of a file without a final newline applies", async () => {
+    const noAppendix = TEMPLATE.replace(/\n+## 附录\s*$/, "");
+    const path = file(noAppendix);
+    expect((await run(["new", path, "--title", "甲", "--body-file", body("**现象**：x\n\n**验收判据**：y\n")])).code).toBe(0);
+    expect(text(path).endsWith("\n")).toBe(false);
+    await applies(text(path), ["close", "1"]);
+  });
+
+  test("a dry-run diff of a CRLF ledger applies with patch(1)", async () => {
+    const path = file();
+    expect((await run(["new", path, "--title", "甲", "--body-file", body("**验收判据**：y\n")])).code).toBe(0);
+    await applies(text(path).replaceAll("\n", "\r\n") + "\r\n", ["close", "1"]);
+  });
+
+  test("a header-less block under a header-shaped first row: check and adopt agree", async () => {
+    const path = before("## 待处理\n\n| 负责人2 | 甲 | 乙 |\n| 7 | 未决 | 七 |\n\n| 30 | 未决 | 三十 |\n|---|---|---|\n");
+    const hasE124At7 = (await errorsOf(path)).some((e) => e.code === "E124" && text(path).split("\n")[e.line - 1]!.startsWith("| 7 "));
+    const adopted = await run(["adopt", path]);
+    expect(adopted.code).toBe(0);
+    const migrated7 = text(path).includes("| 7 | 未决 |  | 七 |");
+    expect(migrated7).toBe(hasE124At7);
+    expect(text(path)).toContain("七");
+  });
+
+  test("a non-id row inside a migrated table is kept and reported, not dropped", async () => {
+    const path = before("## 待处理\n\n| 7 | 未决 | 甲 |\n|---|---|---|\n| 8 | 未决 | x |\n| 备注 | a | b |\n");
+    const adopted = await run(["adopt", path]);
+    expect(adopted.code).toBe(0);
+    expect(text(path)).toMatch(/备注 \| a \| b/);
+    expect(adopted.stdout).toContain("备注");
+  });
+});
