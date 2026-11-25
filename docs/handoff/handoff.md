@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-25（第十三轮：处理台账 #61–#73，见「第十三轮」）。写给下一位接手者。
+更新于 2026-11-26（第十四轮：三个黑盒 subagent 的自测发现，见「第十四轮」）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -17,10 +17,10 @@
 
 `issuemd` P0–P5 早已完成；`0.1.0` 已发布到 npm。dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`，现 74 条，**不在本仓库、不要改它，状态由测试者自己更新**）的 #1–#74 均已处理：修好，或经用户裁定不做（#55/#58/#59/#68/#74 是复测记录；其建议见各轮总结）。
 
-- 第十三轮的功能与文档提交已由用户 push；**复审(16) 的修复提交尚未 push**（本轮收尾时 `origin/main` 是第十三轮的 docs 提交）。
-- 第十三轮的提交 ff 合入本地 `main`，**尚未发版**（用户 2026-11-25：暂不发版，时机由用户定）。第八–十三轮合起来有：新错误码（W225、W261）、新选项（`--with-body`）、新的输出约定（`citedRows`、`(no changes)`、读命令 `diagnostics`、`show` 的 `body.id`）、写锁文件、`split` 语义修正、E121 口径变化，下次发版建议 `npm version minor`（0.2.0）。
-- 测试全绿（数量以 `npm test` 末行为准，第十三轮末 507）。`dist/` 已用 `main` 重新 build。
-- 当前没有进行中的开发任务；下一轮输入通常是测试者的新条目或复测。没有新条目时，可照第九轮的做法派黑盒 subagent 自测。
+- 第十三轮的功能与文档提交已由用户 push；第十四轮的修复提交**仍在本地 `main`，尚未 push**（`git rev-list --count origin/main..main` 现查）。
+- 第十三、十四轮的提交 ff 合入本地 `main`，**尚未发版**（用户 2026-11-25：暂不发版，时机由用户定）。第八–十四轮合起来有：新错误码（W225、W261）、新选项（`--with-body`）、新的输出约定（`citedRows`、`(no changes)`、读命令 `diagnostics`、`show` 的 `body.id`）、写锁文件、`split` 语义修正、E121 口径变化（第十四轮：小节缺失时也报）、E124 带 `id`、`close` 对表格无法表示的判据拒绝写入、`reopen`/`rename`/`adopt` 的无操作口径、`show` 借正文支持区间内部号，下次发版建议 `npm version minor`（0.2.0）。
+- 测试全绿（数量以 `npm test` 末行为准，第十四轮末 539）。`dist/` 已用 `main` 重新 build。
+- 当前没有进行中的开发任务；下一轮输入通常是测试者的新条目或复测。没有新条目时，可照第九轮/第十四轮的做法派黑盒 subagent 自测（三个方向：写命令、读命令、check/adopt）。
 
 ## 工作流约定（用户明确要求）
 
@@ -34,7 +34,7 @@
 
 ## 等待用户决策 / 动作
 
-1. **push**：第十三轮的功能/文档提交已由用户 push；**复审(16) 的修复提交仍在本地 `main`**，需用户再 `git push`（`git rev-list --count origin/main..main` 现查）。
+1. **push**：第十三轮的提交已由用户 push；**第十四轮的黑盒修复提交仍在本地 `main`**，需用户再 `git push`（`git rev-list --count origin/main..main` 现查）。
 2. **发版（用户决定时机，2026-11-25 明确「暂不发版」）**：`npm version minor` → `npm publish`（`prepack` 会自动 build `dist/`）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`、`.dist-test`。
 3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。#53 建议把已达标条目与「owner 裁定不做」的判据在台账里标注出来，这同样留给测试者。
 4. `.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。其他 clone 拉到那次提交时，git 会删掉它们工作区里的 `.cafe`，需从上一提交恢复（`git show <移出前的提交>:.cafe > .cafe`）。
@@ -49,7 +49,42 @@
    - Q6（已执行，推荐维持）`show` 借兄弟号正文时显式标注（`body.id` / `body.inherited` / `criteriaFrom` + stderr note）；`list --json --with-body` 一次取回同快照的 labels/criteria；`list` 的 `id` 回灌 per-id 命令时报错点名多个编号并指向 `--expand`。
    - Q7（已执行，推荐维持）adopt 报告：W225 早退不再只说「无需转换」；外来小节标题被剥计数时点名改名、H2 标明「以原级别 H2 并入附录」；开放摘要的计数剥离按「两侧同计数静默 / 单侧带计数出 `summary-count-stripped` / 计数不同报 `open-title-conflict`」处理。
    - Q8 台账 #56–#74 由测试者复测（我们不写台账）。
-8. **第十一轮报审（备查）**：Q1 W225 编号占用（已执行，第十二轮维持）；Q2 更多「台账表小节」词（未做，推荐暂不做：改成 E124 会把 `## 已完成` 的行当开放项）；Q3 年份标题（第十二轮已做）；Q4 `list --json` 暴露被占用编号（第十二轮已做，`citedRows`）；Q5 台账复测留给测试者。
+8. **第十四轮报审（全部按推荐执行，请复核）**：
+   - `close` 现在**拒绝**晋升「反斜杠紧邻竖线」的判据（exit 2、不写），提示 `--criteria` 或 `--keep-body --no-criteria`；`--criteria` 输入按标题约定解转义（`\|` = 字面竖线）。
+   - `reopen` 已开放项：同状态是 `(no changes)`；`--status` 换另一个开放状态会直接改状态（原来 exit 2）。
+   - `rename` 改到自己当前摘要是 `(no changes)`（不再被重复摘要拒绝）。
+   - `adopt` 无改动时 stdout 先打 `(no changes)` 再打报告（与 `--dry-run` 一致）。
+   - 读视图：纯坏行台账上 `show` 也给 check 计数 note（N = 全部 error）；`show` 借区间内部号的正文；closed 的 `--with-body` 带 `criteriaSource`；`show --json --label` 错误时 stdout 为空。
+   - `check`：`## 已关闭（3）` 同时报 E120+E121；E124 的 JSON 带 `id`；只含 HTML 注释的判据不再算非空（W261/close 同口径）。
+   - **接受不改的 4 项**见「第十四轮」小节（`--expand` 行序、snapshot 原始字节、`--with-body` 省键、close 选项互斥）。若想让 `list --expand` 按编号排序，或让 snapshot 跨编码相等，说一声即可——都只影响输出顺序/口径，改动很小。
+
+9. **第十一轮报审（备查）**：Q1 W225 编号占用（已执行，第十二轮维持）；Q2 更多「台账表小节」词（未做，推荐暂不做：改成 E124 会把 `## 已完成` 的行当开放项）；Q3 年份标题（第十二轮已做）；Q4 `list --json` 暴露被占用编号（第十二轮已做，`citedRows`）；Q5 台账复测留给测试者。
+
+## 第十四轮（2026-11-26）
+
+输入：台账无新条目（仍到 #74；#61–#74 已在第十三轮处理）。按第九轮做法派了三个黑盒 subagent（A 写命令、B 读命令、C check/adopt），只看 CLI 表面、不读 `src/`、在 `/tmp` 造台账；所有发现先在本会话复现再修（A 的 `close` 丢反斜杠用原脚本复现成功）。用例在 `src/round14.test.ts`（23 条），另更新 2 条旧用例到新契约（见下）。
+
+| 来源 | 问题 | 处理 |
+|---|---|---|
+| A1 | `close` 晋升 fence 判据 `echo a \| b` 后，文件写的是 `\|`，但 `show --json`/`reopen` 读回 `echo a | b`：单元格的转义模型只能表示「字面竖线」，无法表示「奇数个反斜杠紧邻竖线」 | 写入前做往返检查 `unescapeCell(escapeCell(criteria)) !== criteria` → **exit 2 不写**，提示 `--criteria` 或 `--keep-body --no-criteria`；`--criteria` 输入按标题约定先 `unescapeCell`（`\|` = 字面竖线）。不再静默改判据 |
+| A2 | `reopen` 对已开放项 exit 2（与无操作契约冲突） | 目标状态与本行相同 → `(no changes)`、exit 0（dry-run 同样并给 `snapshot`）；`--status` 给另一个开放状态 → 按 `status` 更新单元格，不做重复摘要检查（本行已是开放项，不会新增第二个开放行） |
+| A4 | 已用 `--allow-duplicate-title` 放行的重复摘要项，`rename` 到自己当前摘要仍 exit 2 | 目标与当前摘要逐字相同 → 跳过重复检查，commit 出 `(no changes)` |
+| A5 | `adopt` 无改动时真运行只打报告，`--dry-run` 却先打 `(no changes)` | 真运行也先打一行 `(no changes)` 再打报告，两个模式一致 |
+| B1 | 错误全在不可读行（E108/E109/E124）时 `show` 完全不提示；混合时 note 的 N 只数非坏行 | `structureNote` 的 N = `check` 的全部 error 数，且不再整体抑制；`known` 只用于挑「first」（同一行的逐条说明仍在 `unreadableNote` / `diagnostics`） |
+| B2 | 区间行 `5–7` 的正文挂在内部号 `6`：`show 5`/`show 7` 说「(无正文块)」，与 `list --with-body`（`bodyFrom: 6`）矛盾 | `viewIssue` 的回退改用与 `withBody` 相同的 `covers`（区间覆盖的 id 也算）；`body.id`/`inherited`/`criteriaFrom` 照旧标明 |
+| B3 | `list --closed --json --with-body` 的 closed 项有 `criteria` 却缺 `criteriaSource` | closed 项补 `criteriaSource: "table"`（与 `show --json` 一致） |
+| B7 | `show --json --label` 缺/空 label 时把人类文案写进 stdout | `--json` 时 stdout 为空，提示走 stderr（与「查无此号」同规则） |
+| C1 | BOM 台账的 `adopt --dry-run` diff 首行不带 BOM，`patch(1)` 无法应用 | `unifiedDiff(…, bom)` 新增参数，首行两侧带 `\uFEFF`；commit 与 adopt 两个调用点传入 `loaded.doc.bom` |
+| C2 | `## 已关闭（1894）`/`（3）` 只报 E120，不报 E121（标题计数检查在 E120 门禁内） | 计数检查移出 E120 门禁、总是运行；`（2025）` 仍只报 E120 |
+| C3 | 仅正文标题带计数时 adopt 报告只写「去掉标题里的（N）计数：1 处」，不点名 issue 与新旧值 | 逐处点名加 `#N`（`### Issue N:` 标题）与新旧标题 |
+| C4 | `check --json` 的 E124 缺 `id` | E124 诊断带该行首号 `id`（区间写成 `7–9`） |
+| C5 | 只含一条 HTML 注释的验收块通过 `--strict`，`close --criteria-from-body` 也接受 | `extractCriteria` 把「整块只有一条 HTML 注释」视为空（W261、close、`show --json` 同口径） |
+
+**判为「不是缺陷」的 4 项**（按现有契约接受，见「仍然接受的已知项」）：`close` 同传两个判据选项 exit 2（签名互斥）；`list --expand` 保持表格行序（文档只承诺「一个 id 一行」）；snapshot 是原始字节的 SHA-256 前 16 位（跨编码不同，同文件内一致）；`--with-body` 在缺判据/缺正文时省略键（与 `show --json` 同口径）。
+
+验证：`npm run typecheck && npm test` 全绿（本轮末 539）；三份真实台账 check 计数不变——dogfood 0 error / 8 warning（W261 5 + W202 3）、cafe 0/71（W202 66 + W260 2 + W221 1 + W201 1 + W261 1）、`../orca_archived_files/issue-20261023.md` 0/158（W202 132 + W261 16 + W201 4 + W250 4 + W206 2），`adopt --dry-run` 均 `(no changes)`；BOM 台账（含 BOM+CRLF+无尾换行）的 dry-run diff 经 `patch(1)` 应用后与真实写入逐字节相同；A 组原脚本现在 `close exit=2`、判据原样保留；`dist/` 已重新 build。
+
+**更新到新契约的旧用例**：`src/round13.test.ts`「an unreadable row is reported once…」改为「逐行说明一次 + check 计数照常出现」；`src/cli-write.test.ts`「reopen a range/an open id/unknown」改为「已开放项是无操作」。
 
 ## 第十三轮（2026-11-25）
 
@@ -317,7 +352,7 @@ issuemd adopt    FILE [--dry-run] [--report PATH]
 issuemd <command> --help
 ```
 
-所有写命令另接受 `--dry-run`（stderr 打 `snapshot: S`）与 `--if-unchanged S`。读命令的 `--json` 顶层带 `snapshot`。`new` 成功时 stdout 只有分配到的编号。写命令找不到编号 → stderr + exit 1；编号格式非法 → exit 2。台账文件只读 → 真写 exit 2。**写命令算出的字节与原文相同**时不落盘，stdout 是 `(no changes)` + exit 0（与 `--dry-run` 同一措辞；真正有改动时 stdout 仍为空）。读命令在 `check` 有 error 时退出码不变，但 stderr 加 `note: 'issuemd check' reports N error(s) …`，`--json` 顶层带 `diagnostics.errors`。
+所有写命令另接受 `--dry-run`（stderr 打 `snapshot: S`）与 `--if-unchanged S`。读命令的 `--json` 顶层带 `snapshot`。`new` 成功时 stdout 只有分配到的编号。写命令找不到编号 → stderr + exit 1；编号格式非法 → exit 2。台账文件只读 → 真写 exit 2。**写命令算出的字节与原文相同**时不落盘，stdout 是 `(no changes)` + exit 0（与 `--dry-run` 同一措辞；真正有改动时 stdout 仍为空；`adopt` 无改动时先打这一行再打报告）。`reopen` 对已开放项：目标状态相同是无操作，`--status` 换另一个开放状态则更新单元格。`rename` 改到自己当前摘要是无操作。`close` 拒绝「表格单元格无法表示」的判据（反斜杠紧邻竖线，exit 2，不写）。读命令在 `check` 有 error 时退出码不变，但 stderr 加 `note: 'issuemd check' reports N error(s) …`（N 是 `check` 的全部 error 数），`--json` 顶层带 `diagnostics.errors`；`show --json` 的 `--label` 错误时 stdout 为空。`list --json --with-body` 的 closed 项带 `criteriaSource: "table"`。
 
 退出码：0 成功 / 1 没有这条 issue 或空结果 / 2 用法或 I/O / 3 校验失败 / **4 E130 并发改动或 `--if-unchanged` 不符（可重试）**。
 
@@ -331,12 +366,12 @@ issuemd <command> --help
   - `Loaded = { doc, lines, path, links, snapshot }`。**`--if-unchanged` 在 `loadWritable(file, expected)` 里、刚读完文件时比对**，所以任何命令逻辑（「已关闭」之类）之前就 exit 4。所有写命令经 `openLedger(file, v["if-unchanged"])` 或（adopt）直接 `loadWritable(file, v["if-unchanged"])` 读文件；新写命令必须照做。
   - `snapshotOf(text)` = sha256 前 16 位十六进制。写路径对 `joinDocument(lines, doc)`、读路径对 `readFileSync(file, "utf8")` 求值；两者对合法 UTF-8 文件逐字节相同（BOM、CRLF、无尾换行都保留）。`run()` 校验格式（16 位小写十六进制），不对就 exit 2。
   - 插入正文块用 `insertBlock`（两侧恰好一个空行）；`close --keep-body` 的归档插入仍是 `insertLines` + 手动前导空行——`reopen` 的逐字节还原依赖它，别改成 insertBlock。
-  - `cmdClose` 的判据规则：`--criteria` > `--no-criteria` > `--criteria-from-body`（空则拒）> 正文自动提升 > `--keep-body` 允许空 > 否则 exit 2。
-  - `cmdNew`：先查重复摘要（只比开放行，`summaryKey` 归一），再取号；成功后 stdout 是编号（只在非 dry-run 时替换 `commit()` 的空 stdout）。`cmdRename` 同样查重复摘要（排除自己那一行；目标是已关闭项时不查）。
+  - `cmdClose` 的判据规则：`--criteria` > `--no-criteria` > `--criteria-from-body`（空则拒）> 正文自动提升 > `--keep-body` 允许空 > 否则 exit 2。`--criteria` 先 `unescapeCell`（与标题同约定）；晋升前做 `unescapeCell(escapeCell(criteria)) === criteria` 往返检查，表格表示不了「反斜杠紧邻竖线」时 **exit 2 不写**（第十四轮，A1）。
+  - `cmdNew`：先查重复摘要（只比开放行，`summaryKey` 归一），再取号；成功后 stdout 是编号（只在非 dry-run 时替换 `commit()` 的空 stdout）。`cmdRename` 同样查重复摘要（排除自己那一行；目标是已关闭项时不查；目标与当前摘要逐字相同时跳过检查，commit 出 `(no changes)`——第十四轮，A4）。
   - `titleProblem()` = 空标题（第十二轮）+ 计数后缀（`countSuffix`，E121）+ 结尾 `#`；`new`/`rename` 用于输入，`reopen` 用于已关闭行的旧摘要。
   - `readOnlyRefusal()` 在 `commit()` 与 adopt 的写入前各调一次（`accessSync W_OK`）。
   - `missingIssue(verb, id)` / `badIdText()`：写命令的「没有这条」走 stderr；`show` 仍用 stdout 的 `(no such issue: N)`。`badIdText` 遇到多号形状（`30, 31`，`parseIds` 得到多个 span）时点名这些号并指向 `list --expand`（第十三轮，dogfood #71）。
-  - 读命令的一致性 helper（第十三轮）：`structureNote(errors, knownLines)` / `diagnosticsField(errors)`。`cmdList` / `cmdCounts` / `cmdShow` 各跑一次 `checkLedger`；stderr 的 note 与 `--json` 的 `diagnostics` 都只在有 error 时出现，`structureNote` 会跳过已由 `unreadableNote` 描述的行（同一行不报两遍；`diagnostics` 仍是全量）。`cmdShow` 的 `withNote` 现在拼 `structureNote + inheritedNote + twinNote`，查无此号的分支也拼 `structureNote`。
+  - 读命令的一致性 helper（第十三轮）：`structureNote(errors, knownLines)` / `diagnosticsField(errors)`。`cmdList` / `cmdCounts` / `cmdShow` 各跑一次 `checkLedger`；stderr 的 note 与 `--json` 的 `diagnostics` 都只在有 error 时出现。**N 是 `check` 的全部 error 数**（第十四轮：不因错误都在不可读行上而整体抑制）；`known` 只用于挑「first」，逐行细节仍由 `unreadableNote` / `diagnostics` 给出。`cmdShow` 的 `withNote` 现在拼 `structureNote + inheritedNote + twinNote`，查无此号的分支也拼 `structureNote`。
   - `list --with-body`（第十三轮）：`withBody(ledger, issue, blocks)` 在 `ledger-read.ts`，与 `viewIssue` 同源解析兄弟号正文（含区间行内部号的正文，`bodyFrom` 标明）；必须配 `--json`，否则 exit 2。两者都先把正文块切片再调 `labelsIn`/`labelBlock`/`extractCriteria`——用整份 `lines` 会让 `fencedLines` 按标签数 × 文件长重算（复审(16) 6）。
   - `readBodyFile` 剥 BOM 与开头空行，拒绝 fence 外的 `KEPT_BODY_END`。reopen 的归档恢复只剥「结束标记所在那一行」与「第一条非空行若是 ARCHIVE_NOTE」。
 - **`src/ledger-edit.ts`**：
@@ -347,14 +382,14 @@ issuemd <command> --help
   - `ledger-edit` 与 `ledger-check` 互相 import（只在函数里用对方，模块初始化时不能用）。
 - **`src/ledger.ts`**：
   - `parseLedger` 的 `unreadable: UnreadableRow[]`：E108/E109 丢掉的表行，**以及 E124 的「游离行」**（`table: "stray"`）。下游（`maxIssueId`、`new --id` 撞号、`show` exit 3、`unreadableNote`、`list --json unreadableRows`）都靠它，所以 E124 行自动被保留编号。
-  - `strayRows()`（#52）：所在 H2 不是 `怎么用/状态口径/索引/已关闭/正文/附录`（括注去掉后比较），且 (a) 有表头、表头含 `#/编号/ID` 列与 `摘要/标题` 列；或 (b) 表头含 id 列与 `状态` 但无摘要列，且 H2 名匹配 `isTableSection`；或 (c) 无表头、宽 2–5、H2 名匹配 `isTableSection`。**口径必须与 adopt 迁移哪些表保持一致**：adopt 不迁移、原样保留的表若被报 E124，adopt 的输出就过不了自身校验（第八轮复审 #1）。每个能解析出编号的行报一条 E124。H1 与第一个 H2 之间的表不算。
+  - `strayRows()`（#52）：所在 H2 不是 `怎么用/状态口径/索引/已关闭/正文/附录`（括注去掉后比较），且 (a) 有表头、表头含 `#/编号/ID` 列与 `摘要/标题` 列；或 (b) 表头含 id 列与 `状态` 但无摘要列，且 H2 名匹配 `isTableSection`；或 (c) 无表头、宽 2–5、H2 名匹配 `isTableSection`。**口径必须与 adopt 迁移哪些表保持一致**：adopt 不迁移、原样保留的表若被报 E124，adopt 的输出就过不了自身校验（第八轮复审 #1）。每个能解析出编号的行报一条 E124，诊断带该行首号 `id`（第十四轮）。H1 与第一个 H2 之间的表不算。
   - `isTableSection`（台账表小节名正则）、**`mappingFor`（issue 表的列映射）**、**`tableHeader`（首行是不是表头）**、`isStatusWord` 都定义在这里，adopt 从这里 import。改其中任何一个都要同时看 check 与 adopt 两边。
   - `tableHeader(rows, synthetic)`（第十一轮）：首行不含数字 → 表头；首行下不是分隔行 → 无表头；`synthetic`（adopt 的 `fixSeparators` 自己补的分隔行）→ 有以数字开头的格就是数据（旧规则）；真实分隔行 → 表头，除非首行是 issue 行：首格是编号且其余格有非数字文字（`issueLike`），并且第二格是状态词 / 分隔行下没有行 / 下面每行都 `issueLike`。统计表（`| 2026 | 开放 | 关闭 |` 下接纯数字行）因此仍是表头。
   - `strayRows` 口径（第十一轮）：只跳过台账真正读的那一节（`OWN_TABLES` 里标题精确相等的**第一个** H2）；`## 索引（旧）`、`## 已关闭（2025）`、第二个 `## 索引` 都照常判。台账表小节下 `tableHeader` + `mappingFor` 接受的表 → 每行 E124 + `unreadable`；其他小节下有真实分隔行、且（表头含 id 列与 `摘要`/`标题`，或表头只有两列含 id 列，或表头位置是 issue 行）→ 每表一次 W225，每行编号进 **`cited`**。`## 路线图` 的 `| ID | 状态 | 说明 |` 不报。
   - `parseLedger().cited`：W225 表里的编号，**不进 `unreadable`**（否则读命令会说「结果不完整」、`show` exit 3）。`cmdNew`（取号逐个跳过、`--id` 撞号 exit 2）、`cmdShow`（miss 时 stderr 提示）和 `list --json` 的 `citedRows`（第十二轮）用它。库导出的 `maxIssueId` 不看它。
   - **`countSuffix` / `stripCountSuffixes`**（第十二轮）：「标题末尾的计数」唯一定义。4 位 19xx/20xx 年份不算；全角数字算；整个标题只是 `（3）` 不算。调用方负责先去掉 `#` 标记、ATX 结尾 `#`、`Issue N:` 前缀：E121（ledger-check 对 Issue 标题取冒号后）、`titleProblem`（cli）、`stripCounts`（adopt，反复剥）、adopt 对开放行摘要也剥。
-- **`src/ledger-check.ts`**：`PRIORITIES`、`summaryKey`（W212 的 NFKC/大小写/**删除全部空白**——第十三轮，dogfood #65）、`checkHashes` 区分 pinned（W202）与仅校验（判据列，给 W240 用）；`checkAppendix` 出 W250/W251/W252/W253。**W261**（第十三轮）：开放项正文没有非空 `验收判据` → warning，已关闭项不判（判据在表格列）。`--strict` 仍只豁免 W250。
-- **`src/ledger-read.ts`**：`ListedIssue` 带 `ids`/`count`；`expandIssues`（上限 10 万）；`viewIssue` 带 `labels`、`criteriaSource`；**`body.id` / `body.inherited` / `criteriaFrom`** 标明借用兄弟号正文（第十三轮，dogfood #69）；`withBody` 给 `list --json --with-body`（#67）。
+- **`src/ledger-check.ts`**：`PRIORITIES`、`summaryKey`（W212 的 NFKC/大小写/**删除全部空白**——第十三轮，dogfood #65）、`checkHashes` 区分 pinned（W202）与仅校验（判据列，给 W240 用）；`checkAppendix` 出 W250/W251/W252/W253。**W261**（第十三轮）：开放项正文没有非空 `验收判据` → warning，已关闭项不判（判据在表格列）；只含一条 HTML 注释的块不算非空（第十四轮）。`--strict` 仍只豁免 W250。
+- **`src/ledger-read.ts`**：`ListedIssue` 带 `ids`/`count`；`expandIssues`（上限 10 万）；`viewIssue` 带 `labels`、`criteriaSource`，借正文用与 `withBody` 同一个 `covers`（区间内部号也算，第十四轮）；**`body.id` / `body.inherited` / `criteriaFrom`** 标明借用兄弟号正文（第十三轮，dogfood #69）；`withBody` 给 `list --json --with-body`（#67）；closed 项补 `criteriaSource: "table"`（第十四轮）。
 - **`src/statuses.ts`**：默认状态词表 `STATUS_CLASSES`（第十一轮从 ledger-check 移出，ledger.ts 要用且不能与 ledger-check 循环引用）；`ledger-check` 仍 re-export。
 - **`src/adopt.ts`**（改前读完它）：
   - `pipeBlocks(lines, sections, synthetic)`：表头走 `tableHeader`，`synthetic` 是 `fixSeparators` 补分隔行的行号集合。无表头宽 3 的块带 `rowStatus`：`rowsOf` 逐行判断，第二格是精确状态词的行按 `# | 状态 | 摘要`，其余按 `# | 摘要 | 判据`。
@@ -363,14 +398,14 @@ issuemd <command> --help
   - `demoteHeadings`（第十二轮）：只在正文块里把 H4–H6 降级——从 `Issue` 标题（H1–H3，行首 0–3 空格）到下一个同级或更高级标题。旧 cafe 是 `## Issue N:` + `### 期望` + `####`，所以不能写成「下一个 H1–H3 结束」。
   - `stripCounts` 现在返回 `renames`（被改写的标题行 + 原名/新名，输入坐标）。`adopt()` 用 `separated.origin` 把它映射到输出坐标：报告里的「去掉标题里的（N）计数」点名每一处（**报告里标 `源 L…`**，因为此时输出行号还没定——复审(16) 3）；`foreign-section` 的消息据此区分「原样移入附录」与「标题去掉计数后移入附录」，H2 另加「以原级别 H2 并入附录」（第十三轮，dogfood #72）。
   - 开放项摘要计数（第十三轮，dogfood #73）：**先按原始摘要与原始正文标题比**（`headingTitleOf(originalTextAt(body.line))` 取 stripCounts 前的标题）。两侧相同 → 静默剥；**只有摘要带计数**且剥后相同 → `summary-count-stripped` 决定（带 id 与新旧值）；两侧都带计数时比较归一化后的计数值：同值静默、不同值才是 `open-title-conflict`；只在正文标题上的计数由 `stripCounts` 报告，不产生摘要决定（复审(16) 1/2）。别再把「先剥所有开放摘要、再判冲突」写回来——那会把真漂移吞掉。
-  - 早退文案（第十三轮）：有 W225 警告时写「结构合法（check 0 error）；另有 N 张表按 W225 原样保留、不迁移，无需转换」，没有 W225 时仍写「已是规范台账」。
+  - 早退文案（第十三轮）：有 W225 警告时写「结构合法（check 0 error）；另有 N 张表按 W225 原样保留、不迁移，无需转换」，没有 W225 时仍写「已是规范台账」。无改动时真运行也先打 `(no changes)` 再打报告（第十四轮，A5）。
   - 正文标题与摘要的比较一律先 `unescapeCell(title)`：E106、adopt 的 `open-title-conflict`、`sync --titles`（第十二轮）。
   - `layoutLines`：被消费的表块的表头/分隔行，**加上表格小节里只有表头+分隔行的空表**（#52：混合文件里规范表是空的，以前会被当成说明文字复制进附录）。
   - `Row` 有 `criteria`（真判据）与 `extras`（附加列、溢出格、`原状态：X`）两个字段，**不要再把 extras 拼进 criteria**：开放项 extras 进 `**原表格判据**`，已关闭行在输出表时才拼成「判据；附加列」。`Row.overflow` 记溢出格数，`rawStatus` 记去格式前的状态格。
   - 开放正文组装：每个开放行按 `parseIds` 逐号生成 `bodyEntries`（已有正文或骨架），最后全体 `compareIds` 排序再展开；索引表行仍用 `sortedOpen`。
   - `movedBodyLines`：被搬进正文/归档的 `### Issue N:` 块，在 H1 说明与外来小节的逐字副本里跳过。`topBodyLines`：首个 H2 之前、且是 `bodyById` 选中的那份正文，在 H1 说明与前言里跳过（没选中的同号副本留原处转义）。`appendixBodies`：输入附录里的正文块，不参与挂载，原地改标题。
   - 列映射 `mappingFor`、状态优先级、保留规则、**守恒守卫**（逐行文本 + 编号集合）同前：新增任何「重建」逻辑时，要么把行复制到输出，要么把它加进 `regenerated`（= `rowLines` ∪ `layoutLines`）。
-- **`src/write.ts`**：Myers 行级 diff + 3 行上下文多 hunk。`unifiedDiff(old, next, path, finalNewline)`：无尾换行时末行后加 `\ No newline at end of file`，只在一侧是末行的上下文行拆成 -/+，这样 `patch` 能应用。
+- **`src/write.ts`**：Myers 行级 diff + 3 行上下文多 hunk。`unifiedDiff(old, next, path, finalNewline, eol, bom)`：无尾换行时末行后加 `\ No newline at end of file`，只在一侧是末行的上下文行拆成 -/+，这样 `patch` 能应用。
 - **`src/cli.ts` `openFailure`**：`loadWritable` 的读入异常；io 的「E130 file changed while being read」→ exit 4，其余 exit 2。
 - **`scripts/build.mjs [--out DIR]`**：`tsc --outDir .<DIR>-staging` → chmod 755 bin → rename 换入。默认 `dist`；`npm test` 用 `--out .dist-test`。类型错误时目标目录不变、`npm test` 停在 build。
 - **`tests/built.ts`**：测试里执行 CLI / 导入编译产物一律用 `built("bin/issuemd.js")` 之类（默认 `.dist-test`，可用 `ISSUEMD_BUILD_DIR` 覆盖）。**测试里不要再写 `../dist/`**。打包测试只校验 manifest（`files` 含 `dist`、`bin`/`exports` 指向 `dist/…`）加测试产物本身。
@@ -408,10 +443,16 @@ issuemd <command> --help
 29. `show` 的历史回退（多号行只在首号写正文）可以保留，但必须标明归属（`body.id` / `inherited` / `criteriaFrom`）。不标明就是与 `check` 的 E102 互相矛盾（第十三轮 #69）。
 30. adopt 的「剥计数」不能先于「判冲突」：判断必须看 stripCounts 之前的原文标题。两侧同计数才静默；单侧带计数要被看见；计数不同是冲突（第十三轮 #73）。
 31. 外来 H2 搬进附录**不要降级成 H3**：降级后它里面的表不再处于非台账小节名下，W225 消失、编号不再保留（第十三轮实测会让 `#56/#57` 的占用回退）。报告写「以原级别 H2 并入附录」即可。
+32. 单元格的转义模型（`splitCells`/`escapeCell`）只能表示「字面竖线」和「偶数个反斜杠 + 竖线」；「奇数个反斜杠紧邻竖线」不可表示。把正文/用户文本写进单元格的路径必须先做往返检查，表示不了就拒绝，不能照写（第十四轮 close）。
+33. 读命令的 check note 的 N 必须是 `check` 的总 error 数；不可读行只是细节，不是抑制整条 note 的理由（第十四轮）。
+34. 区间行的正文归属必须在 `viewIssue` 与 `withBody` 用同一条 `covers` 规则，否则两个读命令互相矛盾（第十四轮）。
+35. diff 要能应用到原始字节：BOM 属于首行，`unifiedDiff` 必须把它带上（第十四轮）。
+36. 标题计数检查不能受 E120 门禁影响：`## 已关闭（3）` 既缺小节又有计数，两个都要报（第十四轮）。
+37. `(no changes)` 契约对 `adopt` 与它的 `--dry-run` 同样适用：真运行先打一行再打报告（第十四轮）。
 
 ## 已完成的审查与验证
 
-- 回归用例：`src/dogfood.test.ts`（按 dogfooding 编号分组；第九轮自测的用例以 `probe:` 开头，在文件末尾）、`src/round13.test.ts`（第十三轮，按 #61–#73 分组）、`src/ledger-verbs.test.ts`、`src/write.test.ts`、`tests/bin.test.ts`（bin 执行位、FIFO 驱动的真实并发 → exit 4、打包 manifest）。
+- 回归用例：`src/dogfood.test.ts`（按 dogfooding 编号分组；第九轮自测的用例以 `probe:` 开头，在文件末尾）、`src/round13.test.ts`（第十三轮，按 #61–#73 分组）、`src/round14.test.ts`（第十四轮黑盒发现）、`src/ledger-verbs.test.ts`、`src/write.test.ts`、`tests/bin.test.ts`（bin 执行位、FIFO 驱动的真实并发 → exit 4、打包 manifest）。
 - 第八轮手工验证：`npm test` 前后 `dist/` 与 `dist/bin/issuemd.js` 的 inode + mtime 不变；故意制造类型错误时 `npm test` exit 1 且 `.dist-test` 不含残留；`npm pack --dry-run` 不含 `.dist-test`。
 - 第八轮末尾派了独立 subagent 复审本轮 diff，结论见最后一节「第八轮复审」。
 
@@ -454,6 +495,10 @@ issuemd <command> --help
 - W225 表里超出安全整数的编号（`99999999999999999999`）既不进 `citedRows`，也不报 E109；kept-row 进附录时行首 `|` 被转义（`\| 备注 | x |`；黑盒指出「不严格是按原文」，未核实是否有意，下一轮可查 `neutralizePreserved`）。
 - 正文里的 setext 标题（`文字` + `===`）让 adopt 以 E110 自拒（旧行为）；同一编号两份正文块被守恒守卫拒绝（旧行为）。
 - 游离行（E124）首格解析不出编号时整行不报（无法判断它是 issue）；`new` 的重复摘要检查只看规范开放表，不看游离行——有 E124 的台账本来就该先 `adopt`。
+- **表格单元格表示不了「奇数个反斜杠紧邻竖线」**（第十四轮）：`close` 晋升这种判据时 exit 2 不写；`--keep-body --no-criteria` 把正文原样留在附录是逃生口。这是 `splitCells`/`escapeCell` 的模型限制，改它要连带改所有单元格的解码规则（迁移风险大，未做）。
+- **`list --expand` 保持表格行序**（第十四轮）：文档只承诺「一个 id 一行」；`100, 99` 展开为 `100`、`99`，行在它所在的位置展开。要排序的话是独立的小改动。
+- **snapshot 是原始字节的 SHA-256 前 16 位**（第十四轮）：LF/CRLF/BOM/无尾换行是不同文件、不同 snapshot；同一文件内 `check`/读命令/写命令 dry-run 一致，`--if-unchanged` 用错编码的 token 会 exit 4（保守且安全）。
+- **`list --json --with-body` 在缺判据/缺正文时省略 `criteria`/`criteriaSource`/`labels`**（第十四轮）：与 `show --json` 同口径；消费者按键是否存在判断。
 
 ## 还没做 / 仅供参考
 
@@ -474,6 +519,9 @@ node dist/bin/issuemd.js close --help                        # 只列 close 的�
 node dist/bin/issuemd.js list fixtures/canonical-clean.md --title x; echo $?   # 2
 node dist/bin/issuemd.js status fixtures/canonical-clean.md 2 未决 | cat       # (no changes)，exit 0
 node dist/bin/issuemd.js check ../issuemd_dogfooding/issue-20261124.md | tail -1   # 0 errors, 8 warnings（W261 5 条，见已知项）
+node dist/bin/issuemd.js check ../orca_archived_files/issue-20261023.md | tail -1   # 0 errors, 158 warnings
+node dist/bin/issuemd.js adopt fixtures/canonical-clean.md | head -1          # (no changes) 后接报告
+node dist/bin/issuemd.js show fixtures/canonical-clean.md 2 --json --label 不存在 >/dev/null; echo $?   # stdout 空，1
 ls -l dist/bin/issuemd.js                                    # -rwxr-xr-x
 npm pack --dry-run --ignore-scripts   # 含 TEMPLATE.md、THIRD_PARTY_NOTICES.md、SKILL.md、dist/*.d.ts；不含 scripts/、.dist-test
 ```
