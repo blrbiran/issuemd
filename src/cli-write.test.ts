@@ -866,3 +866,13 @@ describe("keep-body round trip", () => {
     expect((await clean(path)).code).toBe(0);
   });
 });
+
+describe("a read that races a concurrent rename is retryable", () => {
+  test("io's E130 while reading maps to exit 4, other open failures stay exit 2", async () => {
+    const { openFailure } = await import("./cli.js");
+    const raced = openFailure("l.md", new Error("E130 file changed while being read"));
+    expect(raced.code).toBe(4);
+    expect(raced.stderr).toContain("retry");
+    expect(openFailure("l.md", new Error("EACCES: permission denied")).code).toBe(2);
+  });
+});

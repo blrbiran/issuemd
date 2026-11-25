@@ -27,7 +27,7 @@ export type LedgerRow = {
  * It is not in `rows`, but its ids — when the first cell still parses — are
  * real and must not be reused or reported as missing (dogfood #36).
  */
-export type UnreadableRow = { line: number; table: TableKind | "stray"; reason: string; ids?: IdSpan[] };
+export type UnreadableRow = { line: number; table: TableKind | "stray" | "cited"; reason: string; ids?: IdSpan[] };
 
 /**
  * H2 titles whose tables are ledger data in the pre-canonical layouts (cafe
@@ -105,15 +105,47 @@ export function mappingFor(header: string[] | undefined, width: number): Mapping
 const OWN_TABLES = new Set(["怎么用", "状态口径", "索引", "已关闭", "正文", "附录"]);
 const ID_COLUMN = ["#", "编号", "ID", "Id", "id"];
 
+const isSeparatorRow = (cells: string[]) => cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
+
+/**
+ * The header of a pipe block, read the way adopt reads it — the one rule both
+ * use (#56/#57): a first row with no digit at all is a header; a first row
+ * followed by a separator is a header unless one of its cells starts with a
+ * digit (`| 7 | 未决 | 甲 |` above `|---|` is a data row written where the
+ * header goes, and adopt migrates it as data). `负责人2` / `Q3` stay headers.
+ */
+export function tableHeader(rows: string[][]): string[] | undefined {
+  const first = rows[0];
+  if (!first || first.length === 0) return undefined;
+  if (first.every((cell) => !/\d/.test(cell))) return first;
+  if (rows[1] && isSeparatorRow(rows[1]) && first.every((cell) => !/^\d/.test(cell))) return first;
+  return undefined;
+}
+
+/** Data rows of a pipe block: everything but its header and separators. */
+function dataRows(rows: string[][], header: string[] | undefined): { cells: string[]; index: number }[] {
+  return rows.flatMap((cells, index) =>
+    (header && index === 0) || isSeparatorRow(cells) ? [] : [{ cells, index }]);
+}
+
+/** `## 索引（开放）` → 索引: one of the ledger's own sections? */
+export const isOwnSection = (title: string) => OWN_TABLES.has(title.replace(/\s*[（(][^）)]*[）)]\s*$/, "").trim());
+
 /**
  * Issue rows sitting under an H2 the ledger does not read (dogfood #52). They
  * are invisible to every view, so they become E124 + unreadable rows: their
  * ids are reserved and `show` points at them instead of "no such issue".
  *
  * Only under a ledger-table heading (`isTableSection`) — exactly where adopt
- * migrates rows. An issue-shaped table under any other heading (`## 复核记录`)
- * is usually narrative citing existing ids; adopt keeps it as text, so it gets
- * W225 (once per table) instead of an error adopt could never clear (#54).
+ * migrates rows (`tableHeader` + `mappingFor`, the shared definition). An
+ * issue-shaped table under any other heading (`## 复核记录`) is usually
+ * narrative citing ids; adopt keeps it as text, so it gets W225 (once per
+ * table) instead of an error adopt could never clear (#54). Its ids are still
+ * reserved (`cited`): `new` will not hand one out again (#56).
+ *
+ * Outside ledger headings a table counts when its header names an id column
+ * and either a 摘要/标题 column or nothing else (`| # | 说明 |`), or when an id
+ * row sits where the header goes. `| ID | 状态 | 说明 |` (a roadmap) does not.
  */
 function strayRows(
   blocks: PipeBlock[],
@@ -121,45 +153,47 @@ function strayRows(
   errors: Diagnostic[],
   warnings: Diagnostic[],
   unreadable: UnreadableRow[],
+  cited: UnreadableRow[],
 ) {
   for (const block of blocks) {
     const h2 = h2s.filter((section) => section.line_start < block.line).at(-1);
-    if (!h2 || OWN_TABLES.has(h2.title.replace(/\s*[（(][^）)]*[）)]\s*$/, "").trim())) continue;
-    let idAt: number;
-    let first: number;
+    if (!h2 || isOwnSection(h2.title)) continue;
+    const header = tableHeader(block.rows);
+    const width = (header ?? block.rows[0]).length;
     if (!isTableSection(h2.title)) {
-      // Outside ledger-table headings adopt keeps tables as text; one that
-      // names an id and a summary column still gets a heads-up (W225, #54).
-      if (!block.header) continue;
-      const header = block.rows[0];
-      const at = header.findIndex((cell) => ID_COLUMN.includes(cell));
-      if (at < 0 || !header.some((cell) => cell === "摘要" || cell === "标题")) continue;
-      const line = block.rows.slice(2).findIndex((cells) => parseIds(cells[at] ?? ""));
-      if (line >= 0) {
-        warnings.push({
-          code: "W225",
-          line: block.line + 2 + line,
-          message: `table under '## ${h2.title}' looks like an issue table but is not tracked (adopt keeps it as text); ` +
-            "if its rows are issues, move them into 索引/已关闭 by hand; if not, rename its '#' column",
-        });
+      let idAt = -1;
+      if (header) {
+        const at = header.findIndex((cell) => ID_COLUMN.includes(cell));
+        if (at >= 0 && (header.length === 2 || header.some((cell) => cell === "摘要" || cell === "标题"))) idAt = at;
+      } else if (block.header && mappingFor(undefined, width)) {
+        idAt = 0; // an id row in the header slot renders as a table
+      }
+      if (idAt < 0) continue;
+      const reason = `table under '## ${h2.title}' looks like an issue table but is not tracked (adopt keeps it as text); ` +
+        "its ids are reserved, so new will not reuse them; if its rows are issues, move them into 索引/已关闭 by hand; " +
+        "if not, rename its '#' column";
+      let warned = false;
+      for (const { cells, index } of dataRows(block.rows, header)) {
+        const ids = parseIds(cells[idAt] ?? "");
+        if (!ids) continue;
+        const line = block.line + index;
+        if (!warned) warnings.push({ code: "W225", line, message: reason });
+        warned = true;
+        cited.push({ line, table: "cited", reason: `cited in a table under '## ${h2.title}' (W225)`, ids });
       }
       continue;
     }
     // Under a ledger-table heading: exactly the tables adopt migrates.
-    const mapping = block.header
-      ? mappingFor(block.rows[0], block.rows[0].length)
-      : mappingFor(undefined, block.rows[0].length);
+    const mapping = mappingFor(header, width);
     if (!mapping) continue;
-    idAt = mapping.id;
-    first = block.header ? 2 : 0;
-    block.rows.slice(first).forEach((cells, index) => {
-      const ids = parseIds(cells[idAt] ?? "");
-      if (!ids) return;
-      const line = block.line + first + index;
+    for (const { cells, index } of dataRows(block.rows, header)) {
+      const ids = parseIds(cells[mapping.id] ?? "");
+      if (!ids) continue;
+      const line = block.line + index;
       const reason = `issue row under '## ${h2.title}' (outside 索引/已关闭) is not read; run 'issuemd adopt FILE' to move it`;
       errors.push({ code: "E124", line, message: reason });
       unreadable.push({ line, table: "stray", reason, ids });
-    });
+    }
   }
 }
 
@@ -280,10 +314,12 @@ export function parseLedger(src: string) {
   const warnings: Diagnostic[] = [];
   const rows: Record<TableKind, LedgerRow[]> = { open: [], closed: [] };
   const unreadable: UnreadableRow[] = [];
+  /** Ids cited by W225 tables: not issues the ledger tracks, but reserved. */
+  const cited: UnreadableRow[] = [];
   const missing = CORE.filter((title) => !h2s.some((section) => section.title === title));
   if (missing.length > 0) {
     errors.push({ code: "E120", line: 1, message: `Canonical ledger sections missing: ${missing.join(", ")}` });
-    return { lines, visible, sections, rows, unreadable, blocks: [] as PipeBlock[], errors, warnings };
+    return { lines, visible, sections, rows, unreadable, cited, blocks: [] as PipeBlock[], errors, warnings };
   }
 
   const roots = sections.filter((section) => section.level === 1);
@@ -347,8 +383,8 @@ export function parseLedger(src: string) {
     if (tables.length !== 1) errors.push({ code: "E112", line: section.line_start, message: `${title} must contain one table` });
     rows[kind] = tables.flatMap((table) => readRows(table, kind, errors, warnings, unreadable));
   }
-  strayRows(blocks, h2s, errors, warnings, unreadable);
-  return { lines, visible, sections, rows, unreadable, blocks, errors, warnings };
+  strayRows(blocks, h2s, errors, warnings, unreadable, cited);
+  return { lines, visible, sections, rows, unreadable, cited, blocks, errors, warnings };
 }
 
 /** Well-formed `### Issue N: title` bodies strictly inside `## 正文`. */

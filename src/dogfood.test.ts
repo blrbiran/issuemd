@@ -885,10 +885,10 @@ describe("#54 issue-shaped tables under a non-ledger heading are text, said once
     }
   }
 
-  test("the id is not tracked: show says no such issue, new may use it", async () => {
+  test("the id is not tracked but reserved: show says no such issue, new skips it", async () => {
     const path = withSection("变更记录", SHAPES.narrow);
     expect((await run(["show", path, "90"])).code).toBe(1);
-    expect((await run(["new", path, "--title", "新"])).stdout.trim()).toBe("1");
+    expect((await run(["new", path, "--title", "新"])).stdout.trim()).toBe("91");
   });
 });
 
@@ -1624,5 +1624,86 @@ describe("review11", () => {
     const result = await run(["show", path, "1", "--label", "验收判据："]);
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("甲");
+  });
+});
+
+describe("#56/#57 every issue-table shape: check, adopt and new agree", () => {
+  const SHAPES: Record<string, string> = {
+    "# | 摘要": "| # | 摘要 |\n|---|---|\n| 7 | 旧的甲 |\n",
+    "# | 说明": "| # | 说明 |\n|---|---|\n| 7 | 旧的甲 |\n",
+    "# | 判据": "| # | 判据 |\n|---|---|\n| 7 | 旧的甲 |\n",
+    "编号 | 说明": "| 编号 | 说明 |\n|---|---|\n| 7 | 旧的甲 |\n",
+    "data row above the separator": "| 7 | 未决 | 旧的甲 |\n|---|---|---|\n",
+  };
+  const LEDGER_ONLY: Record<string, string> = { "# | 状态 | 说明": "| # | 状态 | 说明 |\n|---|---|---|\n| 7 | 未决 | 旧的甲 |\n" };
+  const withSection = (title: string, table: string) =>
+    file(TEMPLATE.replace("## 索引", `## ${title}\n\n${table}\n## 索引`));
+  type Diag = { code: string; line: number; message: string };
+  const diags = async (path: string) =>
+    JSON.parse((await run(["check", path, "--json"])).stdout) as { errors: Diag[]; warnings: Diag[] };
+  const lineOf7 = (path: string) => text(path).split("\n").findIndex((l) => l.startsWith("| 7 |")) + 1;
+
+  for (const [shape, table] of Object.entries({ ...SHAPES, ...LEDGER_ONLY })) {
+    test(`待处理 / ${shape}: E124, id reserved, adopt migrates it`, async () => {
+      const path = withSection("待处理", table);
+      const { errors } = await diags(path);
+      expect(errors.filter((e) => e.code === "E124").map((e) => e.line)).toEqual([lineOf7(path)]);
+      const copy = file(text(path));
+      expect((await run(["new", copy, "--title", "撞号", "--id", "7"])).code).toBe(2);
+      expect((await run(["new", copy, "--title", "新"])).stdout.trim()).toBe("8");
+      const adopted = await run(["adopt", path]);
+      expect(adopted.code).toBe(0);
+      expect(text(path)).toMatch(/\| 7 \| 未决 \|  \| 旧的甲 \|/);
+      expect((await run(["check", path])).stdout).toContain("0 errors");
+    });
+  }
+
+  for (const [shape, table] of Object.entries(SHAPES)) {
+    test(`变更记录 / ${shape}: W225 once, id reserved, adopt says it keeps the table`, async () => {
+      const path = withSection("变更记录", table);
+      const { errors, warnings } = await diags(path);
+      expect(errors).toEqual([]);
+      const w225 = warnings.filter((w) => w.code === "W225");
+      expect(w225.map((w) => w.line)).toEqual([lineOf7(path)]);
+      const copy = file(text(path));
+      const clash = await run(["new", copy, "--title", "撞号", "--id", "7"]);
+      expect(clash.code).toBe(2);
+      expect(clash.stderr).toContain(`L${lineOf7(path)}`);
+      expect((await run(["new", copy, "--title", "新"])).stdout.trim()).toBe("8");
+      const dry = await run(["adopt", path, "--dry-run"]);
+      expect(dry.code).toBe(0);
+      expect(dry.stdout).toContain("cited-table");
+      expect(dry.stdout).toContain(`L${lineOf7(path)}`);
+      const before = text(path);
+      expect((await run(["adopt", path])).code).toBe(0);
+      expect(text(path)).toBe(before);
+    });
+  }
+
+  test("a converting adopt also reports the W225 table it keeps", async () => {
+    const path = file(TEMPLATE.replace("## 索引", "## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n\n## 变更记录\n\n| # | 说明 |\n|---|---|\n| 7 | 旧的 |\n\n## 索引"));
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("cited-table");
+    expect(text(path)).toContain("| 7 | 旧的 |");
+  });
+
+  test("tables kept silent on purpose: 路线图 ID|状态|说明 and 变更记录 #|状态|说明", async () => {
+    for (const [title, table] of [
+      ["路线图", "| ID | 状态 | 说明 |\n|---|---|---|\n| 7 | 进行中 | 某事 |\n"],
+      ["变更记录", LEDGER_ONLY["# | 状态 | 说明"]!],
+    ] as const) {
+      const path = withSection(title, table);
+      const { errors, warnings } = await diags(path);
+      expect([...errors, ...warnings].map((d) => d.code)).toEqual([]);
+      expect((await run(["new", path, "--title", "撞号", "--id", "7"])).code).toBe(0);
+    }
+  });
+
+  test("show of a cited id says where it is cited (exit 1)", async () => {
+    const path = withSection("变更记录", SHAPES["# | 说明"]!);
+    const shown = await run(["show", path, "7"]);
+    expect(shown.code).toBe(1);
+    expect(shown.stderr).toContain(`L${lineOf7(path)}`);
   });
 });

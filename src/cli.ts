@@ -453,10 +453,10 @@ function cmdList(rest: string[], v: Values): CliResult {
 }
 
 /** The unreadable row whose first cell names `id`, if any. */
-function unreadableHolding(ledger: ReturnType<typeof parseLedger>, id: string) {
+function unreadableHolding(ledger: ReturnType<typeof parseLedger>, id: string, rows = ledger.unreadable) {
   const wanted = parseId(id);
   if (!wanted) return undefined;
-  return ledger.unreadable.find((row) => (row.ids ?? []).some((span) =>
+  return rows.find((row) => (row.ids ?? []).some((span) =>
     span.suffix === wanted.suffix && span.start <= wanted.start && wanted.start <= span.end));
 }
 
@@ -501,8 +501,12 @@ function cmdShow(rest: string[], v: Values): CliResult {
     }
     // With --json, stdout is JSON or nothing: a script parsing it must not
     // get the text-mode placeholder.
-    return badIdText("show", id) ??
+    // Cited by a W225 table: not tracked, but say where the number is used.
+    const cited = unreadableHolding(ledger, id, ledger.cited);
+    const citedNote = cited ? `issuemd show: #${id} is not tracked, but is cited at L${cited.line} (${cited.reason})\n` : "";
+    const missing = badIdText("show", id) ??
       (v.json ? { code: 1, stdout: "", stderr: `issuemd show: no such issue: ${id}\n` } : noMatch(`(no such issue: ${id})\n`));
+    return citedNote && missing.code === 1 ? { ...missing, stderr: citedNote + missing.stderr } : missing;
   }
   // The same id may also sit in a row show cannot read (an old 待处理 table,
   // E124): this view is then only one of two conflicting records.
@@ -673,8 +677,21 @@ function loadWritable(file: string, expected?: string): Loaded | CliResult {
     }
     return { doc, lines, path, links, snapshot };
   } catch (e) {
-    return err(`issuemd: cannot open '${file}': ${(e as Error).message}\n`, 2);
+    return openFailure(file, e);
   }
+}
+
+/**
+ * A write command could not read its ledger. io's "E130 file changed while
+ * being read" means another writer replaced the file mid-read: that is the
+ * concurrency case, retryable like every other E130 (exit 4), not an I/O error.
+ */
+export function openFailure(file: string, e: unknown): CliResult {
+  const message = (e as Error).message;
+  if (message.startsWith("E130")) {
+    return err(`issuemd: E130 '${file}' changed while it was being read; re-read and retry\n`, 4);
+  }
+  return err(`issuemd: cannot open '${file}': ${message}\n`, 2);
 }
 
 /**
@@ -1056,7 +1073,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
     );
   }
 
-  const max = maxIssueId(ledger.rows, ledger.unreadable);
+  const max = maxIssueId(ledger.rows, [...ledger.unreadable, ...ledger.cited]);
   let idText = String(max + 1);
   if (v.id == null && !Number.isSafeInteger(max + 1)) {
     return err(
@@ -1080,6 +1097,14 @@ function cmdNew(rest: string[], v: Values): CliResult {
     if (findRow(ledger, idText)) return err(`issuemd new: id ${idText} already exists\n`, 2);
     const bad = unreadableHolding(ledger, idText);
     if (bad) return err(`issuemd new: id ${idText} already exists in an unreadable row (L${bad.line}: ${bad.reason})\n`, 2);
+    const cited = unreadableHolding(ledger, idText, ledger.cited);
+    if (cited) {
+      return err(
+        `issuemd new: id ${idText} is reserved: L${cited.line} is ${cited.reason}; ` +
+          "pick another id, or rename that table's '#' column if its numbers are not issues\n",
+        2,
+      );
+    }
   }
   const span = parseId(idText);
   if (!span) return err(`issuemd new: '${idText}' is not a valid issue id\n`, 2);
@@ -1624,9 +1649,19 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
     }
     throw error;
   }
-  const report = renderAdoptReport(file, result.changes, result.decisions, !!v["dry-run"]);
   const target = joinDocument(result.lines, loaded.doc);
-  const after = checkLedger(target, file).errors;
+  const checked = checkLedger(target, file);
+  const after = checked.errors;
+  // Tables adopt keeps as text although they look like issue tables (W225):
+  // say so, even when nothing else changes (#56/#57).
+  const citedTables: Decision[] = checked.warnings
+    .filter(({ code }) => code === "W225")
+    .map(({ line }) => ({
+      kind: "cited-table",
+      line,
+      message: "这张表看起来像 issue 表，但不在台账表小节下：不迁移、原样保留（W225）；表里的编号已被占用，new 不会再发",
+    }));
+  const report = renderAdoptReport(file, result.changes, [...result.decisions, ...citedTables], !!v["dry-run"]);
   if (after.length > 0) {
     // The converted text was never written, so its line numbers point at
     // nothing the user can open. Most lines are copied verbatim, so look each
@@ -1706,7 +1741,7 @@ function reportTargetProblem(ledgerPath: string, reportPath: string): string | n
 }
 
 /** Decisions that only record where unrecognised text was kept verbatim. */
-const KEPT_KINDS = new Set<Decision["kind"]>(["foreign-section", "preamble", "orphan-body", "section-prose", "kept-section-text"]);
+const KEPT_KINDS = new Set<Decision["kind"]>(["cited-table", "foreign-section", "preamble", "orphan-body", "section-prose", "kept-section-text"]);
 
 /**
  * Three parts (dogfood #17): what changed mechanically, what was kept

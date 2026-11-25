@@ -21,7 +21,7 @@
 
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { isTableSection, mappingFor, parseLedger, splitCells, type Mapping } from "./ledger.js";
+import { isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
 import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
@@ -44,7 +44,8 @@ export type DecisionKind =
   | "status-in-body"
   | "section-prose"
   | "kept-section-text"
-  | "extra-columns";
+  | "extra-columns"
+  | "cited-table";
 
 export type Decision = {
   kind: DecisionKind;
@@ -140,16 +141,18 @@ function pipeBlocks(lines: string[], sections: Section[]): Block[] {
     // A row followed by a separator is a header even when a cell has a digit
     // (`负责人2`, `Q3`) — the same rule check's parser uses, so E124 and
     // adopt read the same columns (review 11).
-    const first = block.cells[0];
     // fixSeparators also puts a separator under the first data row of a
     // header-less table, so a cell starting with a digit (an id) still
-    // means data.
-    const header = first && (isHeader(first) ||
-      (block.cells[1] != null && isSeparator(block.cells[1]) && first.every((cell) => !/^\d/.test(cell))))
-      ? first
-      : undefined;
+    // means data. `tableHeader` is the rule check's E124 uses too (#56).
+    const header = tableHeader(block.cells);
     const width = (header ?? block.cells[0] ?? []).length;
-    const mapping = mappingFor(header, width);
+    let mapping = mappingFor(header, width);
+    // Header-less width 3 is the orca `# | 摘要 | 判据` shape — unless every
+    // row's second cell is a status word (`| 7 | 未决 | 甲 |`, #56).
+    const data = block.cells.filter((cells) => !isSeparator(cells) && !isHeader(cells));
+    if (!header && width === 3 && data.length > 0 && data.every((cells) => STATUS_WORDS.has(plainStatus(cells[1] ?? "")?.word ?? ""))) {
+      mapping = { id: 0, status: 1, summary: 2 };
+    }
     if (mapping) {
       const h2 = sections.filter((s) => s.level === 2 && s.line_start < start).at(-1);
       // Width-only mappings are a guess; only trust them inside a section that
