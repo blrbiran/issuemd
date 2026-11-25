@@ -34,6 +34,74 @@ export type UnreadableRow = { line: number; table: TableKind | "stray"; reason: 
  * `## 状态总览`, orca `## 待处理`). adopt migrates them; check reports them.
  */
 export const isTableSection = (title: string) => /索引|总览|待处理|待办|已关闭|closed|open|issues?/i.test(title);
+/** How adopt reads an issue table's columns; also the one definition of
+ * "issue table" that E124 uses, so check flags exactly what adopt migrates. */
+export type Mapping = {
+  id: number;
+  status?: number;
+  priority?: number;
+  summary: number;
+  criteria?: number;
+  /** Header cells not mapped to a field; their text is appended to criteria. */
+  extra?: { index: number; name: string }[];
+  /** True when the mapping is a guess (no 摘要/标题 header): table sections only. */
+  guess?: boolean;
+};
+
+/** Columns that explain why an issue is closed; criteria when there is no 判据. */
+const VERDICT_COLUMNS = ["裁决", "说明", "理由", "原因", "结论", "备注"];
+
+export function mappingFor(header: string[] | undefined, width: number): Mapping | undefined {
+  if (header) {
+    const index = (...names: string[]) => header.findIndex((cell) => names.includes(cell));
+    const id = index("#", "编号", "ID", "Id", "id");
+    if (id < 0) return undefined; // a header that names no id column is not an issue table
+    const status = index("状态");
+    const priority = index("P", "优先级");
+    const named = index("摘要", "标题");
+    let criteria = index("判据");
+    const taken = new Set([id, status, priority, named, criteria].filter((at) => at >= 0));
+    if (criteria < 0) criteria = header.findIndex((cell, at) => !taken.has(at) && VERDICT_COLUMNS.includes(cell));
+    if (criteria >= 0) taken.add(criteria);
+    // Without 摘要/标题 the summary is the first column the header does not
+    // name otherwise — but only when the header names something else we know
+    // (`| # | 状态 | 说明 |`) or is just `| # | X |`. Reading an unknown wide
+    // header by position turned 状态 into the summary; such tables are kept
+    // verbatim instead.
+    let summary = named;
+    if (summary < 0) {
+      const knows = status >= 0 || priority >= 0 || criteria >= 0;
+      if (!knows && width !== 2) return undefined;
+      summary = header.findIndex((_, at) => !taken.has(at));
+      if (summary < 0 && criteria >= 0) {
+        // `| # | 判据 |`: the only text there is is the summary.
+        summary = criteria;
+        criteria = -1;
+      }
+      if (summary < 0) return undefined;
+    }
+    const used = new Set([id, status, priority, summary, criteria].filter((at) => at >= 0));
+    const extra = header.flatMap((name, at) => (used.has(at) ? [] : [{ index: at, name }]));
+    return {
+      id,
+      status: status >= 0 ? status : undefined,
+      priority: priority >= 0 ? priority : undefined,
+      summary,
+      criteria: criteria >= 0 ? criteria : undefined,
+      extra: extra.length ? extra : undefined,
+      guess: named < 0,
+    };
+  }
+  // Header-less blocks: width decides (`# | 摘要 | 判据` is the orca shape).
+  // A guess, trusted only inside a ledger table section; wider blocks are
+  // kept verbatim.
+  if (width === 2) return { id: 0, summary: 1 };
+  if (width === 3) return { id: 0, summary: 1, criteria: 2 };
+  if (width === 5) return { id: 0, status: 1, priority: 2, summary: 3, criteria: 4 };
+  if (width === 4) return { id: 0, status: 1, priority: 2, summary: 3 };
+  return undefined;
+}
+
 const OWN_TABLES = new Set(["怎么用", "状态口径", "索引", "已关闭", "正文", "附录"]);
 const ID_COLUMN = ["#", "编号", "ID", "Id", "id"];
 
@@ -59,35 +127,31 @@ function strayRows(
     if (!h2 || OWN_TABLES.has(h2.title.replace(/\s*[（(][^）)]*[）)]\s*$/, "").trim())) continue;
     let idAt: number;
     let first: number;
-    if (block.header) {
+    if (!isTableSection(h2.title)) {
+      // Outside ledger-table headings adopt keeps tables as text; one that
+      // names an id and a summary column still gets a heads-up (W225, #54).
+      if (!block.header) continue;
       const header = block.rows[0];
-      idAt = header.findIndex((cell) => ID_COLUMN.includes(cell));
-      // Mirror adopt: a header that names a summary column is an issue table
-      // anywhere; one with only 状态 (`| ID | 状态 | 说明 |`, a roadmap) is
-      // one only under a ledger-table heading. Flagging the roadmap made
-      // legacy files with such a section unadoptable.
-      const named = header.some((cell) => cell === "摘要" || cell === "标题");
-      const status = header.includes("状态");
-      if (idAt < 0 || !(named || (status && isTableSection(h2.title)))) continue;
-      first = 2;
-      if (!isTableSection(h2.title)) {
-        const line = block.rows.slice(first).findIndex((cells) => parseIds(cells[idAt] ?? ""));
-        if (line >= 0) {
-          warnings.push({
-            code: "W225",
-            line: block.line + first + line,
-            message: `table under '## ${h2.title}' looks like an issue table but is not tracked (adopt keeps it as text); ` +
-              "if its rows are issues, move them into 索引/已关闭 by hand; if not, rename its '#' column",
-          });
-        }
-        continue;
+      const at = header.findIndex((cell) => ID_COLUMN.includes(cell));
+      if (at < 0 || !header.some((cell) => cell === "摘要" || cell === "标题")) continue;
+      const line = block.rows.slice(2).findIndex((cells) => parseIds(cells[at] ?? ""));
+      if (line >= 0) {
+        warnings.push({
+          code: "W225",
+          line: block.line + 2 + line,
+          message: `table under '## ${h2.title}' looks like an issue table but is not tracked (adopt keeps it as text); ` +
+            "if its rows are issues, move them into 索引/已关闭 by hand; if not, rename its '#' column",
+        });
       }
-    } else {
-      const width = block.rows[0].length;
-      if (!isTableSection(h2.title) || width < 2 || width > 5) continue;
-      idAt = 0;
-      first = 0;
+      continue;
     }
+    // Under a ledger-table heading: exactly the tables adopt migrates.
+    const mapping = block.header
+      ? mappingFor(block.rows[0], block.rows[0].length)
+      : mappingFor(undefined, block.rows[0].length);
+    if (!mapping) continue;
+    idAt = mapping.id;
+    first = block.header ? 2 : 0;
     block.rows.slice(first).forEach((cells, index) => {
       const ids = parseIds(cells[idAt] ?? "");
       if (!ids) return;

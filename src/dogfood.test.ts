@@ -1449,3 +1449,57 @@ test("reopen refuses a summary another open issue already has, like new/rename",
   expect((await run(["reopen", path, "1", "--allow-duplicate-title"])).code).toBe(0);
   expect(JSON.parse((await run(["check", path, "--json"])).stdout).warnings.map((w: { code: string }) => w.code)).toContain("W212");
 });
+
+describe("review10: E124/W225 and adopt agree; top bodies that cannot move stay as text", () => {
+  const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+  const adoptClean = async (path: string) => {
+    const result = await run(["adopt", path]);
+    expect(result.stderr).not.toContain("nothing written");
+    expect(result.stderr).not.toContain("refusing");
+    expect(result.code).toBe(0);
+    expect((await run(["check", path])).stdout).toContain("0 errors");
+    return text(path);
+  };
+
+  test("a converting adopt does not migrate rows of a W225 table", async () => {
+    const path = file("# T\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n\n## 复核记录\n\n| # | 摘要 |\n|---|---|\n| 1 | 复核甲 |\n| 90 | 别的 |\n");
+    const out = await adoptClean(path);
+    expect(out).toContain("| 1 | 未决 |  | 甲 |");
+    expect(out).not.toContain("| 90 | 未决");
+    expect(out).not.toContain("### Issue 90");
+    expect(out).toContain("| 90 | 别的 |");
+    expect(out).toContain("| 1 | 复核甲 |");
+  });
+
+  test("a table adopt migrates under a ledger heading is E124 even without 状态/摘要 columns", async () => {
+    const path = file(TEMPLATE.replace("## 索引", "## 待处理\n\n| # | P | 说明 |\n|---|---|---|\n| 90 | P1 | x |\n\n## 索引"));
+    const errors = JSON.parse((await run(["check", path, "--json"])).stdout).errors as { code: string }[];
+    expect(errors.map((e) => e.code)).toContain("E124");
+    const out = await adoptClean(path);
+    expect(out).toMatch(/\| 90 \| 未决 \| P1 \| x \|/);
+  });
+
+  test("a top body that loses to a 正文 body of the same id stays as text, once", async () => {
+    const path = file("# T\n\n说明一句\n\n### Issue 1: 甲\n\n顶部正文\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n\n## 正文\n\n### Issue 1: 甲\n\n正文里的\n");
+    const out = await adoptClean(path);
+    expect(count(out, "顶部正文")).toBe(1);
+    expect(out).toMatch(/### Issue 1: 甲\n\n正文里的/);
+  });
+
+  test("two top bodies of one id with no H1: one moves, the other stays as text", async () => {
+    const path = file("### Issue 1: 甲\n\n顶部正文\n\n### Issue 1: 甲\n\n第二份\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n");
+    const out = await adoptClean(path);
+    expect(count(out, "顶部正文")).toBe(1);
+    expect(count(out, "第二份")).toBe(1);
+  });
+
+  test("range headings above the first H2 are escaped text", async () => {
+    for (const source of [
+      "### Issue 3–5: 组\n\n顶部区间\n\n# T\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 3–5 | 未决 | 组 |\n\n## 正文\n\n### Issue 3–5: 组\n\n区间正文\n",
+      "### Issue 2: 乙\n\n乙正文\n\n### Issue 3–5: 组\n\n顶部区间\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n",
+    ]) {
+      const out = await adoptClean(file(source));
+      expect(count(out, "顶部区间")).toBe(1);
+    }
+  });
+});

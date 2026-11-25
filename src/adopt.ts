@@ -21,7 +21,7 @@
 
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { isTableSection, parseLedger, splitCells } from "./ledger.js";
+import { isTableSection, mappingFor, parseLedger, splitCells, type Mapping } from "./ledger.js";
 import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
@@ -70,17 +70,6 @@ export type AdoptResult = {
   changes: string[];
 };
 
-type Mapping = {
-  id: number;
-  status?: number;
-  priority?: number;
-  summary: number;
-  criteria?: number;
-  /** Header cells not mapped to a field; their text is appended to criteria. */
-  extra?: { index: number; name: string }[];
-  /** True when the mapping is a guess (no 摘要/标题 header): table sections only. */
-  guess?: boolean;
-};
 
 type Row = {
   line: number;
@@ -128,59 +117,6 @@ function statusFromHeading(title: string): string | undefined {
   return [...STATUS_WORDS].filter((word) => bare.startsWith(word)).sort((a, b) => b.length - a.length)[0];
 }
 
-/** Columns that explain why an issue is closed; criteria when there is no 判据. */
-const VERDICT_COLUMNS = ["裁决", "说明", "理由", "原因", "结论", "备注"];
-
-function mappingFor(header: string[] | undefined, width: number): Mapping | undefined {
-  if (header) {
-    const index = (...names: string[]) => header.findIndex((cell) => names.includes(cell));
-    const id = index("#", "编号", "ID", "Id", "id");
-    if (id < 0) return undefined; // a header that names no id column is not an issue table
-    const status = index("状态");
-    const priority = index("P", "优先级");
-    const named = index("摘要", "标题");
-    let criteria = index("判据");
-    const taken = new Set([id, status, priority, named, criteria].filter((at) => at >= 0));
-    if (criteria < 0) criteria = header.findIndex((cell, at) => !taken.has(at) && VERDICT_COLUMNS.includes(cell));
-    if (criteria >= 0) taken.add(criteria);
-    // Without 摘要/标题 the summary is the first column the header does not
-    // name otherwise — but only when the header names something else we know
-    // (`| # | 状态 | 说明 |`) or is just `| # | X |`. Reading an unknown wide
-    // header by position turned 状态 into the summary; such tables are kept
-    // verbatim instead.
-    let summary = named;
-    if (summary < 0) {
-      const knows = status >= 0 || priority >= 0 || criteria >= 0;
-      if (!knows && width !== 2) return undefined;
-      summary = header.findIndex((_, at) => !taken.has(at));
-      if (summary < 0 && criteria >= 0) {
-        // `| # | 判据 |`: the only text there is is the summary.
-        summary = criteria;
-        criteria = -1;
-      }
-      if (summary < 0) return undefined;
-    }
-    const used = new Set([id, status, priority, summary, criteria].filter((at) => at >= 0));
-    const extra = header.flatMap((name, at) => (used.has(at) ? [] : [{ index: at, name }]));
-    return {
-      id,
-      status: status >= 0 ? status : undefined,
-      priority: priority >= 0 ? priority : undefined,
-      summary,
-      criteria: criteria >= 0 ? criteria : undefined,
-      extra: extra.length ? extra : undefined,
-      guess: named < 0,
-    };
-  }
-  // Header-less blocks: width decides (`# | 摘要 | 判据` is the orca shape).
-  // A guess, trusted only inside a ledger table section; wider blocks are
-  // kept verbatim.
-  if (width === 2) return { id: 0, summary: 1 };
-  if (width === 3) return { id: 0, summary: 1, criteria: 2 };
-  if (width === 5) return { id: 0, status: 1, priority: 2, summary: 3, criteria: 4 };
-  if (width === 4) return { id: 0, status: 1, priority: 2, summary: 3 };
-  return undefined;
-}
 
 type Block = {
   line: number;
@@ -209,7 +145,10 @@ function pipeBlocks(lines: string[], sections: Section[]): Block[] {
       // Width-only mappings are a guess; only trust them inside a section that
       // is known to hold ledger tables. A 3-column table inside an issue body
       // or 附录 is content, and turning it into rows invents issues.
-      if ((!header || mapping.guess) && !isTableSection(h2?.title ?? "")) {
+      // Named headers too (#54 review): a `| # | 摘要 |` table under
+      // `## 复核记录` cites issues, and migrating it invents or overwrites rows.
+      // check reports such tables as W225, so both agree.
+      if (!isTableSection(h2?.title ?? "")) {
         block = undefined;
         return;
       }
@@ -746,17 +685,19 @@ export function adopt(src: string): AdoptResult {
   const allBodies = bodyHeadings(sections);
   const bodies = allBodies.filter((body) => !inAppendix(body.line));
   const appendixBodies = allBodies.filter((body) => inAppendix(body.line));
+  // Keyed by the full id text (`2` vs `2a`), not the numeric part.
+  const bodyById = new Map(bodies.map((body) => [body.idText, body]));
   // Bodies above the first H2 (under the H1, or with no H1 at all) are never
   // header prose: they move to 正文/附录 like any other body, and the header
   // and preamble copies skip them (review of round nine, gaps 1 and 4).
   const firstH2 = sections.find((section) => section.level === 2)?.line_start ?? lines.length + 1;
   const topBodyLines = new Set<number>();
   for (const body of bodies) {
-    if (body.line >= firstH2) continue;
+    // Only the copy adopt uses moves; another copy of the same id (one in
+    // 正文 wins) stays where it was, escaped like the rest of the header.
+    if (body.line >= firstH2 || bodyById.get(body.idText) !== body) continue;
     for (let line = body.line; line <= Math.min(body.end, firstH2 - 1); line++) topBodyLines.add(line);
   }
-  // Keyed by the full id text (`2` vs `2a`), not the numeric part.
-  const bodyById = new Map(bodies.map((body) => [body.idText, body]));
   const isMultiId = (row: Row) => row.ids.length > 1 || /[–~-]/.test(row.idText);
   for (const row of open) {
     const body = bodyById.get(fullId(row));
@@ -1023,11 +964,13 @@ export function adopt(src: string): AdoptResult {
   const preamble = trimBlankEdges(lines.slice(0, preambleEnd).filter((_, at) => !topBodyLines.has(at + 1)))
     .filter((line) => !/^>\s*(?:唯一台账|读法：)/.test(line));
   if (preamble.length > 0) {
-    foreignOut.push(...preamble, "");
+    // Escaped like every other kept text: a heading left here (a range
+    // `### Issue 3–5:`, a second copy of a body) would be E123 in 附录.
+    foreignOut.push(...neutralizePreserved(preamble), "");
     decisions.push({
       kind: "preamble",
       line: 1,
-      anchor: preamble[0],
+      anchor: neutralizePreserved(preamble)[0],
       message: "标题之前或与标题并列的说明文字；原样移入附录",
     });
   }
