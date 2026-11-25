@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-25（第十轮收尾：修了台账 #54、第九轮复审的 4 个 adopt 缺口、黑盒探测发现的并发丢写与 5 项易用性问题，见「第十轮」）。写给下一位接手者。
+更新于 2026-11-25（第十一轮收尾：台账 #56/#57 的表形状缺口、W225 编号改为占用、读入竞态 exit 4、两次复审与一次黑盒探测的修复，见「第十一轮」）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -15,10 +15,10 @@
 
 ## 一句话现状
 
-`issuemd` P0–P5 早已完成；`0.1.0` 已发布到 npm。dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`，现 55 条，**不在本仓库、不要改它，状态由测试者自己更新**）的 #1–#55 均已处理：修好，或经用户裁定不做（#55 是复测记录，其建议见「第十轮」）。
+`issuemd` P0–P5 早已完成；`0.1.0` 已发布到 npm。dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`，现 58 条，**不在本仓库、不要改它，状态由测试者自己更新**）的 #1–#58 均已处理：修好，或经用户裁定不做（#55/#58 是复测记录，其建议见「第十轮」「第十一轮」）。
 
-- 第九轮已由用户 push（第十轮开始时 `origin/main` = 第九轮 handoff 提交）。
-- 第十轮的提交都已 ff 合入本地 `main`，**尚未 push、尚未发版**。第八–十轮合起来有新错误码（W225）、新选项、新的输出约定、写锁文件，下次发版建议 `npm version minor`（0.2.0）。
+- 第十轮已由用户 push（第十一轮开始时 `origin/main` = 第十轮 handoff 提交）。
+- 第十一轮的提交都已 ff 合入本地 `main`，**尚未 push、尚未发版**（用户 2026-11-25：暂不发版，时机由用户定）。第八–十一轮合起来有新错误码（W225）、新选项、新的输出约定、写锁文件、W225 编号占用，下次发版建议 `npm version minor`（0.2.0）。
 - 测试全绿（数量以 `npm test` 末行为准）。`dist/` 已用 `main` 重新 build。
 - 当前没有进行中的开发任务；下一轮输入通常是测试者的新条目或复测。没有新条目时，可照第九轮的做法派黑盒 subagent 自测。
 
@@ -34,16 +34,52 @@
 
 ## 等待用户决策 / 动作
 
-1. **push**：第十轮的提交在本地 `main` 上，需用户 `git push`。
-2. **发版（用户决定时机）**：`npm version minor` → `npm publish`（`prepack` 会自动 build `dist/`）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`、`.dist-test`。
+1. **push**：第十一轮的提交在本地 `main` 上，需用户 `git push`。
+2. **发版（用户决定时机，2026-11-25 明确「暂不发版」）**：`npm version minor` → `npm publish`（`prepack` 会自动 build `dist/`）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`、`.dist-test`。
 3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。#53 建议把已达标条目与「owner 裁定不做」的判据在台账里标注出来，这同样留给测试者。
 4. `.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。其他 clone 拉到那次提交时，git 会删掉它们工作区里的 `.cafe`，需从上一提交恢复（`git show <移出前的提交>:.cafe > .cafe`）。
 
-5. **第十轮报审（已按推荐执行，请复核）**：
-   - Q1 写锁：为修「并发写 exit 0 却丢失」，在台账旁加了瞬时锁文件 `.<文件名>.issuemd-lock`（CLI 层，io.ts 未改）。这推翻了「仍然接受的已知项」里「极小竞态窗口」的判断（实测 1/4 丢写）。推荐保留；若不希望目录里出现瞬时锁文件，替代方案只有「写后回读校验」，它能发现丢写但不能防。
-   - Q2 W225 里的编号不占用（`new --id 90` 可与 `## 复核记录` 表里的 90 同号）。推荐维持：那类表按 #54 裁定 B 是叙述。
-   - Q3 `sync --titles`（默认 `--prefer body`）遇到「表格摘要 = 正文标题 + 多余文字」时改为拒绝，要求 `--move-progress` / `--drop-progress` 或 `--prefer table`。以前这类文字会被静默丢掉。推荐保留。
-   - Q4 台账 #54/#55 及第十轮处理的条目由测试者复测、更新状态（我们不写台账）。
+5. 第十轮报审 Q1–Q3 用户已同意（写锁保留；`sync --titles` 拒绝保留）。其中 Q2「W225 编号不占用」在第十一轮被用户改判为**占用**（见下）。
+
+6. **第十一轮报审（已按推荐执行，请复核）**：
+   - Q1（已执行，用户事先同意推荐）W225 表的编号**占用**：默认取号到达时逐个跳过，`new --id N` exit 2 点名那一行，`show N` exit 1 + stderr 提示。复审后收窄为「逐个跳过」而不是「跳到最大被引用编号之后」（错误码表里的 500 不会把下一个 issue 推到 501）。代价：`| # | 步骤 |` 这类叙述表也报 W225（`--strict` 失败），消除法是把 `#` 列改名。
+   - Q2（未做，推荐暂不做）更多「台账表小节」词：`关闭/开放/已解决/已完成/已修复/进行中/TODO/Backlog` 目前只报 W225 而不是 E124。改成 E124 意味着 adopt 会从这些小节迁移表行，而无状态列的行默认「未决」——`## 已完成` 下的行会被当成开放项。真实台账没出现过，等实例再定。
+   - Q3（未做，推荐做）标题里的年份 `（2025）` 被当成计数：`check` 报 E121、`new --title "版本（2026）"` 被拒、adopt 会剥掉它。建议把 4 位 19xx/20xx 排除在计数之外；要同时改 E121（ledger-check）、`titleProblem`（cli）、`stripCounts`（adopt）三处，口径必须一致。
+   - Q4（未做，可选）`list --json` 不暴露被 W225 占用的编号；agent 只能靠 `check --json` 的 W225 或 `new` 的报错得知。可加 `citedIds`。
+   - Q5 台账 #56–#58 由测试者复测、更新状态（我们不写台账）。#58 第二、三节的「建议关闭/标注」也留给测试者。
+
+## 第十一轮（2026-11-25）
+
+输入：台账新条目 #56（P1）、#57（P1）、#58（复测记录，第九轮 main 上测的）。先用当前 main 重跑 #56 的矩阵（`待处理`/`变更记录` × 7 种表形状）：第十轮已修好台账表小节下的宽度 2 表（#57 的主要现象），剩下「数据行写在分隔行之上」「非台账小节只认 `摘要/标题` 表头」「adopt 早退不说明保留了哪些表」三处。用户裁定 D1 按推荐（W225 编号占用、宽度 2 表也报 W225、三列以上无摘要列的表不报），D2 按推荐（#27 字母开头 8 位短 id 仍报 W202，不改）。之后派一个独立复审（复审(12)）与一个黑盒 subagent，再对后两个提交派了复审(13)。用例在 `src/dogfood.test.ts` 末尾的 `#56/#57`、`review12:`、`probe11:` 组。
+
+| 来源 | 问题 | 处理 |
+|---|---|---|
+| #56/#57 | 「什么是表头」check 与 adopt 各一套；`\| 7 \| 未决 \| 甲 \|` + 分隔行在 `待处理` 下 check 不报、adopt 早退 | `ledger.ts` 的 `tableHeader` 是唯一表头规则（check 的 `strayRows` 与 adopt 的 `pipeBlocks` 都用）；规则见架构要点 |
+| #56 D1 | 非台账小节只有 `摘要/标题` 表头报 W225，`# \| 说明`、`编号 \| 说明`、`# \| 判据` 不报；W225 编号不占用 | W225 覆盖「id 列 + 摘要/标题」或「只有两列」或表头位置是 issue 行（须有真实分隔行）；编号进 `parseLedger().cited`：取号逐个跳过、`new --id` exit 2、`show` 提示 |
+| #57 | adopt 早退只说「已是规范台账」 | `cmdAdopt` 对输出跑 check，每个 W225 写一条 `cited-table`（早退与真正转换都有） |
+| #56 | 无表头三列 `\| 7 \| 未决 \| 甲 \|` 被读成 `# \| 摘要 \| 判据`（摘要 = 未决） | adopt 逐行：第二格恰好是状态词的行按 `# \| 状态 \| 摘要`（复审(12) 后要求精确状态词，黑盒后改为逐行） |
+| #58 §5 | SKILL「a fenced example does not count」与实现不一致 | 改为：标签下的 fence 内容算判据；fence 里的 `**验收判据**` 行不开启新块 |
+| 自查 | `tests/bin.test.ts`「parallel writers」单跑约 1/4 失败：读入时恰被别的写者替换，io 抛「E130 changed while being read」，CLI 报 exit 2 | `openFailure`：这类 E130 → exit 4（可重试）。加压 4×240 次只出现 0/4。io.ts 未改 |
+| 复审(12) 1 | `\| 2026 \| 开放 \| 关闭 \|` 统计表在 `总览` 下报 E124、取号跳到 2027（adopt 原本就误读） | 真实分隔行上的首行默认是表头，只有明显的 issue 行才是数据；adopt 自己补的分隔行（`fixSeparators`）走旧规则（`synthetic`） |
+| 复审(12) 2 | 错误码表 `\| 编号 \| 说明 \|`（404/500）把默认取号推到 501 | 取号从 max+1 起逐个跳过被引用编号 |
+| 复审(12) 3 | 没有分隔行的管道行也报 W225 | W225 要求真实分隔行 |
+| 复审(12) 4 | 单行 `\| 7 \| 观察（等上游） \| … \|` 被状态猜测改写 | 精确状态词（`isStatusWord`，只去 `**`） |
+| 黑盒 3 | 复审(12) 的修法让 `待处理` 下 `\| 7 \| 甲 \| 乙 \|`+分隔行+`\| 8 \| 丙 \| 丁 \|` 全静默（回归） | issue 行判定加「下面每行都是 id + 文字」；纯数字行（统计表）仍是表头 |
+| 黑盒 4 | `\| 7 \| 已修 \| 甲 \|` + `\| 8 \| 乙 \| 丙 \|`：整表按 orca 形状读，已修项变开放、摘要「已修」 | 逐行状态猜测（`Block.rowStatus`） |
+| 黑盒 1/2 | `## 索引（旧）`、`## 已关闭（2025）`、第二个 `## 索引` 下的表完全不可见，`new --id 7` 造出同号；adopt 合并时旧摘要只进报告 | `strayRows` 只跳过台账真正读的那一节（第一个、标题精确相等）；其余照常 E124、编号占用 |
+| 黑盒 6 | `list --expand` 遇 `3–900000000` 内存耗尽崩溃（exit 134） | `expandIssues` 先算区间大小再展开，超 10 万 exit 2 |
+| 黑盒 7 | 无尾换行文件的 dry-run diff 不能喂给 `patch`（TEMPLATE 本身无尾换行） | `unifiedDiff(…, finalNewline)` 输出 `\ No newline at end of file`；只在一侧是末行的上下文行拆成 -/+ |
+| 黑盒 | H3 分组报告说「记为未分类」，实际记为未决 | 文案改为「开放表里记为未决、已关闭表里记为未分类」 |
+| 黑盒 5 | `7a` 占用时 `new --id 7` 可写、默认取号到 8 | **不是缺陷**：`7` ≠ `7a`（踩过的决定 4），默认取号按数字最大值，与规范行一致 |
+| 复审(13) 1 | 黑盒 3 的修法要求「下面每行都是 id 行」，多一行占位 `\| 9 \|  \|  \|` 或 `\| 说明 \| 无 \| 无 \|` 就让整张表静默（回归） | 改为「下面至少有一行是 id 行」 |
+| 复审(13) 2 | W225 表引用 `1–900000000` 时 `new` 逐个跳号卡死（回归） | 命中被引用区间时一次跳到区间末尾 + 1 |
+| 复审(13) 3/4 | 关闭位于文件末尾、无尾换行的正文时 diff 里新增行与标记在删除行之前，`patch` 报 malformed；CRLF 台账的 diff 全部不能应用（旧问题） | 同一处改动先删后增；CRLF 内容行保留 `\r`。16 种文件变体（LF/BOM/CRLF × 有无尾换行 × 有无附录）× 8 个写命令全部 `patch` 后与真实写入逐字节相同 |
+| 复审(13) 5 | 无分隔行的 `\| 负责人2 \| … \|` 上接 `\| 7 \| … \|`：check 报 E124，adopt 却把首行当表头、7 进附录（旧问题，编号丢失） | 无分隔行的块按 adopt 补分隔行后的读法判表头，两边一致（都当表头、不是 issue 表） |
+| 复审(13) 6 | 被迁移的表里没有编号的行（`\| 备注 \| a \| b \|`）被当成表头静默丢掉（旧问题，守恒守卫没拦住） | `Block.header` 只让真正的表头行算 layout；这类行按原文进附录并写 `kept-row`（引用原行） |
+| 复审(13) 7 | `## 总览` 下的错误码表、`## 状态总览` 下的 `\| 1 \| 开放 \| 3 \|` 统计表报 E124（旧问题：`isTableSection` 正则宽） | 未改，记入已知项与 Q2 |
+| #58 其余 | #54 闭环（第十轮已修）、#18/#22/#46/#48 裁定不做、#27 残留 | 无代码改动；台账标注留给测试者 |
+
+验证：`npm run typecheck && npm test` 全绿（本轮末 450）；三份真实台账（只读副本）check 计数、下一个编号均不变（orca 0/139→480、cafe 0/58→96、dogfood 0/3→59），无 W225、无 cited-table；4 个 fixture 与 5 个历史版本台账（orca/cafe 的 git 旧版，复审(12) 取出）在新旧 build 下 adopt 输出逐字节相同、二次 adopt 不变；dry-run diff 的 `patch` 矩阵见复审(13) 行；并发加压见上表。仍会拒绝的 adopt（无尾换行矩阵外的 4 例：无表头又无分隔行的 `负责人2` 块、开放大区间无正文、带括注的 `## 正文（旧）`）都是旧行为。
 
 ## 第十轮（2026-11-25）
 
@@ -186,7 +222,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `docs/spec.md` | 唯一规格。第九轮改了 §7（`new` 打编号、只读、`close` 判据与 keep-body 拒绝情形、`rename` 查重、`sync` 选项、写命令 miss 走 stderr）、§9（`show` 的游离行提示）、§10（同号多行摘要、附加列、开放多号行、状态格、坏编号行、搬走的正文）。第八轮改了 §6（E124、W212 口径）、§7（`--if-unchanged` / `snapshot`、`new` 重复摘要拒绝、取号算上 E124 行）、§9（读命令 `--json` 带 `snapshot`）、§10（adopt 对混合文件） |
+| `docs/spec.md` | 唯一规格。第十一轮改了 §6（E124 的表头判定与「只跳过台账真正读的那一节」、W225 的范围与编号占用、E130 读入竞态 exit 4）、§7（dry-run diff 的无尾换行标记、取号跳过 W225 编号）、§10（`cited-table`、无表头三列逐行状态）。第九轮改了 §7（`new` 打编号、只读、`close` 判据与 keep-body 拒绝情形、`rename` 查重、`sync` 选项、写命令 miss 走 stderr）、§9（`show` 的游离行提示）、§10（同号多行摘要、附加列、开放多号行、状态格、坏编号行、搬走的正文）。第八轮改了 §6（E124、W212 口径）、§7（`--if-unchanged` / `snapshot`、`new` 重复摘要拒绝、取号算上 E124 行）、§9（读命令 `--json` 带 `snapshot`）、§10（adopt 对混合文件） |
 | `docs/adr/0001`–`0006` | 0006「只做台账、一个入口」 |
 | `docs/superpowers/specs/2026-11-24-ledger-verbs-design.md` | `body` / `priority` / `split` / `reopen --status` 的设计 |
 | `docs/superpowers/specs/2026-11-24-issuemd-ledger-only-design.md` | 第四轮设计，末尾「实施后的偏差」 |
@@ -243,17 +279,24 @@ issuemd <command> --help
 - **`src/ledger.ts`**：
   - `parseLedger` 的 `unreadable: UnreadableRow[]`：E108/E109 丢掉的表行，**以及 E124 的「游离行」**（`table: "stray"`）。下游（`maxIssueId`、`new --id` 撞号、`show` exit 3、`unreadableNote`、`list --json unreadableRows`）都靠它，所以 E124 行自动被保留编号。
   - `strayRows()`（#52）：所在 H2 不是 `怎么用/状态口径/索引/已关闭/正文/附录`（括注去掉后比较），且 (a) 有表头、表头含 `#/编号/ID` 列与 `摘要/标题` 列；或 (b) 表头含 id 列与 `状态` 但无摘要列，且 H2 名匹配 `isTableSection`；或 (c) 无表头、宽 2–5、H2 名匹配 `isTableSection`。**口径必须与 adopt 迁移哪些表保持一致**：adopt 不迁移、原样保留的表若被报 E124，adopt 的输出就过不了自身校验（第八轮复审 #1）。每个能解析出编号的行报一条 E124。H1 与第一个 H2 之间的表不算。
-  - `isTableSection`（台账表小节名正则）与 **`mappingFor`（issue 表的列映射）** 都定义在这里，adopt 从这里 import。第十轮起 `strayRows` 的口径是：台账表小节下 `mappingFor` 接受的表 → E124；其他小节下表头含 id 列与 `摘要`/`标题` 的表 → W225（每表一次，不进 `unreadable`）。adopt 的 `pipeBlocks` 也只收台账表小节下的表。改其中任何一边都要同时看另一边。
+  - `isTableSection`（台账表小节名正则）、**`mappingFor`（issue 表的列映射）**、**`tableHeader`（首行是不是表头）**、`isStatusWord` 都定义在这里，adopt 从这里 import。改其中任何一个都要同时看 check 与 adopt 两边。
+  - `tableHeader(rows, synthetic)`（第十一轮）：首行不含数字 → 表头；首行下不是分隔行 → 无表头；`synthetic`（adopt 的 `fixSeparators` 自己补的分隔行）→ 有以数字开头的格就是数据（旧规则）；真实分隔行 → 表头，除非首行是 issue 行：首格是编号且其余格有非数字文字（`issueLike`），并且第二格是状态词 / 分隔行下没有行 / 下面每行都 `issueLike`。统计表（`| 2026 | 开放 | 关闭 |` 下接纯数字行）因此仍是表头。
+  - `strayRows` 口径（第十一轮）：只跳过台账真正读的那一节（`OWN_TABLES` 里标题精确相等的**第一个** H2）；`## 索引（旧）`、`## 已关闭（2025）`、第二个 `## 索引` 都照常判。台账表小节下 `tableHeader` + `mappingFor` 接受的表 → 每行 E124 + `unreadable`；其他小节下有真实分隔行、且（表头含 id 列与 `摘要`/`标题`，或表头只有两列含 id 列，或表头位置是 issue 行）→ 每表一次 W225，每行编号进 **`cited`**。`## 路线图` 的 `| ID | 状态 | 说明 |` 不报。
+  - `parseLedger().cited`：W225 表里的编号，**不进 `unreadable`**（否则读命令会说「结果不完整」、`show` exit 3）。只有 `cmdNew`（取号逐个跳过、`--id` 撞号 exit 2）和 `cmdShow`（miss 时 stderr 提示）用它。库导出的 `maxIssueId` 不看它。
 - **`src/ledger-check.ts`**：`PRIORITIES`、`summaryKey`（W212 的 NFKC/大小写/空白折叠）；`checkHashes` 区分 pinned（W202）与仅校验（判据列，给 W240 用）；`checkAppendix` 出 W250/W251/W252/W253。`--strict` 仍只豁免 W250。
 - **`src/ledger-read.ts`**：`ListedIssue` 带 `ids`/`count`；`expandIssues`（上限 10 万）；`viewIssue` 带 `labels`、`criteriaSource`。
+- **`src/statuses.ts`**：默认状态词表 `STATUS_CLASSES`（第十一轮从 ledger-check 移出，ledger.ts 要用且不能与 ledger-check 循环引用）；`ledger-check` 仍 re-export。
 - **`src/adopt.ts`**（改前读完它）：
+  - `pipeBlocks(lines, sections, synthetic)`：表头走 `tableHeader`，`synthetic` 是 `fixSeparators` 补分隔行的行号集合。无表头宽 3 的块带 `rowStatus`：`rowsOf` 逐行判断，第二格是精确状态词的行按 `# | 状态 | 摘要`，其余按 `# | 摘要 | 判据`。
+  - W225 的 `cited-table` 决定不在 adopt() 里产生，而在 `cmdAdopt` 对输出跑 check 后补上（早退路径也有）；报告因此在 check 之后渲染。
   - 开头：输入 `check` 0 error 且无 W220 → 原样返回。E124 是 error，所以「规范骨架 + 旧表」的混合文件会走完整转换。
   - `layoutLines`：被消费的表块的表头/分隔行，**加上表格小节里只有表头+分隔行的空表**（#52：混合文件里规范表是空的，以前会被当成说明文字复制进附录）。
   - `Row` 有 `criteria`（真判据）与 `extras`（附加列、溢出格、`原状态：X`）两个字段，**不要再把 extras 拼进 criteria**：开放项 extras 进 `**原表格判据**`，已关闭行在输出表时才拼成「判据；附加列」。`Row.overflow` 记溢出格数，`rawStatus` 记去格式前的状态格。
   - 开放正文组装：每个开放行按 `parseIds` 逐号生成 `bodyEntries`（已有正文或骨架），最后全体 `compareIds` 排序再展开；索引表行仍用 `sortedOpen`。
   - `movedBodyLines`：被搬进正文/归档的 `### Issue N:` 块，在 H1 说明与外来小节的逐字副本里跳过。`topBodyLines`：首个 H2 之前、且是 `bodyById` 选中的那份正文，在 H1 说明与前言里跳过（没选中的同号副本留原处转义）。`appendixBodies`：输入附录里的正文块，不参与挂载，原地改标题。
   - 列映射 `mappingFor`、状态优先级、保留规则、**守恒守卫**（逐行文本 + 编号集合）同前：新增任何「重建」逻辑时，要么把行复制到输出，要么把它加进 `regenerated`（= `rowLines` ∪ `layoutLines`）。
-- **`src/write.ts`**：Myers 行级 diff + 3 行上下文多 hunk。
+- **`src/write.ts`**：Myers 行级 diff + 3 行上下文多 hunk。`unifiedDiff(old, next, path, finalNewline)`：无尾换行时末行后加 `\ No newline at end of file`，只在一侧是末行的上下文行拆成 -/+，这样 `patch` 能应用。
+- **`src/cli.ts` `openFailure`**：`loadWritable` 的读入异常；io 的「E130 file changed while being read」→ exit 4，其余 exit 2。
 - **`scripts/build.mjs [--out DIR]`**：`tsc --outDir .<DIR>-staging` → chmod 755 bin → rename 换入。默认 `dist`；`npm test` 用 `--out .dist-test`。类型错误时目标目录不变、`npm test` 停在 build。
 - **`tests/built.ts`**：测试里执行 CLI / 导入编译产物一律用 `built("bin/issuemd.js")` 之类（默认 `.dist-test`，可用 `ISSUEMD_BUILD_DIR` 覆盖）。**测试里不要再写 `../dist/`**。打包测试只校验 manifest（`files` 含 `dist`、`bin`/`exports` 指向 `dist/…`）加测试产物本身。
 
@@ -278,6 +321,9 @@ issuemd <command> --help
 17. E124 是 **error** 而不是 warning：只有这样 adopt 才不走「已合规」捷径、`--strict` 之外的普通 `check` 也会失败。它的编号走 `unreadable`，不进 `rows`——进 `rows` 会让 `list`/`close` 把游离行当正常行改写，而它不在规范表里。
 18. `--if-unchanged` 的比对点在读入处，不在 `commit()`：放在 `commit()` 时，文件被改后命令可能先因「已关闭」等原因 exit 2，调用方就分不清是并发还是自己错了。
 19. `new` 的重复摘要拒绝发生在任何改动之前，`--dry-run` 也同样拒绝；只比开放行（以 `并入` 关闭的重复项不挡新建）。
+20. 「首行是不是表头」不能简单地按「有没有以数字开头的格」判断：adopt 自己补分隔行后，无表头表的首个数据行就在分隔行上面（要当数据）；而真实的统计表、年份表头（`| 2024 | 2025 |`）要当表头。所以 `tableHeader` 区分 `synthetic`，真实分隔行上只认明显的 issue 行（第十一轮复审(12)、黑盒 3 来回修过两次）。
+21. W225 的编号放在 `cited` 而不是 `unreadable`：`unreadable` 会让读命令说结果不完整、`show` exit 3，叙述表不该有这种后果。
+22. 默认取号对 `cited` 逐个跳过，不是取最大值：错误码表里的 500 不能把下一个 issue 推到 501。
 
 ## 已完成的审查与验证
 
@@ -297,15 +343,18 @@ issuemd <command> --help
 - 附录以空行结尾时，`close --keep-body` 的归档前会多一个空行（改它会破坏 close+reopen 逐字节还原）。
 - adopt 守恒守卫的局限：同号的两个正文块会被拒；以「文本集合」比对，测不出「丢了一行、但同样文字别处还有」。
 - diff 超过 2000 步编辑时退化为一整块 -/+（正确但粗）。
-- E124 的小节判定沿用 `isTableSection` 正则（含 `open`/`issues?`），像 `## Open questions` 下的「首格是数字、宽 2–5、无表头」的管道块会被报——真实台账里没有出现过；需要时把正则收紧（adopt 用同一个函数，自动同步）。
-- W225 的表里的编号不占用：`new --id 90` 可以与 `## 复核记录` 表里的 `90` 同号（用户 #54 裁定 B：那类表是叙述）。
+- E124 的小节判定沿用 `isTableSection` 正则（含 `总览`/`open`/`issues?`），像 `## Open questions` 下的「首格是数字、宽 2–5、无表头」的管道块、`## 总览` 下的错误码表、`## 状态总览` 下首格是数字且有文字的统计表会被报——真实台账里没有出现过；需要时把正则收紧（adopt 用同一个函数，自动同步）。
+- adopt 不展开 >1000 号的开放区间，于是这类区间行没有正文 → 转换后 E102，adopt 拒写（旧行为）。
+- 无分隔行、首行像表头（`| 负责人2 | 甲 | 乙 |`）的块：check 与 adopt 都当成非 issue 表；在台账表小节下仍报 E122，adopt 说「没有可迁移的行」，需人工补分隔行或改表头。
+- W225 表里的编号**占用**（第十一轮改判）：叙述性的 `| # | 步骤 |`、`| 编号 | 说明 |`（错误码）也会报 W225、占用编号；默认取号只是逐个跳过它们。`变更记录` 下的 `| # | 状态 | 说明 |`（三列、无摘要列）有意不报。
+- 只有管道行、没有分隔行的块不算表：非台账小节里不报 W225；台账表小节里仍按无表头表报 E124（adopt 会补分隔行迁移）。
+- 被 `7a` 占用时 `new --id 7` 照写（`7` ≠ `7a`），默认取号按数字最大值跳到 8——与规范行一致，不是缺陷。
 - `close --keep-body` 在没有 `## 附录` 的台账上会新建附录；`reopen` 不删它（不知道附录是不是 close 建的），往返后多出 `## 附录`。
 - reopen / body 会把原文里「正文块前缺空行」「正文末尾多个空行」规范成恰好一个空行（只改空白）。
-- CRLF 台账的 dry-run diff 不带 `\r`，不能直接喂给 `patch`（只是预览）。
 - adopt 转换失败时，对重建的表行 error 只能给 `source line unknown (converted L…)`。
 - W253 只扫 `## 附录` 内；旧版 adopt 留在附录之后外来 H2 里的转义正文副本不报（第九轮起 adopt 不再产生）。
 - 英文表头（`| ID | Status | Title |`）adopt 不认，整表进附录（`foreign-section`，有报告）。
-- 结构已坏的台账（E103/E112）上 `check` 头部的分状态计数可能对不上总数。
+- 结构已坏的台账（E103/E112）上 `check` 头部的分状态计数可能对不上总数；开放表里有未声明状态（W220）或关闭类状态（E112）时，`counts` 的括号里只列默认开放状态词，同样加不出总数。
 - 游离行（E124）首格解析不出编号时整行不报（无法判断它是 issue）；`new` 的重复摘要检查只看规范开放表，不看游离行——有 E124 的台账本来就该先 `adopt`。
 
 ## 还没做 / 仅供参考
