@@ -36,6 +36,7 @@ import { bodyBlocks, countSuffix, maxIssueId, parseLedger, type Diagnostic } fro
 import { checkLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
 import {
   bodySkeleton,
+  escapeCell,
   extractCriteria,
   unescapeCell,
   formatRow,
@@ -511,10 +512,12 @@ function unreadableNote(ledger: ReturnType<typeof parseLedger>): string {
  * are left out, so one bad row is not reported twice.
  */
 function structureNote(errors: Diagnostic[], known: Set<number> = new Set()): string {
-  const fresh = errors.filter(({ line }) => !known.has(line));
-  if (fresh.length === 0) return "";
-  const first = fresh[0]!;
-  return `note: 'issuemd check' reports ${fresh.length} error(s) (first: ${first.code} L${first.line}` +
+  // N is what `check` reports, so the two views agree. Suppressing the note
+  // when every error sat on an unreadable row (round 13) left `show` silent
+  // on an E108-only ledger; `known` now only picks a readable "first".
+  if (errors.length === 0) return "";
+  const first = errors.find(({ line }) => !known.has(line)) ?? errors[0]!;
+  return `note: 'issuemd check' reports ${errors.length} error(s) (first: ${first.code} L${first.line}` +
     `${first.id ? ` #${first.id}` : ""}); this view may not reflect the ledger\n`;
 }
 
@@ -597,20 +600,20 @@ function cmdShow(rest: string[], v: Values): CliResult {
     const found = findLabel(ledger.lines, range.line, range.end, labelName(v.label));
     if (!found) {
       const known = labelsIn(ledger.lines, range.line, range.end);
-      return withNote({
-        code: 1,
-        stdout: `(no label: ${v.label})\n`,
-        stderr: known.length ? `labels in #${view.id}: ${known.join(", ")}\n` : "",
-      });
+      // With --json, stdout is JSON or nothing — a caller parsing it must not
+      // receive the text-mode placeholder (same rule as "no such issue").
+      const knownNote = known.length ? `labels in #${view.id}: ${known.join(", ")}\n` : "";
+      return withNote(v.json
+        ? { code: 1, stdout: "", stderr: `(no label: ${v.label})\n${knownNote}` }
+        : { code: 1, stdout: `(no label: ${v.label})\n`, stderr: knownNote });
     }
     if (found.text === "") {
       // An empty label is not a successful read: `close --criteria-from-body`
       // would promote it as an empty cell.
-      return withNote({
-        code: 1,
-        stdout: `(empty label: ${v.label})\n`,
-        stderr: `label ${v.label} in #${view.id} exists but is empty (L${found.line})\n`,
-      });
+      const why = `label ${v.label} in #${view.id} exists but is empty (L${found.line})\n`;
+      return withNote(v.json
+        ? { code: 1, stdout: "", stderr: `(empty label: ${v.label})\n${why}` }
+        : { code: 1, stdout: `(empty label: ${v.label})\n`, stderr: why });
     }
     if (v.json) return withNote(ok(JSON.stringify({ ...view, paragraph: found.text, snapshot: snapshotOf(loaded.src), ...diagnosticsField(report.errors) }, null, 2)));
     return withNote(ok(found.lines.join("\n")));
@@ -838,7 +841,7 @@ function commit(
     );
   }
   if (dryRun) {
-    const diff = unifiedDiff(loaded.lines, newLines, file, loaded.doc.finalNewline, loaded.doc.eol);
+    const diff = unifiedDiff(loaded.lines, newLines, file, loaded.doc.finalNewline, loaded.doc.eol, loaded.doc.bom ? "\uFEFF" : "");
     return { code: 0, stdout: diff || "(no changes)\n", stderr: snapshotNote(loaded) };
   }
   const unchanged = newLines.length === loaded.lines.length &&
@@ -1293,7 +1296,9 @@ function cmdClose(rest: string[], v: Values): CliResult {
   const fromBody = extractCriteria(bodyText);
   let criteria: string;
   if (v.criteria != null) {
-    criteria = v.criteria;
+    // Input convention, as for titles: `\|` is how a caller spells a literal
+    // pipe (unescapeCell); the cell then stores the escaped form.
+    criteria = unescapeCell(v.criteria);
   } else if (v["no-criteria"]) {
     criteria = "";
   } else if (v["criteria-from-body"]) {
@@ -1319,6 +1324,18 @@ function cmdClose(rest: string[], v: Values): CliResult {
     return err(
       `issuemd close: #${idText} has no criteria to record (no --criteria and no **验收判据** in the body). ` +
         "Pass --criteria TEXT, --keep-body, or --no-criteria to close it without criteria on purpose\n",
+      2,
+    );
+  }
+
+  // A table cell cannot store a backslash directly before `|`: the reader
+  // takes it as a pipe escape (`echo a \| b` reads back as `echo a | b`), so
+  // promoting the text would change it silently. Refuse and name the ways
+  // out (round 14 black-box finding).
+  if (unescapeCell(escapeCell(criteria)) !== criteria) {
+    return err(
+      `issuemd close: the criteria contain '\\|' (a backslash directly before a pipe), which a table cell cannot store without changing it; ` +
+        "pass --criteria with the text as it should read in the table, or close with --keep-body --no-criteria to keep the body verbatim in 附录\n",
       2,
     );
   }
@@ -1429,7 +1446,20 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   if (!found) return missingIssue("reopen", idText);
   const refused = perIdRefusal("reopen", idText, found);
   if (refused) return refused;
-  if (found.table === "open") return err(`issuemd reopen: #${idText} is already open\n`, 2);
+  if (found.table === "open") {
+    // Already open: asking for the status it already has changes nothing
+    // (the `(no changes)` contract); asking for another open status is a
+    // plain status update. Neither can create a second open row, so the
+    // duplicate-summary guard below does not apply to this branch.
+    if (found.row.status === reopenStatus) {
+      return v["dry-run"]
+        ? { code: 0, stdout: "(no changes)\n", stderr: snapshotNote(loaded) }
+        : ok("(no changes)\n");
+    }
+    const lines = [...loaded.lines];
+    lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 1, reopenStatus);
+    return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  }
   // Closed rows may carry summaries that cannot be a body heading (older
   // ledgers); reopening needs one, so name the fix instead of failing the gate.
   const badSummary = titleProblem(found.row.summary);
@@ -1590,8 +1620,9 @@ function cmdRename(rest: string[], v: Values): CliResult {
   const refused = perIdRefusal("rename", idText, found);
   if (refused) return refused;
   // Renaming is the other way two open rows end up with one summary; refuse
-  // it like `new` does (dogfood #34). Closed rows never block, either side.
-  if (found.table === "open" && !v["allow-duplicate-title"]) {
+  // it like `new` does (dogfood #34). Renaming a duplicate to the summary it
+  // already shows changes nothing, so the no-op must not become an error.
+  if (found.table === "open" && next !== found.row.summary && !v["allow-duplicate-title"]) {
     const twin = ledger.rows.open.find(
       (row) => row.line !== found.row.line && summaryKey(row.summary) === summaryKey(next),
     );
@@ -1799,7 +1830,7 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
     // is never the ledger and never someone else's file (checked above).
     const failed = writeReport();
     if (failed) return failed;
-    const diff = unifiedDiff(loaded.lines, result.lines, file, loaded.doc.finalNewline, loaded.doc.eol);
+    const diff = unifiedDiff(loaded.lines, result.lines, file, loaded.doc.finalNewline, loaded.doc.eol, loaded.doc.bom ? "\uFEFF" : "");
     return { code: 0, stdout: (diff || "(no changes)\n") + "\n" + report, stderr: snapshotNote(loaded) };
   }
   const unchanged = result.lines.length === loaded.lines.length &&
@@ -1819,7 +1850,13 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
   // that describes a write that did not happen.
   const failed = writeReport();
   if (failed) return failed;
-  return { code: 0, stdout: report, stderr: unchanged ? "" : hardLinkNote(file, loaded) };
+  // Same words as every other no-op write, and as this command's --dry-run:
+  // a retrying caller can tell "already converted" from "just converted".
+  return {
+    code: 0,
+    stdout: (unchanged ? "(no changes)\n\n" : "") + report,
+    stderr: unchanged ? "" : hardLinkNote(file, loaded),
+  };
 }
 
 /**

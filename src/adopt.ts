@@ -531,8 +531,13 @@ export function adopt(src: string): AdoptResult {
     // These are source coordinates: the output order (bodies sorted, sections
     // rebuilt) is not known yet, and the decisions carry the output L.
     const named = [...renames].slice(0, 5)
-      .map(([line, rename]) =>
-        `源 L${sourceLineOf(line)}「${headingText(rename.before)}」→「${headingText(rename.after)}」`)
+      .map(([line, rename]) => {
+        // A body heading names the issue whose count was stripped, so the
+        // reader does not have to map a line number back to an id (round 14).
+        const issue = /^Issue\s+([^:\s]+)\s*:/.exec(headingText(rename.before));
+        return `源 L${sourceLineOf(line)}${issue ? ` #${issue[1]}` : ""}` +
+          `「${headingText(rename.before)}」→「${headingText(rename.after)}」`;
+      })
       .join("、");
     changes.push(`去掉标题里的（N）计数：${stripped.count} 处` + (named ? `（${named}${renames.size > 5 ? "…" : ""}）` : ""));
   }

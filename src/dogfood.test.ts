@@ -1896,6 +1896,9 @@ describe("review13: header rule, cited ranges, diffs, kept rows", () => {
     const adopted = await run(["adopt", path]);
     expect(adopted.code).toBe(0);
     expect(text(path)).toMatch(/备注 \| a \| b/);
+    // Intentional: the leading `|` is escaped so the stray row cannot re-form
+    // a table inside 附录 (review13 6; resolved as by-design in round 14).
+    expect(text(path)).toContain("\\| 备注 | a | b |");
     expect(adopted.stdout).toContain("备注");
   });
 });

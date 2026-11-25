@@ -22,8 +22,8 @@ export type ListedIssue = {
   priority: string;
   summary: string;
   criteria?: string;
-  /** `--with-body`: where `criteria` came from (open issues read it from the body). */
-  criteriaSource?: "body";
+  /** `--with-body`: where `criteria` came from (open: the body; closed: the column). */
+  criteriaSource?: "body" | "table";
   /** `--with-body`: the id whose body supplied labels/criteria when it is a sibling's. */
   bodyFrom?: string;
   /** `--with-body`: every body label, one-line form (same as `show --json`). */
@@ -33,6 +33,11 @@ export type ListedIssue = {
 /** Render a span the way the table spells it: `7`, `393b`, or `7–20`. */
 export function spanText(span: IdSpan): string {
   return span.start === span.end ? `${span.start}${span.suffix}` : `${span.start}–${span.end}`;
+}
+
+/** True when `id` is one of the numbers a row cell's span covers. */
+function covers(span: IdSpan, id: IdSpan): boolean {
+  return span.suffix === id.suffix && span.start <= id.start && id.start <= span.end;
 }
 
 export function filterRows(
@@ -110,14 +115,12 @@ export function withBody(
   issue: ListedIssue,
   blocks = bodyBlocks(ledger),
 ): ListedIssue {
-  if (issue.criteria != null) return issue; // closed rows carry their own column
+  if (issue.criteria != null) return { ...issue, criteriaSource: "table" }; // closed rows carry their own column
   const first = issue.ids[0];
   if (!first) return issue;
   const row = findRow(ledger, first);
   if (!row || row.table !== "open") return issue;
   const key = (span: IdSpan) => `${span.start}${span.suffix}`;
-  const covers = (span: IdSpan, id: IdSpan) =>
-    span.suffix === id.suffix && span.start <= id.start && id.start <= span.end;
   const exact = blocks.find((candidate) => key(candidate.id) === row.id);
   // A range row (`5–7`) may keep its body under an interior id; a comma row
   // under any of its ids. Either is the row's body (`bodyFrom` says which).
@@ -255,10 +258,12 @@ export function viewIssue(
   const blocks = bodyBlocks(ledger);
   const key = (span: IdSpan) => `${span.start}${span.suffix}`;
   const exact = blocks.find((candidate) => key(candidate.id) === found.id);
+  // A range row (`5–7`) may keep its body under an interior id, exactly like
+  // `withBody` reads it; a comma row under any of its ids. Without `covers`,
+  // `show 5`/`show 7` said "(无正文块)" while `show 6` and `list --with-body`
+  // found it (round 14 black-box finding).
   const block = exact ??
-    found.row.ids
-      .map((span) => blocks.find((candidate) => key(candidate.id) === key(span)))
-      .find((candidate) => candidate != null);
+    blocks.find((candidate) => found.row.ids.some((span) => covers(span, candidate.id)));
   const owner = block ? key(block.id) : undefined;
   const view: IssueView = {
     id: found.id,

@@ -396,10 +396,13 @@ describe("reopen", () => {
     expect((await clean(path)).code).toBe(0);
   });
 
-  test("a range, an open id, and an unknown id all fail", async () => {
+  test("a range fails, an open id is a no-op, and an unknown id is missing", async () => {
     const path = ledger();
     expect((await run(["reopen", path, "8"])).code).toBe(2);
-    expect((await run(["reopen", path, "2"])).code).toBe(2);
+    // #2 is already 未决, the default reopen target: nothing to change.
+    const noop = await run(["reopen", path, "2"]);
+    expect(noop.code).toBe(0);
+    expect(noop.stdout).toBe("(no changes)\n");
     expect((await run(["reopen", path, "999"])).code).toBe(1);
   });
 });

@@ -113,6 +113,8 @@ export function unifiedDiff(
   finalNewline = true,
   /** The file's line ending; CRLF content lines carry their `\r`. */
   eol: "\n" | "\r\n" = "\n",
+  /** The file's BOM (U+FEFF) when it has one: it belongs to the first line. */
+  bom = "",
 ): string {
   const CONTEXT = 3;
   const ops = editScript(old, next);
@@ -164,12 +166,17 @@ export function unifiedDiff(
       const k = start + at;
       const oldLast = !finalNewline && op.kind !== "+" && oldAt[k] === old.length - 1;
       const newLast = !finalNewline && op.kind !== "-" && newAt[k] === next.length - 1;
+      // The BOM is not part of the parsed lines but is part of the first
+      // line's bytes; without it `patch(1)` cannot find the context line in
+      // a BOM file (round 14 black-box finding).
+      const oldText = bom !== "" && oldAt[k] === 0 ? bom + op.text : op.text;
+      const newText = bom !== "" && newAt[k] === 0 ? bom + op.text : op.text;
       // A context line that is last on only one side differs in its newline,
       // so it is spelled as a removal plus an addition.
       if (op.kind === " " && oldLast !== newLast) {
-        items.push({ kind: "-", text: op.text, bare: oldLast }, { kind: "+", text: op.text, bare: newLast });
+        items.push({ kind: "-", text: oldText, bare: oldLast }, { kind: "+", text: newText, bare: newLast });
       } else {
-        items.push({ kind: op.kind, text: op.text, bare: oldLast || newLast });
+        items.push({ kind: op.kind, text: op.kind === "-" ? oldText : newText, bare: oldLast || newLast });
       }
     });
     // patch(1) accepts the no-newline marker only at the end of a side, so

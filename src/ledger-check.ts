@@ -35,11 +35,6 @@ function checkHeadings(ledger: Ledger) {
   const bodies: { id: IdSpan; title: string; line: number; end: number }[] = [];
   for (const section of sections) {
     const { level, title, line_start: line } = section;
-    // An issue heading's count is judged on its title alone (`Issue 2: （3）`
-    // is titled `（3）`), as new/rename and adopt judge it.
-    if (countSuffix(/^Issue\s+[^:\s]+\s*:\s*(.*)$/.exec(title)?.[1] ?? title)) {
-      errors.push({ code: "E121", line, message: "Heading contains a count; use a stable title" });
-    }
     const inBody = line > body.line_start && line <= body.line_end;
     const issue = level === 3 ? /^Issue\s+([^:\s]+)\s*:\s*(.*)$/.exec(title) : null;
     if (!inBody) {
@@ -392,6 +387,17 @@ export function checkLedger(src: string, file: string, options: Options = {}) {
     closed: safeCount(ids.closed.count, "Closed"),
     byStatus: Object.fromEntries([...byStatus].map(([status, spans]) => [status, safeCount(new IdSet(spans).count, status)])),
   };
+
+  // A heading's count is judged even when the canonical section it was meant
+  // to name is missing: `## 已关闭（3）` must report E120 (no section) *and*
+  // E121 (count). The E120 guard below used to hide the count entirely
+  // (round 14 black-box finding). An `Issue 2: （3）` heading is judged on its
+  // title alone, as new/rename and adopt judge it.
+  for (const { title, line_start: line } of ledger.sections) {
+    if (countSuffix(/^Issue\s+[^:\s]+\s*:\s*(.*)$/.exec(title)?.[1] ?? title)) {
+      errors.push({ code: "E121", line, message: "Heading contains a count; use a stable title" });
+    }
+  }
 
   if (!errors.some(({ code }) => code === "E120")) {
     checkStatusBlock(ledger);

@@ -1,6 +1,6 @@
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { parseId, parseIds, type IdSpan } from "./issue-id.js";
+import { idText, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { STATUS_CLASSES } from "./statuses.js";
 
 const CORE = ["索引", "已关闭", "正文"] as const;
@@ -235,8 +235,12 @@ function strayRows(
       const ids = parseIds(cells[mapping.id] ?? "");
       if (!ids) continue;
       const line = block.line + index;
+      // Name the row: E124 is about one issue row, so a JSON consumer can
+      // point at `#500` instead of only a line number (round 14).
+      const first = ids[0]!;
+      const id = first.start === first.end ? idText(first) : `${first.start}–${first.end}`;
       const reason = `issue row under '## ${h2.title}' (outside 索引/已关闭) is not read; run 'issuemd adopt FILE' to move it`;
-      errors.push({ code: "E124", line, message: reason });
+      errors.push({ code: "E124", line, id, message: reason });
       unreadable.push({ line, table: "stray", reason, ids });
     }
   }

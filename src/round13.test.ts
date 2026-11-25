@@ -478,11 +478,13 @@ describe("review 13", () => {
     expect(doc.issues[0]).toMatchObject({ id: "5–7", bodyFrom: "6", criteria: "六号判据" });
   });
 
-  test("an unreadable row is reported once, not twice", async () => {
+  test("an unreadable row is detailed once, and check's error count is still named", async () => {
     const path = file(one() + "\n## 待处理\n\n| 7 | 未决 | 甲 |\n|---|---|---|\n");
     const listed = await run(["list", path]);
-    expect(listed.stderr).toContain("could not be read");
-    expect(listed.stderr).not.toContain("note: 'issuemd check'");
+    // The row itself is described once (unreadableNote), not repeated per
+    // error; the check summary line is never suppressed (round 14).
+    expect(listed.stderr.split("could not be read").length - 1).toBe(1);
+    expect(listed.stderr).toContain("note: 'issuemd check' reports 1 error(s)");
   });
 
   test("show for a missing id on a broken ledger still notes the check errors", async () => {

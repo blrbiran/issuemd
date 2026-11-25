@@ -343,7 +343,10 @@ export function extractCriteria(bodyLines: string[]): string | undefined {
   for (;;) {
     const found = labelBlock(bodyLines, from, bodyLines.length, "验收判据");
     if (!found) break;
-    if (found.text !== "" && !texts.includes(found.text)) texts.push(found.text);
+    // A block holding only an HTML comment renders as nothing: it is not a
+    // criteria anyone can check (round 14). Comments beside real text stay.
+    const text = /^<!--.*-->$/.test(found.text.trim()) ? "" : found.text;
+    if (text !== "" && !texts.includes(text)) texts.push(text);
     from = found.line + found.lines.length;
   }
   return texts.length > 0 ? joinClauses(texts) : undefined;
