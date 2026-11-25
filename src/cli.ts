@@ -21,8 +21,11 @@
 
 import { createHash } from "node:crypto";
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { accessSync, constants as fsConstants, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  accessSync, closeSync, constants as fsConstants, lstatSync, openSync, readFileSync, realpathSync, statSync,
+  unlinkSync, writeFileSync, writeSync,
+} from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
 import { scan } from "./scan.js";
@@ -740,7 +743,8 @@ function commit(
   const readOnly = readOnlyRefusal(file, loaded);
   if (readOnly) return readOnly;
   try {
-    const written = writeAtomically(loaded.path, content, loaded.doc.stat);
+    const written = lockedWrite(loaded.path, content, loaded.doc.stat);
+    if ("locked" in written) return written.locked;
     if (!written.ok) {
       return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 4);
     }
@@ -748,6 +752,88 @@ function commit(
     return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
   }
   return { code: 0, stdout: "", stderr: hardLinkNote(file, loaded) };
+}
+
+const LOCK_WAIT_MS = 2000;
+const LOCK_STALE_MS = 30_000;
+
+function holderAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * writeAtomically re-checks the snapshot right before its rename, but two
+ * writers can both pass that check and then both rename: the first write is
+ * lost while its command exited 0 (round-ten probe: 7 of 29 parallel writes).
+ * A lock file beside the ledger makes check + rename one critical section
+ * among issuemd writers; the loser then sees the new snapshot and exits 4.
+ * Held for milliseconds, so a waiter polls briefly; a lock whose holder is
+ * gone (or that is far older than any write) is taken over.
+ */
+function lockedWrite(
+  path: string,
+  content: string,
+  expected: Document["stat"],
+): ReturnType<typeof writeAtomically> | { locked: CliResult } {
+  const lock = join(dirname(path), `.${basename(path)}.issuemd-lock`);
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try {
+      const fd = openSync(lock, "wx", 0o600);
+      try {
+        writeSync(fd, `${process.pid}\n`);
+      } finally {
+        closeSync(fd);
+      }
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    let holder = NaN;
+    let age = 0;
+    try {
+      holder = Number.parseInt(readFileSync(lock, "utf8"), 10);
+      age = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      continue; // released between our open and read: try again
+    }
+    // An empty file is a holder that has not written its pid yet.
+    const starting = Number.isNaN(holder) && age < LOCK_STALE_MS;
+    if (!starting && (!holderAlive(holder) || age > LOCK_STALE_MS)) {
+      try {
+        unlinkSync(lock);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      return {
+        locked: err(
+          `issuemd: another issuemd write is in progress (lock '${lock}', pid ${Number.isNaN(holder) ? "?" : holder}); ` +
+            "nothing written. Retry; if no issuemd is running, delete the lock file\n",
+          4,
+        ),
+      };
+    }
+    Atomics.wait(pause, 0, 0, 10);
+  }
+  try {
+    return writeAtomically(path, content, expected);
+  } finally {
+    try {
+      unlinkSync(lock);
+    } catch {
+      // Already gone (taken over as stale): nothing to release.
+    }
+  }
 }
 
 /**
@@ -1549,7 +1635,8 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
     const readOnly = readOnlyRefusal(file, loaded);
     if (readOnly) return readOnly;
     try {
-      const written = writeAtomically(loaded.path, target, loaded.doc.stat);
+      const written = lockedWrite(loaded.path, target, loaded.doc.stat);
+      if ("locked" in written) return written.locked;
       if (!written.ok) return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 4);
     } catch (error) {
       return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);

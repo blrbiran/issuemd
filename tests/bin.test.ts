@@ -174,3 +174,63 @@ test("build --out only accepts dist-like directory names, never a source directo
     rmSync(work, { recursive: true, force: true });
   }
 });
+
+test("parallel writers: every exit-0 write is in the file; the rest exit 4", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const work = mkdtempSync(join(tmpdir(), "issuemd-parallel-"));
+  const exec = (args: string[]) => new Promise<number>((resolve) => {
+    const child = spawn("node", [bin, ...args], { stdio: "ignore" });
+    child.on("close", (code) => resolve(code ?? -1));
+  });
+  try {
+    const ledger = join(work, "l.md");
+    let lost = 0;
+    let applied = 0;
+    for (let trial = 0; trial < 12; trial++) {
+      writeFileSync(ledger, readFileSync(new URL("../TEMPLATE.md", import.meta.url)));
+      for (const title of ["a", "b", "c", "d", "e", "f"]) {
+        expect(spawnSync("node", [bin, "new", ledger, "--title", title]).status).toBe(0);
+      }
+      const ids = ["1", "2", "3", "4", "5", "6"];
+      const codes = await Promise.all(ids.map((id) => exec(["priority", ledger, id, "P0"])));
+      const text = readFileSync(ledger, "utf8");
+      codes.forEach((code, at) => {
+        expect([0, 4]).toContain(code);
+        if (code !== 0) return;
+        applied++;
+        if (!text.includes(`| ${ids[at]} | 未决 | P0 |`)) lost++;
+      });
+    }
+    expect(applied).toBeGreaterThan(0);
+    expect(lost).toBe(0);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("a write lock held by a live process makes a write exit 4; a dead holder's lock is cleared", async () => {
+  const { mkdtempSync, writeFileSync, rmSync, existsSync: exists } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const work = mkdtempSync(join(tmpdir(), "issuemd-lock-"));
+  try {
+    const ledger = join(work, "l.md");
+    writeFileSync(ledger, readFileSync(new URL("../TEMPLATE.md", import.meta.url)));
+    const lock = join(work, ".l.md.issuemd-lock");
+    writeFileSync(lock, `${process.pid}\n`);
+    const before = readFileSync(ledger, "utf8");
+    const held = spawnSync("node", [bin, "new", ledger, "--title", "x"], { encoding: "utf8" });
+    expect(held.status).toBe(4);
+    expect(held.stderr).toContain(".l.md.issuemd-lock");
+    expect(readFileSync(ledger, "utf8")).toBe(before);
+    // A pid that cannot be alive: the lock is stale and is taken over.
+    writeFileSync(lock, "2147483646\n");
+    const taken = spawnSync("node", [bin, "new", ledger, "--title", "x"], { encoding: "utf8" });
+    expect(taken.status).toBe(0);
+    expect(exists(lock)).toBe(false);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}, 30_000);
