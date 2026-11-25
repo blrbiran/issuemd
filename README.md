@@ -6,7 +6,7 @@ A CLI for **single-file issue ledgers** — the kind of Markdown where a table h
 
 ```bash
 issuemd check   FILE [--json] [--strict] [--verify-commits]
-issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json]
+issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]
 issuemd show    FILE ID [--json] [--label 验收判据]
 issuemd counts  FILE [--json]
 issuemd read    FILE <H2 heading>

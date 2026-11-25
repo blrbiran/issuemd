@@ -34,14 +34,17 @@ issuemd list FILE               # open issues: id, status, priority, summary
 issuemd list FILE --status 未决
 issuemd list FILE --closed      # the closed table; text output includes 判据
 issuemd list FILE --json        # each entry has ids[] and count; top level rowCount/issueCount
+issuemd list FILE --json --with-body   # + labels/criteria per issue, from the same parse (one snapshot)
 issuemd list FILE --expand      # one entry per id (`20, 24` and `7–20` rows are expanded)
 issuemd counts FILE             # per-status counts, computed (never stored)
 issuemd read FILE 附录          # any top-level section, verbatim
 ```
 
-`list` counts rows, `counts` counts ids: a `7–20` row is one row and 14 issues. Use `--json` (`count`, `issueCount`) or `--expand` when you need ids.
+`list` counts rows, `counts` counts ids: a `7–20` row is one row and 14 issues. Use `--json` (`count`, `issueCount`) or `--expand` when you need ids. `--with-body` adds each issue's `labels` and open-issue `criteria` to the same call — use it instead of one `show` per issue, which both costs N processes and mixes snapshots.
 
-An unknown `--status` word is exit `2` (with the vocabulary listed); a closed status on the open table tells you to add `--closed`. If stderr says some table rows **could not be read**, the result is incomplete — run `check` and fix those rows first.
+An unknown `--status` word is exit `2` (with the vocabulary listed); a closed status on the open table tells you to add `--closed`. If stderr says some table rows **could not be read**, the result is incomplete — run `check` and fix those rows first. If `check` itself would fail, `list`/`counts`/`show` still exit 0 but print a `note: 'issuemd check' reports N error(s) …` line, and their `--json` carries `diagnostics.errors`; a view of a broken ledger must not look healthy.
+
+**Feeding `list` back into per-id commands:** an `id` is the cell as written (`30, 31`, `7–20`). Use `ids[]` (or `--expand`) for `show`/`close`/…; passing the raw cell exits `2` with a message naming the ids.
 
 `issuemd FILE` is not a shortcut: it exits `2` with `unknown command`. Every command takes only its own options (`issuemd <command> --help`); a stray option is exit `2`, not silently ignored.
 
@@ -54,6 +57,8 @@ issuemd show FILE 65 --json          # {id,table,status,priority,summary,criteri
 ```
 
 A labelled block runs from `**标签**` to the next label or heading — a blank line followed by a list belongs to it. `--label` on a label with nothing under it is exit `1` with "exists but is empty". `--json` gives every label as one line in `labels`, and `criteria` with `criteriaSource` (`table` for closed issues, `body` for open ones).
+
+A multi-id row may keep one body under its first id. `show` still finds it for the other ids, but says so: `body.id` is the issue the text belongs to, `body.inherited: true` marks a borrowed body, `criteriaFrom` names the owner, and text mode prints `note: the body shown belongs to #N`. `check` still reports E102 for an id with no body of its own.
 
 ### 3. Change state — only with a ledger verb
 
@@ -68,7 +73,7 @@ issuemd reopen FILE 57 --status 观察                       # default 未决
 issuemd rename FILE 16 "new summary"                       # table + body title + archive heading
 issuemd body   FILE 16 --body-file new-body.md             # replace an open issue's body text
 issuemd priority FILE 16 P1                                # P0–P3 or ""
-issuemd split  FILE 24                                     # `20, 24, 29` → three rows
+issuemd split  FILE 24                                     # `20, 24, 29` → three rows (no bodies invented)
 ```
 
 Every one of these is atomic and supports `--dry-run` (a unified diff, one hunk per changed region). Use `--dry-run` first whenever the file is not a scratch copy.
@@ -79,6 +84,8 @@ Every one of these is atomic and supports `--dry-run` (a unified diff, one hunk 
 - **`--body-file`** (for `new` and `body`) is the text that goes *under* `### Issue N: <title>` — never include the heading yourself (a file that starts with `### Issue N:` is refused, exit `2`). Minimal file: `printf '**现象**：…\n\n**验收判据**：…\n' > body.md`. To change one paragraph: take `show FILE ID --json` → `body.text`, drop the heading line, edit, pipe it back with `issuemd body FILE ID --body-file -`.
 - **A title starting with `-`** must be attached with `=`: `--title="--body-file 的语义"`; otherwise you get `Option '--title' argument is ambiguous`.
 - **Priorities are `P0`–`P3` or empty.** `new` refuses anything else; `check` warns `W221` about existing ones.
+- **`split` never invents a body.** An id that had no body keeps none after the split: `check` still reports E102 and stderr names the ids, so write one with `issuemd body FILE ID --body-file -`. (An empty skeleton would turn a real error into a warning.)
+- **A no-op write says so.** If the verb would leave the bytes identical, stdout is one line `(no changes)` and the exit code is 0 — the same words `--dry-run` uses. A real change keeps stdout empty (`new` prints only the id).
 - **`new` prints the id it filed** — one line on stdout (`ID=$(issuemd new FILE --title "…")`). Use that; don't re-`list` to guess the newest row while others may be writing.
 - `new` refuses (exit `2`) a summary that an **open** issue already has (compared after NFKC/case/space folding) and names that issue — after a timed-out retry, that usually means your first call landed. `rename` and `reopen` refuse the same way when another open issue already has that summary. Add `--allow-duplicate-title` only when it really is a second issue; `check` then keeps reporting the pair as `W212`.
 
@@ -95,7 +102,7 @@ Exit code **3** means structural errors. Fix them before reporting anything as d
 `check` warnings worth knowing:
 
 - `W202` — a short hash pinned in prose (it rots). Commits in the closed table's 判据 column are expected and are not W202; `--verify-commits` checks them and reports `W240` for a commit the repo does not have.
-- `W212` duplicate summary · `W220` undeclared status · `W221` undeclared priority · `W225` issue-shaped table outside the ledger tables (kept as text).
+- `W212` duplicate summary · `W220` undeclared status · `W221` undeclared priority · `W225` issue-shaped table outside the ledger tables (kept as text) · `W261` an open issue whose body has no non-empty `**验收判据**` (a bare `new` skeleton, or criteria deleted — it cannot be closed until one is written).
 - `W250` — an appendix archive left by `close --keep-body` (or `adopt`): a `### #N <summary>（已关闭，正文保留）` heading ending at `<!-- issuemd:kept-body:end -->`. Intentional, informational, never fails `--strict`. Leave the marker alone: `reopen` restores exactly the text above it. The archive is a frozen snapshot, not a second copy of the criteria. `W251`/`W252` mean someone hand-edited it out of step. `W253` means a second copy of the same body sits in 附录 (an escaped `\### Issue N:` left by an older `adopt`, or a repeated archive): keep one, delete the other by hand, then `check`.
 
 ### 5. Fix drift mechanically
@@ -146,7 +153,7 @@ A successful write (exit `0`) is never lost to a parallel writer: the final chec
   issuemd reopen: #20 shares a row with other ids (20, 24, 29); split the row first: issuemd split FILE 20
   ```
 
-  `issuemd split FILE 20` gives every id its own row (fields copied; open ids get a body skeleton). Ranges over 1000 ids are refused.
+  `issuemd split FILE 20` gives every id its own row (fields copied). Bodies are not invented: an id that had none keeps its E102 and is named on stderr — write it with `issuemd body`. Ranges over 1000 ids are refused.
 
 ## Writing issues an owner can act on
 

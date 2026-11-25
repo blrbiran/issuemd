@@ -313,7 +313,7 @@ Ledger
 | W205 | 单元格含未转义 `\|` 或换行 |
 | W206 | 同一条正文内标签重复 |
 | W210 | 已关闭表的 `并入` 目标编号不存在 |
-| W212 | 两条**开放**行（单号）的摘要规范化后相同（NFKC、大小写、空白），疑似同一 issue 记了两次；`new` 默认拒绝与开放项同名的摘要（exit 2，点名已有编号），`--allow-duplicate-title` 放行后由 `check` 持续报出。已关闭的行不参与（重复项以 `并入` 关闭即视为已解决） |
+| W212 | 两条**开放**行（单号）的摘要规范化后相同（NFKC、大小写，**所有空白字符都删除**——`甲 乙` / `甲乙` / `甲　乙` 视为同一条，`导出 CSV` / `导出CSV` 也是），疑似同一 issue 记了两次；`new` 默认用同一个键拒绝与开放项同名的摘要（exit 2，点名已有编号），`--allow-duplicate-title` 放行后由 `check` 持续报出。已关闭的行不参与（重复项以 `并入` 关闭即视为已解决） |
 | W211 | 新编号 ≤ **当前表中**最大编号（疑似复用）。带后缀的号（`20a`、`393b`）是独立 issue，从不触发。**只在 `new --id` 时打到 stderr**；`check` 是静态扫描、无「新编号」概念，不报 |
 | W220 | 状态词未在状态口径块声明 |
 | W221 | 优先级不在 `P0`–`P3` 或空之内（`new` 直接拒绝这类值，exit 2） |
@@ -324,6 +324,7 @@ Ledger
 | W252 | 归档对应的 issue 已重新开放（`reopen` 正常会收回归档，手改才会出现） |
 | W253 | 同一 issue 的正文在附录里还有另一份（转义的 `\### Issue N:` 副本，或重复归档）；旧版 `adopt` 会把表格小节里的正文存两份 |
 | W260 | 索引摘要含进展词（`已落地/仍缺/仍无/仍逐/仍走`），应移入正文 |
+| W261 | 开放项的正文没有非空的 `**验收判据**` 块（`new` 不带 `--body-file` 写出的空骨架、判据被删掉的正文都算）。`close` 用 `--criteria-from-body` 时本来就会拒绝它，但空壳会一直留在 `list` 里（dogfood #62）。warning 级、`--strict` 失败；已关闭项不判（判据在表格列），正文缺失另有 E102 |
 
 ### 6.3 `--verify-commits`（默认关）
 
@@ -434,7 +435,7 @@ error: #56 当前 观察（open），目标 已修（closed）跨分类，请用
 
 - `body FILE ID --body-file PATH|-`：替换开放 issue 标题以下的正文；输入规则同 `new --body-file`；已关闭 id exit 2；缺正文块时按编号位置新建。
 - `priority FILE ID P`：只改 `P` 单元格，开放/已关闭都行；`P` 只能是 `P0`–`P3` 或空。
-- `split FILE ID`：把 ID 所在的多号行或区间行拆成每号一行（字段原样复制、升序原位）；开放表里拆出的号没有正文时补骨架；单号行 exit 2；超过 1000 个号 exit 2。
+- `split FILE ID`：把 ID 所在的多号行或区间行拆成每号一行（字段原样复制、升序原位）。**不替任何号补正文**：原本没有正文的号拆分后仍然没有，E102 继续报出（区间行会从「第一个缺失号」变成逐号报出），split 在 stderr 点名这些号并提示用 `issuemd body` 补写——补空骨架会让一次合法写把 error 洗成 warning（dogfood #64）。单号行 exit 2；超过 1000 个号 exit 2。只解析一次台账（dogfood #70）。
 - `reopen --status S`：S 必须是开放分类，默认 `未决`。
 - `reopen` 的摘要与某个开放项规范化后相同（例如以 `并入` 关闭的重复项被重开）时 exit 2、不写，点名已有编号并给出 `issuemd rename`；确需重开加 `--allow-duplicate-title`，之后由 W212 持续报出。
 - 所有 per-id 命令（close/reopen/status/rename/body/priority）对多号行、区间行用同一句话拒绝，并给出 `issuemd split FILE <id>`；`close`/`reopen` 先判行形状、再判开关状态。
@@ -495,7 +496,7 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 ```text
 台账读
   issuemd check   FILE [--json] [--strict] [--verify-commits]
-  issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json]
+  issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]
   issuemd show    FILE ID [--json] [--label NAME]
   issuemd counts  FILE [--json]
   issuemd read    FILE <H2 标题>          # 精确匹配顶层标题，无选择器/正则
@@ -516,9 +517,15 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
   issuemd adopt   FILE [--dry-run] [--report PATH]
 ```
 
-退出码：0 成功 / 1 没有这条 issue 或结果为空 / 2 用法或 I/O 错误 / **3 check 发现 error** / **4 文件在读取后被改动（E130），重读后重试**。`issuemd FILE` 不是命令简写，exit 2。
+退出码：0 成功 / 1 没有这条 issue 或结果为空 / 2 用法或 I/O 错误 / **3 check 发现 error** / **4 文件在读取后被改动（E130），重读后重试**。`issuemd FILE` 不是命令简写，exit 2。写命令算出的内容与原文逐字节相同时不落盘，stdout 打 `(no changes)`（与 `--dry-run` 同一措辞）、exit 0——重试的调用方能区分「已经改过」与「刚才改成功」；真正有改动时 stdout 仍为空（`new` 只有编号一行）（dogfood #66）。
 
-每个命令只接受自己的选项（见 `issuemd <command> --help`）；给了别的命令的选项（`list --title`、`new --json`、`check --closed`）一律 exit 2，不静默忽略。`list --status` / `--priority` 的值不在词表、也不在台账里出现时 exit 2；关闭类状态用在开放表上会提示加 `--closed`。读命令遇到不可读的表行时在 stderr 说明结果不完整，`list --json` 附 `unreadableRows`；W225 表占用的编号不是不可读行，`list --json`（开放与 `--closed` 都）附 `citedRows: [{ line, reason, ids }]`（没有时省略），agent 不必跑 `check` 也知道哪些编号不会被分配（第十二轮；W225 表引用的编号若同时是已登记的 issue 也照列）；`show` 查到的编号若还出现在某条不可读行（如 E124 的旧表）里，照常输出并在 stderr 点名那一行；`list --json` 每项带 `ids` 与 `count`，顶层带 `rowCount` / `issueCount`（`issueCount` 与 `counts` 一致）。`show --json` 带 `labels`（所有标签块的单行形式）与 `criteria` + `criteriaSource`（`table` 或开放项的 `body`）。读命令的 `--json` 都带 `snapshot`；写命令都接受 `--if-unchanged S`（见 §7）。
+每个命令只接受自己的选项（见 `issuemd <command> --help`）；给了别的命令的选项（`list --title`、`new --json`、`check --closed`）一律 exit 2，不静默忽略。`list --status` / `--priority` 的值不在词表、也不在台账里出现时 exit 2；关闭类状态用在开放表上会提示加 `--closed`。读命令遇到不可读的表行时在 stderr 说明结果不完整，`list --json` 附 `unreadableRows`；W225 表占用的编号不是不可读行，`list --json`（开放与 `--closed` 都）附 `citedRows: [{ line, reason, ids }]`（没有时省略），agent 不必跑 `check` 也知道哪些编号不会被分配（第十二轮；W225 表引用的编号若同时是已登记的 issue 也照列）；`show` 查到的编号若还出现在某条不可读行（如 E124 的旧表）里，照常输出并在 stderr 点名那一行；`list --json` 每项带 `ids` 与 `count`，顶层带 `rowCount` / `issueCount`（`issueCount` 与 `counts` 一致）。
+
+**读视图与 `check` 的一致性（第十三轮，dogfood #63）**：`check` 有 error 时，`list` / `counts` / `show` 的退出码仍是 0/1（读一份坏台账去修它是正当用法），但会在 stderr 写一行 `note: 'issuemd check' reports N error(s) (first: CODE L… )`；三者的 `--json` 顶层附 `diagnostics: { errors: [...] }`（仅在有 error 时出现，字段与 `check --json` 的 error 相同，含 E106 的 `expected` / `actual`），机器消费者不必再跑一次 `check`。
+
+**正文归属（dogfood #69）**：`show` 先找本号自己的 `### Issue N:` 块；找不到时沿用「同一行只在首号写一段正文」的历史写法，借兄弟号的正文，但 `--json` 的 `body` 带 `id`（正文真正属于哪个号）与 `inherited: true`，`criteria` 另带 `criteriaFrom`，文本模式在 stderr 写 `note: the body shown belongs to #N`、stdout 写明「正文属于 #N」。`check` 仍对没有自己正文的号报 E102。
+
+**`list --json --with-body`（dogfood #67）**：每项附 `labels`（与 `show --json` 同源）、开放项的 `criteria` / `criteriaSource: "body"`；正文来自同行的兄弟号时附 `bodyFrom`。所有条目来自同一次解析，顶层 `snapshot` 一份，批量分析不必逐条 `show`。`--with-body` 必须配 `--json`（否则 exit 2）。
 
 ### 9.1 不要把这些命令加回来
 
@@ -561,12 +568,14 @@ issuemd adopt old.md --dry-run --report decisions.md
 
 2026-11-24 dogfooding 后的补充（实现见 `src/adopt.ts`）：
 
-- **已合规就不动**：输入 `check` 0 error 且无 W220 时，原样返回、报告「已是规范台账」。空 TEMPLATE 不再被判成「不是台账」；已有的空 `## 附录` 不删。规范骨架加一节旧表（`## 待处理`）的混合文件因 E124 不算合规，照常转换；规范表只有表头时视为重建，不当说明文字复制进附录。
+- **已合规就不动**：输入 `check` 0 error 且无 W220 时，原样返回；没有任何 W225 表时报告「已是规范台账」，有 W225 表时报告写「结构合法（check 0 error）；另有 N 张表按 W225 原样保留、不迁移，无需转换」——不再让「无需转换」一句话盖住仍在文件里的非规范表（dogfood #57）。空 TEMPLATE 不再被判成「不是台账」；已有的空 `## 附录` 不删。规范骨架加一节旧表（`## 待处理`）的混合文件因 E124 不算合规，照常转换；规范表只有表头时视为重建，不当说明文字复制进附录。
 - **内容守恒自检**：除了被转换成表行的行（及其表头/分隔行）、重建的规范标题、受控块和正文里的 `**状态**` 行，**每一行输入**都必须在输出里出现，否则拒绝写入（exit 3，列出源行号）。输入表格里的每个编号也必须出现在输出表格里。两项检查都通过时，报告的「机械改动」里会写一行 `守恒自检：issue N → N；表格行以外的 K 行原文都在输出里`。
 - 表格小节（`## 待处理` 等）里的 `### Issue N:` 是正文块，不是叙述：开放项进 `## 正文`，已关闭项进归档，不再另外当作「小节说明」复制一份（dogfood #50）。
 - 不在 `## 正文` 和表格小节里的 `### Issue N:` 正文块（H1 下面、外来小节里）同样是正文：搬进 `## 正文` 或归档，原处的逐字副本里去掉这几行，不留第二份。
 - 第一个 H2 之前（H1 下面，或文件没有 H1）的正文块不算说明文字：adopt 采用的那份搬进 `## 正文`、归档，或作为孤立正文进附录，说明与前言的副本里去掉它；同号的另一份（`## 正文` 里那份优先）与区间标题留在原处，标题转义成文字。前言（H1 之前的文字）进附录时同样转义。
 - adopt 只从台账表小节名（`待处理`、`总览`…）下读表行；其他小节里即使是 `| # | 摘要 |` 的表也原样保留，不迁移（与 W225 一致）。报告（含「已是规范台账」的早退）对每张 W225 表写一条 `cited-table`，说明它不迁移、编号已占用。被迁移的表里没有编号的行（`| 备注 | a | b |`）按原文移入附录并写 `kept-row`，不再当表头丢掉（第十一轮复审）。无表头的三列表默认按 `# | 摘要 | 判据` 读；**逐行**判断：第二格恰好是状态词的那一行（`| 7 | 未决 | 甲 |`）按 `# | 状态 | 摘要` 读（dogfood #56）。
+- **外来小节搬进附录时**：标题里的 `（N）` 计数会被剥掉，报告必须点名改名（`标题去掉（N）计数后移入附录（L…「原名」→「新名」）`），不再写成「原样移入附录」；原级别是 H2 的小节另写「以原级别 H2 并入附录」，不悄悄改变结构，也不降级（降级会让里面的表脱离 W225 视野、编号不再保留）（dogfood #72）。
+- **开放项摘要里的 `（N）` 计数**（dogfood #73）：表摘要与正文标题都带同一个计数 → 静默剥掉；只有一侧带计数 → 剥掉并出一条 `summary-count-stripped`（带 id 与新旧摘要，列在「按默认处理、请复核」）；两侧计数不同（`甲（3）` vs `甲（4）`）→ `open-title-conflict`，不当成「剥完就一样」。不带计数的真实漂移（`甲2025` vs `甲2026`）照旧冲突。
 - 输入 `## 附录` 里已有的 `### Issue N:` 不当正文用：原地留在附录，标题改成 `### #N 摘要（附录里原有的正文）`，出 `orphan-body` 决定；N 是开放项时正文用 `## 正文` 里那份或补骨架，决定里提示用 `issuemd body` 换。
 - `### Issue 3–5:` 这类不是单个编号的正文标题挂不到任何 issue：连同内容原样（标题转义）移入附录，出 `foreign-section` 决定；对应的开放行照常逐号补骨架。
 - **H1 下的原有说明**留在原处；`## 怎么用` / `## 状态口径` 只重写 marker 之间的块，块外文字原样保留（出 `kept-section-text`）。
