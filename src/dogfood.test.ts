@@ -2044,3 +2044,13 @@ test("round 12 probe: a conservation refusal quotes the source line, not the con
   expect(quoted.length).toBeGreaterThan(0);
   for (const [, line, shown] of quoted) expect(text(path).split("\n")[Number(line) - 1]!.trim()).toBe(shown!);
 });
+
+test("round 12 probe: reopen of a closed row with an empty summary says to rename first", async () => {
+  const base = await withIssue("**验收判据**：x\n");
+  expect((await run(["close", base, "1"])).code).toBe(0);
+  const path = file(text(base).replace("| 1 | 已修 | P2 | 甲 |", "| 1 | 已修 | P2 |  |"));
+  expect(text(path)).toContain("| 1 | 已修 | P2 |  |");
+  const result = await run(["reopen", path, "1"]);
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("issuemd rename");
+});

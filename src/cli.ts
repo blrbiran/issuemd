@@ -962,6 +962,9 @@ function statusCategory(status: string): "open" | "closed" | undefined {
  */
 /** Why a summary cannot become a body heading, or null. */
 function titleProblem(title: string): string | null {
+  // new/rename refuse an empty title up front; reopen of an empty summary
+  // would otherwise write `### Issue N: ` (round-twelve probe).
+  if (title.trim() === "") return "the title is empty.";
   // A heading ending in a count is E121 (spec §2.2); say it before the gate does.
   if (countSuffix(title)) {
     return "the title ends with a count like '（2）'; headings must not carry counts (E121). Drop or reword it.";
