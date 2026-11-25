@@ -1934,3 +1934,19 @@ describe("round 12 Q3: a year in a title is not a count", () => {
     expect((await run(["check", path])).code).toBe(0);
   });
 });
+
+describe("round 12 Q4: list --json names the ids W225 tables reserve", () => {
+  test("citedRows carries line, reason and ids; absent when nothing is cited", async () => {
+    const path = file(TEMPLATE.replace("## 正文", "## 变更记录\n\n| # | 说明 |\n|---|---|\n| 7 | 甲 |\n| 9–11 | 乙 |\n\n## 正文"));
+    for (const extra of [[], ["--closed"]]) {
+      const listed = await run(["list", path, "--json", ...extra]);
+      const json = JSON.parse(listed.stdout) as { citedRows?: { line: number; reason: string; ids: string[] }[]; unreadableRows?: unknown };
+      expect(json.citedRows?.map((r) => r.ids)).toEqual([["7"], ["9–11"]]);
+      expect(json.citedRows?.[0]?.reason).toContain("W225");
+      expect(text(path).split("\n")[json.citedRows![0]!.line - 1]).toBe("| 7 | 甲 |");
+      expect(json.unreadableRows).toBeUndefined();
+    }
+    const plain = JSON.parse((await run(["list", file(), "--json"])).stdout) as Record<string, unknown>;
+    expect("citedRows" in plain).toBe(false);
+  });
+});

@@ -433,6 +433,8 @@ function cmdList(rest: string[], v: Values): CliResult {
     const unreadableRows = ledger.unreadable
       .filter((row) => row.table === table || row.table === "stray")
       .map(({ line, reason, ids }) => ({ line, reason, ...(ids ? { ids: ids.map(spanText) } : {}) }));
+    // Ids reserved by W225 tables: not issues, but `new` will not hand them out.
+    const citedRows = ledger.cited.map(({ line, reason, ids }) => ({ line, reason, ids: (ids ?? []).map(spanText) }));
     const body = JSON.stringify(
       {
         file,
@@ -442,6 +444,7 @@ function cmdList(rest: string[], v: Values): CliResult {
         issueCount: issues.reduce((sum, issue) => sum + issue.count, 0),
         issues,
         ...(unreadableRows.length ? { unreadableRows } : {}),
+        ...(citedRows.length ? { citedRows } : {}),
       },
       null,
       2,
