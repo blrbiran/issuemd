@@ -395,7 +395,7 @@ function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
   let issueLevel = 0;
   const out = lines.map((line, index) => {
     if (fenced[index]) return line;
-    const outer = /^(#{1,3})[ \t]+(.*)$/.exec(line);
+    const outer = /^ {0,3}(#{1,3})[ \t]+(.*)$/.exec(line);
     if (outer) {
       const level = outer[1]!.length;
       if (/^Issue\s/.test(outer[2]!)) issueLevel = level;
@@ -404,7 +404,7 @@ function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
     if (issueLevel === 0) return line;
     // Closing `#`s are stripped only when whitespace separates them from the
     // text, as in CommonMark — `#### Use C#` keeps its `#`.
-    const match = /^(#{4,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+    const match = /^ {0,3}(#{4,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
     if (!match) return line;
     count++;
     return `**${match[2]}**`;
@@ -457,10 +457,10 @@ function stripCounts(lines: string[]): { lines: string[]; count: number } {
   let count = 0;
   const fenced = fencedLines(lines);
   const out = lines.map((line, index) => {
-    if (fenced[index] || !/^#{1,6} /.test(line)) return line;
+    if (fenced[index] || !/^ {0,3}#{1,6}[ \t]/.test(line)) return line;
     // check reads the title without ATX closing hashes (`## 旧（3） ##`) and
     // an issue heading's title without its `Issue N:` prefix.
-    const [, prefix, title, closing] = /^(#{1,6} +(?:Issue\s+[^:\s]+\s*:\s*)?)(.*?)((?:[ \t]+#+)?[ \t]*)$/.exec(line)!;
+    const [, prefix, title, closing] = /^( {0,3}#{1,6}[ \t]+(?:Issue\s+[^:\s]+\s*:\s*)?)(.*?)((?:[ \t]+#+)?[ \t]*)$/.exec(line)!;
     const stripped = stripCountSuffixes(title!);
     const next = stripped !== title ? prefix + stripped + closing : line;
     if (next !== line) count++;

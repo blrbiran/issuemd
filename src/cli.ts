@@ -1889,15 +1889,17 @@ function syncTitles(
     if (row.ids.length !== 1 || row.ids[0]!.start !== row.ids[0]!.end) {
       const drifted = row.ids
         .map((span) => byId.get(spanText(span)))
-        .some((block) => block != null && foldWhitespace(block.title) !== foldWhitespace(row.summary));
+        .some((block) => block != null && foldWhitespace(unescapeCell(block.title)) !== foldWhitespace(row.summary));
       if (drifted) skipped.push(row.ids.map(spanText).join(", "));
       continue;
     }
     const id = spanText(row.ids[0]!);
     const block = byId.get(id);
     if (!block) continue;
-    if (foldWhitespace(block.title) === foldWhitespace(row.summary)) continue;
-    changes.push({ id, oldSummary: row.summary, title: block.title, rowLine: row.line, bodyLine: block.line });
+    // `\|` in a heading renders as `|`: not drift (E106 compares the same way).
+    const title = unescapeCell(block.title);
+    if (foldWhitespace(title) === foldWhitespace(row.summary)) continue;
+    changes.push({ id, oldSummary: row.summary, title, rowLine: row.line, bodyLine: block.line });
   }
   const skippedNote = skipped.length === 0
     ? ""

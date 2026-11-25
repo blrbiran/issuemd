@@ -2054,3 +2054,37 @@ test("round 12 probe: reopen of a closed row with an empty summary says to renam
   expect(result.code).toBe(2);
   expect(result.stderr).toContain("issuemd rename");
 });
+
+describe("round 12 review", () => {
+  test("adopt handles an Issue heading indented by 1–3 spaces (H4 under it still demoted)", async () => {
+    const path = file("# T\n\n## 待处理\n\n| # | 摘要 |\n|---|---|\n| 1 | 甲 |\n\n## 正文\n\n ### Issue 1: 甲\n\n#### 缩进标题下\n\nx\n");
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toContain("**缩进标题下**");
+    expect((await run(["check", path])).code).toBe(0);
+  });
+
+  test("adopt demotes an H4 indented by 1–3 spaces inside a body", async () => {
+    const path = file("# T\n\n## 待处理\n\n| # | 摘要 |\n|---|---|\n| 1 | 甲 |\n\n## 正文\n\n### Issue 1: 甲\n\n  #### 缩进H4\n\nx\n");
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toContain("**缩进H4**");
+  });
+
+  test("adopt strips a count from an indented or tab-separated heading", async () => {
+    for (const heading of [" ## 旧记录（3）", "##\t旧记录（3）"]) {
+      const path = file(`# T\n\n${heading}\n\n文字\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n`);
+      expect((await run(["adopt", path])).code).toBe(0);
+      expect(text(path)).not.toContain("（3）");
+    }
+  });
+
+  test("sync --titles treats an escaped pipe in the heading as no drift", async () => {
+    const base = file();
+    expect((await run(["new", base, "--title", "c | d", "--body-file", body("**验收判据**：y\n")])).code).toBe(0);
+    const path = file(text(base).replace("### Issue 1: c | d", "### Issue 1: c \\| d"));
+    for (const prefer of ["body", "table"]) {
+      const dry = await run(["sync", path, "--titles", "--prefer", prefer, "--dry-run"]);
+      expect(dry.code).toBe(0);
+      expect(dry.stdout).toBe("(no changes)\n");
+    }
+  });
+});
