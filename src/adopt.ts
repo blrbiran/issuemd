@@ -1240,7 +1240,11 @@ export function adopt(src: string): AdoptResult {
   });
   if (lost.length > 0) {
     const sample = lost.slice(0, 10)
-      .map((line) => `  source L${separated.origin[line - 1] ?? line}: ${lines[line - 1]!.trim().slice(0, 80)}`)
+      .map((line) => {
+        // Quote the input as written, not after H4 demotion / count stripping.
+        const source = separated.origin[line - 1] ?? line;
+        return `  source L${source}: ${(original[source - 1] ?? lines[line - 1]!).trim().slice(0, 80)}`;
+      })
       .join("\n");
     throw Object.assign(
       new Error(

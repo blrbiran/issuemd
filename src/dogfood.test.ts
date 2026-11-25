@@ -2034,3 +2034,13 @@ test("round 12 probe: --if-unchanged accepts the snapshot in upper case", async 
   expect((await run(["new", path, "--title", "甲", "--if-unchanged", snapshot.toUpperCase()])).code).toBe(0);
   expect((await run(["new", path, "--title", "乙", "--if-unchanged", snapshot.toUpperCase()])).code).toBe(4);
 });
+
+test("round 12 probe: a conservation refusal quotes the source line, not the converted one", async () => {
+  const path = file("# T\n\n## 待处理\n\n| # | 摘要 |\n|---|---|\n| 1 | 甲 |\n\n## 正文\n\n### Issue 1: 甲\n\nbody1\n#### 小节\n内容\n\n## 正文\n\n### Issue 1: 甲\n\n第二份\n");
+  const adopted = await run(["adopt", path]);
+  expect(adopted.code).toBe(3);
+  expect(adopted.stderr).toContain("#### 小节");
+  const quoted = [...adopted.stderr.matchAll(/source L(\d+): (.*)/g)];
+  expect(quoted.length).toBeGreaterThan(0);
+  for (const [, line, shown] of quoted) expect(text(path).split("\n")[Number(line) - 1]!.trim()).toBe(shown!);
+});
