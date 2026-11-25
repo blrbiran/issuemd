@@ -300,6 +300,13 @@ export function labelBlock(
         blank = false;
         continue;
       }
+      // A label-shaped line inside a fence is an *example* of the label, not
+      // a second criteria block (dogfood #61: `close` already promised this).
+      if (ownFenced[index] && LABEL_LINE.test(raw)) {
+        flush();
+        blank = false;
+        continue;
+      }
       if (blank || LIST_ITEM.test(raw) || ownFenced[index]) flush();
       blank = false;
       current.push(raw.replace(UNORDERED_MARKER, "").trim());

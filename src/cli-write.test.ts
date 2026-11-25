@@ -316,7 +316,7 @@ describe("rename", () => {
     const before = statSync(path).ino;
     const result = await run(["rename", path, "2", "侧栏宽度不可调"]);
     expect(result.code).toBe(0);
-    expect(result.stdout).toBe("");
+    expect(result.stdout).toBe("(no changes)\n");
     expect(statSync(path).ino).toBe(before);
   });
 
@@ -460,7 +460,7 @@ describe("sync --guide", () => {
     const inode = statSync(path).ino;
     const result = await run(["sync", path, "--guide"]);
     expect(result.code).toBe(0);
-    expect(result.stdout).toBe("");
+    expect(result.stdout).toBe("(no changes)\n");
     expect(statSync(path).ino).toBe(inode);
   });
 });

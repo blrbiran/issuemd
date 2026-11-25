@@ -114,12 +114,17 @@ describe("split", () => {
     expect(await clean(path)).toBe(true);
   });
 
-  test("open multi-id rows get a body for every id that lacks one", async () => {
+  test("open multi-id rows keep their bodies and invent none", async () => {
     const path = await ledgerWith("甲");
     writeFileSync(path, text(path).replace("| 1 | 未决 | P2 | 甲 |", "| 1, 2 | 未决 | P2 | 甲 |"));
-    expect((await run(["split", path, "1"])).code).toBe(0);
-    expect(text(path)).toContain("### Issue 2: 甲");
-    expect(text(path)).toContain("甲 的现象");
+    const result = await run(["split", path, "1"]);
+    expect(result.code).toBe(0);
+    // #1 keeps its body; #2 had none before, and split must not fabricate one
+    // (dogfood #64): its E102 stays and is named on stderr.
+    expect(text(path)).toContain("### Issue 1: 甲");
+    expect(text(path)).not.toContain("### Issue 2: 甲");
+    expect(result.stderr).toContain("#2");
+    expect((await run(["check", path])).stdout).toContain("E102");
   });
 
   test("a single-id row is a usage error; --dry-run writes nothing", async () => {

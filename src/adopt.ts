@@ -21,7 +21,7 @@
 
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { isStatusWord, stripCountSuffixes, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
+import { countSuffix, isStatusWord, stripCountSuffixes, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
 import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines, unescapeCell } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
@@ -29,6 +29,7 @@ import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
 
 export type DecisionKind =
   | "open-title-conflict"
+  | "summary-count-stripped"
   | "closed-title-conflict"
   | "progress-text"
   | "closed-with-body"
@@ -453,8 +454,14 @@ function fixSeparators(lines: string[]): { lines: string[]; count: number; origi
 }
 
 /** Any heading with a trailing `（N）` count (`countSuffix`; years stay) loses it. */
-function stripCounts(lines: string[]): { lines: string[]; count: number } {
+function stripCounts(lines: string[]): {
+  lines: string[];
+  count: number;
+  /** 1-based lines (of the returned array) whose heading text changed. */
+  renames: { line: number; before: string; after: string }[];
+} {
   let count = 0;
+  const renames: { line: number; before: string; after: string }[] = [];
   const fenced = fencedLines(lines);
   const out = lines.map((line, index) => {
     if (fenced[index] || !/^ {0,3}#{1,6}[ \t]/.test(line)) return line;
@@ -463,10 +470,13 @@ function stripCounts(lines: string[]): { lines: string[]; count: number } {
     const [, prefix, title, closing] = /^( {0,3}#{1,6}[ \t]+(?:Issue\s+[^:\s]+\s*:\s*)?)(.*?)((?:[ \t]+#+)?[ \t]*)$/.exec(line)!;
     const stripped = stripCountSuffixes(title!);
     const next = stripped !== title ? prefix + stripped + closing : line;
-    if (next !== line) count++;
+    if (next !== line) {
+      count++;
+      renames.push({ line: index + 1, before: line, after: next });
+    }
     return next;
   });
-  return { lines: out, count };
+  return { lines: out, count, renames };
 }
 
 export function adopt(src: string): AdoptResult {
@@ -482,7 +492,16 @@ export function adopt(src: string): AdoptResult {
   // W220 (a status outside the vocabulary) is the one warning adopt itself
   // reports on, so such a ledger still goes through the conversion.
   if (precheck.errors.length === 0 && !precheck.warnings.some(({ code }) => code === "W220")) {
-    return { lines: original, decisions: [], changes: ["已是规范台账（check 0 error），无需转换"] };
+    // A W225 table is not converted, but it is still there: saying only
+    // "nothing to convert" hid the retained table from the reader (#56/#57).
+    const cited = precheck.warnings.filter(({ code }) => code === "W225").length;
+    return {
+      lines: original,
+      decisions: [],
+      changes: [cited > 0
+        ? `结构合法（check 0 error）；另有 ${cited} 张表按 W225 原样保留、不迁移，无需转换`
+        : "已是规范台账（check 0 error），无需转换"],
+    };
   }
 
   // Mechanical rewrites first, so every later coordinate refers to the text
@@ -490,10 +509,30 @@ export function adopt(src: string): AdoptResult {
   const demoted = demoteHeadings(original);
   if (demoted.count > 0) changes.push(`正文 H4 → **加粗标签**：${demoted.count} 处`);
   const stripped = stripCounts(demoted.lines);
-  if (stripped.count > 0) changes.push(`去掉标题里的（N）计数：${stripped.count} 处`);
   const separated = fixSeparators(stripped.lines);
   if (separated.count > 0) changes.push(`补表格分隔行：${separated.count} 处`);
   const lines = separated.lines;
+  /** 1-based line in `lines` → the line it came from in the source file. */
+  const sourceLineOf = (finalLine: number) => separated.origin[finalLine - 1] ?? finalLine;
+  const originalTextAt = (finalLine: number) => original[sourceLineOf(finalLine) - 1] ?? lines[finalLine - 1] ?? "";
+  // Renamed headings, in output coordinates: `fixSeparators` may have shifted
+  // them, so map through `origin` before the report uses them (#72/#73).
+  const renamedBySource = new Map(stripped.renames.map((rename) => [rename.line, rename]));
+  const renames = new Map<number, { before: string; after: string }>();
+  separated.origin.forEach((source, index) => {
+    const rename = renamedBySource.get(source);
+    if (rename) renames.set(index + 1, rename);
+  });
+  const headingText = (line: string) =>
+    line.replace(/^ {0,3}#{1,6}[ \t]+/, "").replace(/[ \t]+#+[ \t]*$/, "");
+  if (stripped.count > 0) {
+    // Name the changed headings: a bare count left the reader unable to tell
+    // which section the report's "原样移入附录" was talking about (#72).
+    const named = [...renames].slice(0, 5)
+      .map(([line, rename]) => `L${line}「${headingText(rename.before)}」→「${headingText(rename.after)}」`)
+      .join("、");
+    changes.push(`去掉标题里的（N）计数：${stripped.count} 处` + (named ? `（${named}${renames.size > 5 ? "…" : ""}）` : ""));
+  }
 
   const sections = buildSections(scan(lines.join("\n")), lines.length);
   const h1 = sections.find((section) => section.level === 1);
@@ -750,15 +789,63 @@ export function adopt(src: string): AdoptResult {
     for (let line = body.line; line <= Math.min(body.end, firstH2 - 1); line++) topBodyLines.add(line);
   }
   // Open summaries become body headings, so they lose trailing counts the
-  // same way headings do (stripCounts); a row and heading that both carried
-  // the count then agree instead of reporting a title conflict.
+  // same way headings do (stripCounts). That must not erase a real drift
+  // (#73): strip when both sides carried the same count; make a one-sided
+  // strip a visible decision; keep different counts as a title conflict.
   let summaryCounts = 0;
+  const isMultiId = (row: Row) => row.ids.length > 1 || /[–~-]/.test(row.idText);
+  const headingTitleOf = (line: string) =>
+    /^ {0,3}#{1,3}[ \t]+Issue\s+[^:\s]+\s*:\s*(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line)?.[1] ?? "";
   for (const row of open) {
-    const stripped = stripCountSuffixes(row.summary);
-    if (stripped !== row.summary) [row.summary, summaryCounts] = [stripped, summaryCounts + 1];
+    const body = bodyById.get(fullId(row));
+    if (!body || isMultiId(row)) {
+      const stripped = stripCountSuffixes(row.summary);
+      if (stripped !== row.summary) [row.summary, summaryCounts] = [stripped, summaryCounts + 1];
+      continue;
+    }
+    const rawTitle = unescapeCell(headingTitleOf(originalTextAt(body.line)) || body.title);
+    const rawSummary = row.summary;
+    if (fold(rawSummary) === fold(rawTitle)) {
+      // Identical including the count: both headings lose it, silently.
+      const stripped = stripCountSuffixes(rawSummary);
+      if (stripped !== rawSummary) [row.summary, summaryCounts] = [stripped, summaryCounts + 1];
+      continue;
+    }
+    const strippedSummary = stripCountSuffixes(rawSummary);
+    const strippedTitle = stripCountSuffixes(rawTitle);
+    const summaryCount = countSuffix(rawSummary)?.[0];
+    const titleCount = countSuffix(rawTitle)?.[0];
+    if ((summaryCount || titleCount) && fold(strippedSummary) === fold(strippedTitle)) {
+      if (summaryCount && titleCount) {
+        // `甲（3）` vs `甲（4）`: stripping both would hide a real difference.
+        decisions.push({
+          kind: "open-title-conflict",
+          id: row.idText,
+          line: body.line,
+          message: "表格摘要与正文标题的（N）计数不同；默认按 --prefer=body 采用正文标题",
+          table: rawSummary,
+          body: rawTitle,
+        });
+        row.summary = unescapeCell(body.title);
+      } else {
+        // Only one side carried a count: dropping it is mechanical, but the
+        // reader must see which summary moved (#73).
+        summaryCounts++;
+        decisions.push({
+          kind: "summary-count-stripped",
+          id: row.idText,
+          line: row.line,
+          message: `表格摘要末尾的（N）计数已去掉，与正文标题一致（${rawSummary} → ${strippedSummary}）；请复核`,
+          table: rawSummary,
+          body: strippedSummary,
+        });
+        row.summary = strippedSummary;
+      }
+    }
+    // Otherwise leave the summary untouched; the conflict loop below reports
+    // the drift exactly as it does for any other mismatch.
   }
   if (summaryCounts > 0) changes.push(`去掉开放项摘要里的（N）计数：${summaryCounts} 处`);
-  const isMultiId = (row: Row) => row.ids.length > 1 || /[–~-]/.test(row.idText);
   for (const row of open) {
     const body = bodyById.get(fullId(row));
     if (!body) {
@@ -962,6 +1049,15 @@ export function adopt(src: string): AdoptResult {
     if (section.level === 2 && KNOWN_SECTION.test(section.title)) continue;
     if (section.level === 2 && isTableSection(section.title) && rowSections.has(section.title)) continue;
     const heading = lines[section.line_start - 1]!;
+    // An H2 copied under `## 附录` keeps its level (so a table inside it is
+    // still seen by W225 and its ids stay reserved); say so rather than
+    // silently promoting appendix content to a sibling section.
+    const levelNote = section.level === 2 ? "；以原级别 H2 并入附录" : "";
+    const renamed: string[] = [];
+    for (let line = section.line_start; line <= section.line_end; line++) {
+      const rename = renames.get(line);
+      if (rename) renamed.push(`L${line}「${headingText(rename.before)}」→「${headingText(rename.after)}」`);
+    }
     const content: string[] = [];
     for (let line = section.line_start + 1; line <= section.line_end; line++) {
       if (excluded(line) || movedBodyLines.has(line)) continue;
@@ -969,7 +1065,8 @@ export function adopt(src: string): AdoptResult {
       preservedLines.add(line);
     }
     keep(heading, trimBlankEdges(content), section.line_start,
-      `未识别的小节「${section.title}」；原样移入附录`);
+      `未识别的小节「${section.title}」；` +
+        (renamed.length ? `标题去掉（N）计数后移入附录（${renamed.join("、")}）` : "原样移入附录") + levelNote);
     preservedSections++;
   }
   // Inside a converted table section only the rows are data. Group notes

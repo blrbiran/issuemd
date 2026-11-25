@@ -22,6 +22,12 @@ export type ListedIssue = {
   priority: string;
   summary: string;
   criteria?: string;
+  /** `--with-body`: where `criteria` came from (open issues read it from the body). */
+  criteriaSource?: "body";
+  /** `--with-body`: the id whose body supplied labels/criteria when it is a sibling's. */
+  bodyFrom?: string;
+  /** `--with-body`: every body label, one-line form (same as `show --json`). */
+  labels?: Record<string, string>;
 };
 
 /** Render a span the way the table spells it: `7`, `393b`, or `7–20`. */
@@ -90,6 +96,43 @@ export function toListedIssue(row: LedgerRow, table: TableKind): ListedIssue {
   };
   if (table === "closed") issue.criteria = row.criteria;
   return issue;
+}
+
+/**
+ * `list --json --with-body`: attach the body facts `show --json` exposes, from
+ * one parse of the file. Without it a batch analysis of 60 open issues meant
+ * 60 `show` calls and 60 snapshots that could disagree (dogfood #67).
+ * Resolution matches `viewIssue`: the row's first addressable id, then any
+ * body the row owns; `bodyFrom` says when it is a sibling's.
+ */
+export function withBody(
+  ledger: ReturnType<typeof parseLedger>,
+  issue: ListedIssue,
+  blocks = bodyBlocks(ledger),
+): ListedIssue {
+  if (issue.criteria != null) return issue; // closed rows carry their own column
+  const first = issue.ids[0];
+  if (!first) return issue;
+  const row = findRow(ledger, first);
+  if (!row || row.table !== "open") return issue;
+  const key = (span: IdSpan) => `${span.start}${span.suffix}`;
+  const exact = blocks.find((candidate) => key(candidate.id) === row.id);
+  const block = exact ??
+    row.row.ids.map((span) => blocks.find((candidate) => key(candidate.id) === key(span))).find((candidate) => candidate != null);
+  if (!block) return issue;
+  const labels: Record<string, string> = {};
+  for (const name of labelsIn(ledger.lines, block.line, block.end)) {
+    labels[name] = labelBlock(ledger.lines, block.line, block.end, name)?.text ?? "";
+  }
+  const out: ListedIssue = { ...issue, labels };
+  const owner = key(block.id);
+  if (owner !== row.id) out.bodyFrom = owner;
+  const criteria = extractCriteria(ledger.lines.slice(block.line - 1, block.end));
+  if (criteria) {
+    out.criteria = criteria;
+    out.criteriaSource = "body";
+  }
+  return out;
 }
 
 /**
@@ -177,9 +220,17 @@ export type IssueView = {
   criteria?: string;
   /** Where `criteria` came from: the closed table's column, or the open body's **验收判据**. */
   criteriaSource?: "table" | "body";
+  /** The id whose body supplied `criteria`, when that body is a row sibling's. */
+  criteriaFrom?: string;
   line: number;
   end: number;
-  body?: { line: number; end: number; text: string };
+  /**
+   * The body block shown for this id. `id` is the issue the block's heading
+   * names; when a multi-id row keeps one body under its first id, `show 24`
+   * still finds it, but `inherited` says the text is not #24's own (dogfood
+   * #69) — `check` reports E102 for the ids without one.
+   */
+  body?: { line: number; end: number; text: string; id: string; inherited?: true };
   /** Every `**label**` block in the body, one-line form (as `--label` and `close` read them). */
   labels?: Record<string, string>;
 };
@@ -193,14 +244,16 @@ export function viewIssue(
   if (!found) return undefined;
   // A body block is identified by its full id (`2` and `2a` are distinct
   // issues). Prefer an exact match, then fall back to the row's other ids:
-  // `| 4, 24 |` keeps one body under 4, and `show 24` should still find it.
+  // `| 4, 24 |` keeps one body under 4, and `show 24` should still find it —
+  // but the view then says whose body it is instead of silently borrowing it.
   const blocks = bodyBlocks(ledger);
   const key = (span: IdSpan) => `${span.start}${span.suffix}`;
-  const block =
-    blocks.find((candidate) => key(candidate.id) === found.id) ??
+  const exact = blocks.find((candidate) => key(candidate.id) === found.id);
+  const block = exact ??
     found.row.ids
       .map((span) => blocks.find((candidate) => key(candidate.id) === key(span)))
       .find((candidate) => candidate != null);
+  const owner = block ? key(block.id) : undefined;
   const view: IssueView = {
     id: found.id,
     table: found.table,
@@ -219,7 +272,9 @@ export function viewIssue(
       line: block.line,
       end: block.end,
       text: ledger.lines.slice(block.line - 1, block.end).join("\n").replace(/\n+$/, ""),
+      id: owner!,
     };
+    if (owner !== found.id) view.body.inherited = true;
     const labels: Record<string, string> = {};
     for (const name of labelsIn(ledger.lines, block.line, block.end)) {
       labels[name] = labelBlock(ledger.lines, block.line, block.end, name)?.text ?? "";
@@ -232,6 +287,7 @@ export function viewIssue(
     if (promoted) {
       view.criteria = promoted;
       view.criteriaSource = "body";
+      if (owner !== found.id) view.criteriaFrom = owner;
     }
   }
   return view;

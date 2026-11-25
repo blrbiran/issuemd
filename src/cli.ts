@@ -31,7 +31,7 @@ import { TextDecoder } from "node:util";
 import { scan } from "./scan.js";
 import { buildSections, countLines } from "./sections.js";
 import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
-import { parseId, compareIds, type IdSpan } from "./issue-id.js";
+import { parseId, parseIds, compareIds, type IdSpan } from "./issue-id.js";
 import { bodyBlocks, countSuffix, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
 import { checkLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
 import {
@@ -67,6 +67,7 @@ import {
   summaryLine,
   toListedIssue,
   viewIssue,
+  withBody,
 } from "./ledger-read.js";
 import { unifiedDiff } from "./write.js";
 import { adopt, type Decision } from "./adopt.js";
@@ -83,7 +84,7 @@ const EXIT_CODES =
  */
 const COMMANDS = {
   check: { usage: "issuemd check   FILE [--json] [--strict] [--verify-commits]", options: ["json", "strict", "verify-commits"] },
-  list: { usage: "issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json]", options: ["status", "priority", "closed", "expand", "json"] },
+  list: { usage: "issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]", options: ["status", "priority", "closed", "expand", "json", "with-body"] },
   show: { usage: "issuemd show    FILE ID [--json] [--label NAME]", options: ["json", "label"] },
   counts: { usage: "issuemd counts  FILE [--json]", options: ["json"] },
   read: { usage: "issuemd read    FILE <H2 heading>", options: [] },
@@ -111,6 +112,9 @@ const OPTION_HELP: Record<string, string> = {
     "--priority <P>            list: filter by priority; new: P0–P3 or \"\" (default P2); change later: issuemd priority FILE ID P",
   closed: "--closed                  list: show the closed table instead of the index",
   expand: "--expand                  list: one entry per id (a `20, 24` or `7–20` row becomes several)",
+  "with-body":
+    "--with-body               list --json: add each issue's body labels and 验收判据 from one parse\n" +
+    "                            (the `show --json` fields, without 61 separate calls)",
   label: "--label <NAME>            show: print only the **NAME** block",
   title: "--title <T>               new: summary/body title (starts with '-'? write --title=\"-…\")",
   id: "--id <N>                  new: explicit issue id",
@@ -181,6 +185,18 @@ function missingIssue(verb: string, id: string): CliResult {
 /** `4-x` is not "absent", it is not an id at all: a usage error (exit 2). */
 function badIdText(verb: string, id: string): CliResult | undefined {
   if (parseId(id)) return undefined;
+  // A cell like `30, 31` is what `list` prints for one row; passing it back is
+  // the natural script mistake. Name the ids and the way forward instead of
+  // only "not an issue id" (dogfood #71).
+  const spans = parseIds(id);
+  if (spans && spans.length > 1) {
+    const spelled = spans.map(spanText).join(", ");
+    return err(
+      `issuemd ${verb}: '${id}' is one row holding ${spans.length} ids (${spelled}), not a single issue; ` +
+        `pass one id, or use 'issuemd list FILE --expand'\n`,
+      2,
+    );
+  }
   return err(`issuemd ${verb}: '${id}' is not an issue id (expected something like 42 or 393b)\n`, 2);
 }
 function err(s: string, code = 1): CliResult {
@@ -222,6 +238,7 @@ const OPTIONS = {
   report: { type: "string" },
   // list
   expand: { type: "boolean" },
+  "with-body": { type: "boolean" },
 } satisfies NonNullable<ParseArgsConfig["options"]>;
 
 export async function run(argv: string[]): Promise<CliResult> {
@@ -404,6 +421,10 @@ function cmdList(rest: string[], v: Values): CliResult {
   const ledger = parseLedger(loaded.src);
   const unusable = unusableLedger(ledger);
   if (unusable) return unusable;
+  if (v["with-body"] && !v.json) {
+    return err("issuemd list: --with-body applies to --json output; add --json\n", 2);
+  }
+  const report = checkLedger(loaded.src, file);
 
   const table = v.closed ? "closed" : "open";
   // A typo'd filter used to look exactly like an empty result (dogfood #33).
@@ -424,12 +445,16 @@ function cmdList(rest: string[], v: Values): CliResult {
     ? `'${v.status}' is ${statusCategory(v.status)}; ${table === "open" ? "add --closed" : "drop --closed"} to list it\n`
     : "";
   const incomplete = unreadableNote(ledger);
-  const stderr = wrongTable + incomplete;
+  const stderr = structureNote(report.errors) + wrongTable + incomplete;
   let issues = rows.map((row) => toListedIssue(row, table));
   if (v.expand) {
     const expanded = expandIssues(issues);
     if (!expanded) return err("issuemd list: --expand would produce more than 100000 entries\n", 2);
     issues = expanded;
+  }
+  if (v["with-body"]) {
+    const blocks = bodyBlocks(ledger);
+    issues = issues.map((issue) => withBody(ledger, issue, blocks));
   }
   if (v.json) {
     const unreadableRows = ledger.unreadable
@@ -447,6 +472,7 @@ function cmdList(rest: string[], v: Values): CliResult {
         issues,
         ...(unreadableRows.length ? { unreadableRows } : {}),
         ...(citedRows.length ? { citedRows } : {}),
+        ...diagnosticsField(report.errors),
       },
       null,
       2,
@@ -473,6 +499,33 @@ function unreadableNote(ledger: ReturnType<typeof parseLedger>): string {
     `(run 'issuemd check'):\n${listed}\n`;
 }
 
+/**
+ * A read view of a ledger whose `check` fails must say so: `list`, `counts`
+ * and `show` used to exit 0 with no hint while `check` exited 3, so a caller
+ * could not tell it was reading a ledger the tool itself rejects (dogfood
+ * #63). Exit codes stay 0/1 — reading a broken ledger to repair it is a
+ * legitimate use.
+ */
+function structureNote(errors: Diagnostic[]): string {
+  if (errors.length === 0) return "";
+  const first = errors[0]!;
+  return `note: 'issuemd check' reports ${errors.length} error(s) (first: ${first.code} L${first.line}` +
+    `${first.id ? ` #${first.id}` : ""}); this view may not reflect the ledger\n`;
+}
+
+/** The same fact for `--json` consumers: only present when there are errors. */
+function diagnosticsField(errors: Diagnostic[]): { diagnostics?: { errors: Record<string, unknown>[] } } {
+  if (errors.length === 0) return {};
+  return {
+    diagnostics: {
+      errors: errors.map(({ code, line, id, message, expected, actual }) => ({
+        code, line, ...(id !== undefined ? { id } : {}), message,
+        ...(expected !== undefined ? { expected, actual } : {}),
+      })),
+    },
+  };
+}
+
 function cmdCounts(rest: string[], v: Values): CliResult {
   const file = rest[0];
   if (file == null || rest.length !== 1) return err(`usage: ${COMMANDS.counts.usage}\n`, 2);
@@ -482,8 +535,8 @@ function cmdCounts(rest: string[], v: Values): CliResult {
   const ledger = parseLedger(loaded.src);
   const unusable = unusableLedger(ledger);
   if (unusable) return unusable;
-  const stderr = unreadableNote(ledger);
-  if (v.json) return { code: 0, stdout: JSON.stringify({ file, snapshot: snapshotOf(loaded.src), counts: report.counts }, null, 2) + "\n", stderr };
+  const stderr = structureNote(report.errors) + unreadableNote(ledger);
+  if (v.json) return { code: 0, stdout: JSON.stringify({ file, snapshot: snapshotOf(loaded.src), counts: report.counts, ...diagnosticsField(report.errors) }, null, 2) + "\n", stderr };
   return { code: 0, stdout: summaryLine(report.counts) + "\n", stderr };
 }
 
@@ -498,6 +551,7 @@ function cmdShow(rest: string[], v: Values): CliResult {
   const ledger = parseLedger(loaded.src);
   const unusable = unusableLedger(ledger);
   if (unusable) return unusable;
+  const report = checkLedger(loaded.src, file);
   const view = viewIssue(ledger, id);
   if (!view) {
     const bad = unreadableHolding(ledger, id);
@@ -520,8 +574,14 @@ function cmdShow(rest: string[], v: Values): CliResult {
     ? `warning: #${id} also appears in an unreadable table row (L${twin.line}: ${twin.reason}); ` +
       "this view may be out of date (run 'issuemd check')\n"
     : "";
+  // A multi-id row may keep one body under a sibling id; say whose it is
+  // instead of presenting it as this issue's own (dogfood #69).
+  const inheritedNote = view.body?.inherited
+    ? `note: the body shown belongs to #${view.body.id} (same row; #${view.id} has no body block of its own)\n`
+    : "";
+  const baseNote = structureNote(report.errors) + inheritedNote;
   const withNote = (result: CliResult): CliResult =>
-    twinNote === "" ? result : { ...result, stderr: twinNote + result.stderr };
+    baseNote === "" && twinNote === "" ? result : { ...result, stderr: baseNote + twinNote + result.stderr };
 
   if (v.label != null) {
     const range = view.body ?? { line: view.line, end: view.line };
@@ -543,14 +603,15 @@ function cmdShow(rest: string[], v: Values): CliResult {
         stderr: `label ${v.label} in #${view.id} exists but is empty (L${found.line})\n`,
       });
     }
-    if (v.json) return withNote(ok(JSON.stringify({ ...view, paragraph: found.text, snapshot: snapshotOf(loaded.src) }, null, 2)));
+    if (v.json) return withNote(ok(JSON.stringify({ ...view, paragraph: found.text, snapshot: snapshotOf(loaded.src), ...diagnosticsField(report.errors) }, null, 2)));
     return withNote(ok(found.lines.join("\n")));
   }
 
-  if (v.json) return withNote(ok(JSON.stringify({ ...view, snapshot: snapshotOf(loaded.src) }, null, 2)));
+  if (v.json) return withNote(ok(JSON.stringify({ ...view, snapshot: snapshotOf(loaded.src), ...diagnosticsField(report.errors) }, null, 2)));
 
   const lines = [`#${view.id}  ${view.status}  ${view.priority || "-"}  ${view.summary}`];
   lines.push(`L${view.body?.line ?? view.line}-${view.body?.end ?? view.end}`);
+  if (view.body?.inherited) lines.push(`正文属于 #${view.body.id}（同一行；本号没有自己的正文块）`);
   if (view.criteria) lines.push(`判据: ${view.criteria}`);
   lines.push("");
   if (view.body) {
@@ -733,6 +794,13 @@ function commit(
   before: Diagnostic[],
   candidate: string[],
   dryRun: boolean,
+  /**
+   * Diagnostics this verb may introduce on purpose. Only `split` uses it: a
+   * range row reports one E102 for its first missing body, and splitting it
+   * reports one per id — the same missing bodies, now named individually
+   * (dogfood #64). Everything else keeps the strict "no new error" gate.
+   */
+  tolerate?: (diagnostic: Diagnostic) => boolean,
 ): CliResult {
   const newLines = terminate(candidate, loaded.doc, loaded.lines);
   const content = joinDocument(newLines, loaded.doc);
@@ -752,10 +820,11 @@ function commit(
     budget.set(key, remaining - 1);
     return false;
   });
-  if (introduced.length > 0) {
+  const refused = tolerate ? introduced.filter((diagnostic) => !tolerate(diagnostic)) : introduced;
+  if (refused.length > 0) {
     return err(
-      `issuemd: refusing to write; the change would introduce ${introduced.length} error(s):\n` +
-        formatDiagnostics(introduced) + "\n",
+      `issuemd: refusing to write; the change would introduce ${refused.length} error(s):\n` +
+        formatDiagnostics(refused) + "\n",
       3,
     );
   }
@@ -765,7 +834,11 @@ function commit(
   }
   const unchanged = newLines.length === loaded.lines.length &&
     newLines.every((line, index) => line === loaded.lines[index]);
-  if (unchanged) return ok("");
+  // A verb that asked for the state the ledger is already in changed nothing;
+  // say that on stdout (the same words `--dry-run` uses) instead of exiting 0
+  // with empty output, which a retrying caller could not tell from a write
+  // (dogfood #66).
+  if (unchanged) return ok("(no changes)\n");
   const readOnly = readOnlyRefusal(file, loaded);
   if (readOnly) return readOnly;
   try {
@@ -1630,19 +1703,25 @@ function cmdSplit(rest: string[], v: Values): CliResult {
   const cells = (id: string) => table === "open"
     ? [id, row.status, row.priority, row.summary]
     : [id, row.status, row.priority, row.summary, row.criteria];
+  // A split used to write an empty skeleton body for every id that had none.
+  // That turned the row's E102 ("index ID has no body") into silence or a
+  // W212 duplicate: one legal write made `check` less honest (dogfood #64).
+  // Bodies stay as they are; ids without one keep their E102 and are named.
+  const bodyIds = new Set(bodyBlocks(ledger).map((block) => `${block.id.start}${block.id.suffix}`));
   let lines = removeLines(loaded.lines, row.line, 1);
   lines = insertLines(lines, row.line, spans.map((span) => formatRow(cells(spanText(span)))));
-  if (table === "open") {
-    for (const span of spans) {
-      const fresh = parseLedger(lines.join("\n"));
-      const has = bodyBlocks(fresh).some((block) => compareIds(block.id, span) === 0);
-      if (has) continue;
-      const section = fresh.sections.find((candidate) => candidate.level === 2 && candidate.title === "正文");
-      if (!section) return err("issuemd split: the 正文 section is missing\n", 3);
-      lines = insertBlock(lines, bodyInsertAt(fresh, span, section.line_end), bodySkeleton(spanText(span), row.summary));
-    }
-  }
-  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const missing = table === "open"
+    ? spans.filter((span) => !bodyIds.has(`${span.start}${span.suffix}`)).map(spanText)
+    : [];
+  const rowIds = new Set(spans.map(spanText));
+  // The ids this row covers are the only E102s split may multiply: they were
+  // already reported (once, for the first missing one) before the split.
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"], (diagnostic) =>
+    diagnostic.code === "E102" && diagnostic.id != null && rowIds.has(diagnostic.id));
+  if (result.code !== 0 || missing.length === 0) return result;
+  const note = `issuemd split: no body block for ${missing.map((id) => `#${id}`).join(", ")}; ` +
+    "nothing was invented — write one with 'issuemd body FILE ID --body-file -'\n";
+  return { ...result, stderr: result.stderr + note };
 }
 
 function cmdAdopt(rest: string[], v: Values): CliResult {
@@ -1909,7 +1988,7 @@ function syncTitles(
     // Same contract as every other dry-run: say "(no changes)", give the snapshot.
     return v["dry-run"]
       ? { code: 0, stdout: "(no changes)\n", stderr: snapshotNote(loaded) + skippedNote }
-      : { code: 0, stdout: "", stderr: skippedNote };
+      : { code: 0, stdout: "(no changes)\n", stderr: skippedNote };
   }
 
   // Progress text is whatever the table summary carries beyond the body

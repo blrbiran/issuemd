@@ -1178,7 +1178,9 @@ test("probe: adopt moves a body found under the H1 or in a foreign section, it d
   expect(out.match(/notes body/g)?.length).toBe(1);
   expect(out).not.toContain("\\### Issue");
   expect(out).toContain("别的笔记");
-  expect((await run(["check", path, "--strict"])).code).toBe(0);
+  // The bodies here have no 验收判据, so --strict would fail on W261; this
+  // probe is about text conservation, not body quality.
+  expect((await run(["check", path])).code).toBe(0);
 });
 
 test("probe: show warns when the id also sits in an unreadable (E124) row", async () => {

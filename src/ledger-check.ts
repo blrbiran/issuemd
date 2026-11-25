@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
 import { countSuffix, parseLedger, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
-import { ARCHIVE_HEADING, labelName, unescapeCell } from "./ledger-edit.js";
+import { ARCHIVE_HEADING, extractCriteria, labelName, unescapeCell } from "./ledger-edit.js";
 
 import { STATUS_CLASSES } from "./statuses.js";
 export { STATUS_CLASSES };
@@ -141,6 +141,17 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
     if (end - line > 300 || Buffer.byteLength(lines.slice(line, end).join("\n")) > 20 * 1024) {
       warnings.push({ code: "W201", line, id, message: "Issue body exceeds 300 lines or 20 KiB" });
     }
+    // An open issue whose body has no non-empty 验收判据 can never be closed
+    // (`close --criteria-from-body` refuses it), so a bare `new` skeleton or a
+    // deleted criteria block leaves an open item that is not verifiable at
+    // all (dogfood #62). Closed rows keep criteria in their table column and
+    // are deliberately not judged here.
+    if (ids.open.has(span) && !extractCriteria(lines.slice(line - 1, end))) {
+      warnings.push({
+        code: "W261", line, id,
+        message: "Open issue has no non-empty **验收判据**; `close --criteria-from-body` will refuse it",
+      });
+    }
   }
   for (let line = body.line_start + 1; line <= body.line_end; line++) {
     if (visible.has(line) && /^ {0,3}\*\*状态\*\*/.test(lines[line - 1])) {
@@ -263,8 +274,15 @@ function checkGuide(ledger: Ledger) {
   }
 }
 
-/** Normalised summary for duplicate detection: width, case and spacing folded. */
-export const summaryKey = (text: string) => text.normalize("NFKC").toLowerCase().trim().replace(/\s+/g, " ");
+/**
+ * Normalised summary for duplicate detection: width and case folded, and every
+ * whitespace character removed. A retried `new` almost always retypes the
+ * title (`导出 CSV 丢空行` / `导出CSV丢空行`); folding spaces to one space let
+ * those slips through (case 65). Chinese titles never carry meaning in a
+ * space, and an English title written without its spaces is not a different
+ * issue, so dropping them is the honest equivalence class.
+ */
+export const summaryKey = (text: string) => text.normalize("NFKC").toLowerCase().replace(/\s+/gu, "");
 
 /**
  * Two rows with the same summary are almost always one issue recorded twice
