@@ -32,7 +32,7 @@ import { scan } from "./scan.js";
 import { buildSections, countLines } from "./sections.js";
 import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
 import { parseId, compareIds, type IdSpan } from "./issue-id.js";
-import { bodyBlocks, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
+import { bodyBlocks, countSuffix, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
 import { checkLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
 import {
   bodySkeleton,
@@ -958,7 +958,7 @@ function statusCategory(status: string): "open" | "closed" | undefined {
 /** Why a summary cannot become a body heading, or null. */
 function titleProblem(title: string): string | null {
   // A heading ending in a count is E121 (spec §2.2); say it before the gate does.
-  if (/[（(]\d+[）)]\s*$/.test(title)) {
+  if (countSuffix(title)) {
     return "the title ends with a count like '（2）'; headings must not carry counts (E121). Drop or reword it.";
   }
   return titleEndsWithHash(title);

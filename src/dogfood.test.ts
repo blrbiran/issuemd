@@ -1897,3 +1897,40 @@ describe("review13: header rule, cited ranges, diffs, kept rows", () => {
     expect(adopted.stdout).toContain("备注");
   });
 });
+
+describe("round 12 Q3: a year in a title is not a count", () => {
+  const codes = async (path: string) => {
+    const report = JSON.parse((await run(["check", path, "--json"])).stdout) as { errors: { code: string }[] };
+    return report.errors.map((e) => e.code);
+  };
+
+  test("check does not report E121 for （2025） but still does for （2）", async () => {
+    const year = file(TEMPLATE.replace("## 正文", "## 发布（2025）\n\n说明\n\n## 正文"));
+    expect(await codes(year)).not.toContain("E121");
+    for (const count of ["（2）", "(12)", "（ 3 ）", "（12345）", "（3025）"]) {
+      const path = file(TEMPLATE.replace("## 正文", `## 发布${count}\n\n说明\n\n## 正文`));
+      expect(await codes(path)).toContain("E121");
+    }
+  });
+
+  test("new, rename and reopen accept a year-suffixed title", async () => {
+    const path = file();
+    const created = await run(["new", path, "--title", "版本（2026）", "--body-file", body("**验收判据**：y\n")]);
+    expect(created.code).toBe(0);
+    expect(text(path)).toContain("### Issue 1: 版本（2026）");
+    expect((await run(["rename", path, "1", "发布 (1999)"])).code).toBe(0);
+    expect((await run(["close", path, "1"])).code).toBe(0);
+    expect((await run(["reopen", path, "1"])).code).toBe(0);
+    expect((await run(["check", path])).code).toBe(0);
+    expect((await run(["new", file(), "--title", "缓存（3）"])).code).toBe(2);
+  });
+
+  test("adopt keeps a year in a heading and strips a count", async () => {
+    const path = file("# T\n\n## 发布（2025）\n\n说明\n\n## 旧记录（3）\n\n文字\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n");
+    const adopted = await run(["adopt", path]);
+    expect(adopted.code).toBe(0);
+    expect(text(path)).toContain("发布（2025）");
+    expect(text(path)).not.toContain("旧记录（3）");
+    expect((await run(["check", path])).code).toBe(0);
+  });
+});

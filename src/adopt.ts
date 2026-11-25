@@ -21,7 +21,7 @@
 
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { isStatusWord, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
+import { countSuffix, isStatusWord, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
 import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
@@ -441,13 +441,14 @@ function fixSeparators(lines: string[]): { lines: string[]; count: number; origi
   return { lines: out, count, origin, synthetic };
 }
 
-/** Any heading with a trailing `（N）` count loses it. */
+/** Any heading with a trailing `（N）` count (`countSuffix`; years stay) loses it. */
 function stripCounts(lines: string[]): { lines: string[]; count: number } {
   let count = 0;
   const fenced = fencedLines(lines);
   const out = lines.map((line, index) => {
     if (fenced[index] || !/^#{1,6} /.test(line)) return line;
-    const next = line.replace(/[ \t]*[（(]\s*\d+\s*[）)]\s*$/, "");
+    const suffix = countSuffix(line);
+    const next = suffix ? line.slice(0, suffix.index) : line;
     if (next !== line) count++;
     return next;
   });

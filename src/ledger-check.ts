@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
-import { parseLedger, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
+import { countSuffix, parseLedger, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
 import { ARCHIVE_HEADING, labelName } from "./ledger-edit.js";
 
 import { STATUS_CLASSES } from "./statuses.js";
@@ -35,7 +35,7 @@ function checkHeadings(ledger: Ledger) {
   const bodies: { id: IdSpan; title: string; line: number; end: number }[] = [];
   for (const section of sections) {
     const { level, title, line_start: line } = section;
-    if (/[（(]\d+[）)]\s*$/.test(title)) {
+    if (countSuffix(title)) {
       errors.push({ code: "E121", line, message: "Heading contains a count; use a stable title" });
     }
     const inBody = line > body.line_start && line <= body.line_end;

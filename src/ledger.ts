@@ -109,6 +109,17 @@ const ID_COLUMN = ["#", "编号", "ID", "Id", "id"];
 const isSeparatorRow = (cells: string[]) => cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
 
 /** A cell holding exactly a default status word (`未决`, `**已修**`), nothing more. */
+/**
+ * The trailing `（N）` count of a heading (E121), or null. A four-digit year
+ * (19xx/20xx) is not a count: `## 发布（2025）` is a stable title. check
+ * (E121), new/rename/reopen (`titleProblem`) and adopt (`stripCounts`) all use
+ * this one rule, so adopt never strips what check accepts and vice versa.
+ */
+export function countSuffix(title: string): RegExpExecArray | null {
+  const match = /[ \t]*[（(]\s*(\d+)\s*[）)]\s*$/.exec(title);
+  return match && !/^(?:19|20)\d\d$/.test(match[1]!) ? match : null;
+}
+
 export function isStatusWord(cell: string): boolean {
   return Object.hasOwn(STATUS_CLASSES, cell.replace(/\*\*|__/g, "").trim());
 }
