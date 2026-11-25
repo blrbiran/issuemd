@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-25（第九轮收尾：台账没有新条目，改为自测——两个黑盒 subagent 探测 + 真实台账回归，修了 18 个提交的缺陷/易用性问题，见「第九轮」）。写给下一位接手者。
+更新于 2026-11-25（第十轮收尾：修了台账 #54、第九轮复审的 4 个 adopt 缺口、黑盒探测发现的并发丢写与 5 项易用性问题，见「第十轮」）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -15,10 +15,10 @@
 
 ## 一句话现状
 
-`issuemd` P0–P5 早已完成；`0.1.0` 已发布到 npm。dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`，现 53 条，**不在本仓库、不要改它，状态由测试者自己更新**）的 #1–#53 均已处理：修好，或经用户裁定不做。
+`issuemd` P0–P5 早已完成；`0.1.0` 已发布到 npm。dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`，现 55 条，**不在本仓库、不要改它，状态由测试者自己更新**）的 #1–#55 均已处理：修好，或经用户裁定不做（#55 是复测记录，其建议见「第十轮」）。
 
-- 第八轮已由用户 push（第九轮开始时 `origin/main` = 第八轮 handoff 提交）。
-- 第九轮的提交都已 ff 合入本地 `main`，**尚未 push、尚未发版**。第八、九轮合起来有新错误码、新选项、新的输出约定（`new` 打印编号），下次发版建议 `npm version minor`（0.2.0）。第九轮已用 `main` 做过发版冒烟（见「第九轮」）。
+- 第九轮已由用户 push（第十轮开始时 `origin/main` = 第九轮 handoff 提交）。
+- 第十轮的提交都已 ff 合入本地 `main`，**尚未 push、尚未发版**。第八–十轮合起来有新错误码（W225）、新选项、新的输出约定、写锁文件，下次发版建议 `npm version minor`（0.2.0）。
 - 测试全绿（数量以 `npm test` 末行为准）。`dist/` 已用 `main` 重新 build。
 - 当前没有进行中的开发任务；下一轮输入通常是测试者的新条目或复测。没有新条目时，可照第九轮的做法派黑盒 subagent 自测。
 
@@ -34,10 +34,40 @@
 
 ## 等待用户决策 / 动作
 
-1. **push**：第九轮的提交在本地 `main` 上，需用户 `git push`。
+1. **push**：第十轮的提交在本地 `main` 上，需用户 `git push`。
 2. **发版（用户决定时机）**：`npm version minor` → `npm publish`（`prepack` 会自动 build `dist/`）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`、`.dist-test`。
 3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。#53 建议把已达标条目与「owner 裁定不做」的判据在台账里标注出来，这同样留给测试者。
 4. `.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。其他 clone 拉到那次提交时，git 会删掉它们工作区里的 `.cafe`，需从上一提交恢复（`git show <移出前的提交>:.cafe > .cafe`）。
+
+## 第十轮（2026-11-25）
+
+输入：台账新条目 #54（P1）、#55（复测记录）；第九轮复审列出的 4 个 adopt 缺口；之后派了黑盒 subagent（多步骤 agent 工作流）与两次独立复审（复审(10) 看前两个提交，复审(11) 看写锁与黑盒修复）。所有发现都先复现、先写失败用例（`src/dogfood.test.ts` 末尾的 `review9:`/`review10`/`probe10`/`review11` 组，`tests/bin.test.ts` 的并发与锁用例）。
+
+用户裁定：**#54 选 B**——非台账表小节（`复核记录`/`变更记录`…）里形如 issue 表的表报 **W225** warning、原样保留，不再报 E124；这改动了第八轮「规范表以外一律 E124」的裁定。
+
+| 来源 | 问题 | 处理 |
+|---|---|---|
+| #54 | `## 变更记录` 下 `\| # \| 摘要 \|` 表：check 报 E124 让跑 adopt，adopt 搬进附录后自己的输出又被 E124 拒，死循环 | E124 只在 adopt 迁移表行的小节（`isTableSection`）报；其余小节同形表报 W225（每表一次、`--strict` 失败、文案给人工修法与「把 `#` 列改名」消除法）；编号不占用 |
+| 复审(9) 1/4 | 无 H1 时首个 H2 前的正文、已关闭多号行在 H1 下的正文：E123 自拒或两份 | `topBodyLines`：adopt 采用的那份搬走，说明/前言副本跳过；前言进附录时也 `neutralizePreserved` |
+| 复审(9) 2 | 输入 `## 附录` 里已有 `### Issue N:`：E123 自拒；且同号时附录那份会覆盖正文那份（Map 后者胜） | 附录里的正文块不参与挂载，原地改标题为 `### #N 摘要（附录里原有的正文）` + `orphan-body` 决定 |
+| 复审(9) 3 | `### Issue 3–5:` 区间正文：守恒自拒 | 正文里非单号的 Issue 标题按外来 H3 转义进附录（`foreign-section`） |
+| 自查 | `reopen` 不查重复摘要（第九轮已知项） | 与 new/rename 一致：exit 2 点名，`reopen --allow-duplicate-title` 放行 |
+| 黑盒 1 | **并发写 exit 0 却丢失**（6 路并行 `priority`：29 次成功写丢 7 次；并行 `new` 打出的编号不在文件里）。根因：`io.ts` 的最终复核与 rename 之间，两个写者都能通过复核 | CLI 层 `lockedWrite`：`.<文件名>.issuemd-lock`（O_EXCL，内容 pid）包住 `writeAtomically`，等最多 2 s，否则 exit 4；持有者已死或锁 >30 s 视为残留接管。**io.ts 未改** |
+| 复审(10) 1/4 | adopt 真正转换时仍把任意小节的 `\| # \| 摘要 \|` 表迁进索引（与 W225 矛盾）；`## 待处理` 下 `\| # \| P \| 说明 \|` adopt 会迁、E124 不报 | `mappingFor` 移到 `ledger.ts` 成为唯一定义：E124 = 台账表小节 + `mappingFor` 接受；adopt 只从台账表小节读表行 |
+| 复审(10) 2/3 | 首个 H2 前与正文同号的第二份正文、区间标题：第一次修法后 adopt 拒写（回归） | 只搬 `bodyById` 选中的那份，其余留原处转义 |
+| 黑盒 2 | `sync --titles` 对「表格摘要 = 正文标题 + 进展」（任意措辞）静默丢掉多出的文字；`--move-progress` 也没搬 | 摘要包含正文标题且更长 → 按进展处理：不给 `--move/--drop-progress` exit 3 |
+| 黑盒 4 | `**验收判据：**`（冒号在粗体内）不认，close 时才报「没有判据」 | `labelName` 归一（labelBlock / labelsIn / W206） |
+| 黑盒 5 | 列表项以 `；` 结尾时判据变 `；；` | `joinClauses`：前段已以 `；`/`;` 结尾不再加（`。` 照旧加，已有用例） |
+| 黑盒 6 | `--body-file` 以 `### Issue N:` 开头（把 `show --json` body.text 原样回写）只报 E105/E106 | exit 2，点名那一行、提示删掉 |
+| 黑盒 7 | `show --json` 查无此号在 stdout 打文本 | `--json` 时 stdout 为空，提示走 stderr |
+| 黑盒 3 | 「判据取自标签下的 fence」 | **不是缺陷**（#29 设计：标签下 fence 内容属于判据）；只把 close 文案改清楚「fence 里的**标签行**不算」 |
+| 复审(11) 1 | 锁路径是目录/悬空链接/权限 000 时 `lockedWrite` 死循环（100% CPU） | 读不了的锁不接管、按 deadline exit 4；悬空链接用 `lstat` 区分「已释放」；释放时只删 pid 仍是自己的锁；写 pid 失败时删掉自己的空锁 |
+| 复审(11) 2 | `carriesExtra` 让 `sync --titles --prefer table` 拒绝正常的「表格措辞更长」（回归） | 只在 `--prefer body`（会丢表格文字）时按进展处理；拒绝文案提示 `--prefer table` |
+| 复审(11) 3 | 表头含数字（`负责人2`、`Q3`）时 check 认表头、adopt 不认 → E124 后 adopt 自拒（旧行为） | adopt：后接分隔行且没有以数字开头的单元格 → 也算表头（`fixSeparators` 会在无表头表的首个数据行后补分隔行，所以要排除 id 行） |
+| 复审(11) 4/5 | 新增的第二条 W206 正则把 `**Q：** 为什么` 当标签（`--strict` 回归）；`show --label "验收判据："` 不认 | 删掉那条正则（`**X：**` 只在独占一行时算标签）；`--label` 参数也过 `labelName` |
+| #55 | W212 只报第二条（判据 2）；「验证用 npm test、部署用 npm run build」 | 前者维持（message 已点名第一条）；后者 README 第 66 行已写，不进 SKILL（SKILL 面向使用者） |
+
+验证：`npm run typecheck && npm test` 全绿（数量以 `npm test` 末行为准，本轮末 415）；并发用例（`tests/bin.test.ts`「parallel writers」，12 轮 × 6 路）修前单跑 3/3 失败、修后 3/3 通过；三份真实台账（只读副本）check 计数不变（orca 0/139、cafe 0/47、dogfood 0/3），`adopt --dry-run` 均「已是规范台账」，无 W225；复审(10) 的 10 个 repro 全部 adopt exit 0、check 0 error、二次 adopt 字节不变；锁路径为目录 / 悬空链接 / 000 时 2 秒后 exit 4；发版冒烟（`npm pack` → 临时目录安装 → `new`/`check`/`import()`）正常，包内无 `.cafe`/`scripts/`/`.dist-test`。
 
 ## 第九轮（2026-11-25）
 
@@ -168,7 +198,7 @@ issuemd read     FILE <H2 标题>
 
 issuemd new      FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-] [--allow-duplicate-title]
 issuemd close    FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]
-issuemd reopen   FILE ID [--status S]
+issuemd reopen   FILE ID [--status S] [--allow-duplicate-title]
 issuemd status   FILE ID NEW_STATUS
 issuemd rename   FILE ID "NEW TITLE" [--allow-duplicate-title]
 issuemd body     FILE ID --body-file PATH|-
@@ -185,7 +215,7 @@ issuemd <command> --help
 
 ## 架构要点（改之前必须知道）
 
-- **`src/io.ts`** —— **不要改**。原子写、快照复核、BOM/行尾/尾换行/权限位。符号链接在 CLI 层（`loadWritable`）解析成真实路径再交给 io；硬链接数也在 CLI 层 `lstat`。
+- **`src/io.ts`** —— **不要改**。原子写、快照复核、BOM/行尾/尾换行/权限位。符号链接在 CLI 层（`loadWritable`）解析成真实路径再交给 io；硬链接数也在 CLI 层 `lstat`。**写锁也在 CLI 层**：`commit()` 与 adopt 都经 `lockedWrite(loaded.path, …)` 调 `writeAtomically`，新写路径不要直接调 `writeAtomically`。
 - **`src/cli.ts`**：
   - `COMMANDS` 表是命令与选项的唯一来源：`run()` 用它拒绝越界选项、生成全局与 `<cmd> --help`。新增命令/选项要同时进 `COMMANDS`、`OPTION_HELP`、`OPTIONS`。`OPTION_HELP` 文案里别写别的命令专属的选项名（`close --help` 有用例断言不出现 `--json`）。
   - 写命令共享 `commit()`：`terminate()` → `joinDocument` → `checkLedger` → **按 multiset 只拒新 error** → `--dry-run` 出 diff（stderr 带 snapshot）/ `writeAtomically(loaded.path, …)`（E130 → exit 4）。成功后若有其他硬链接，stderr 追加提示。
@@ -200,14 +230,14 @@ issuemd <command> --help
   - `readBodyFile` 剥 BOM 与开头空行，拒绝 fence 外的 `KEPT_BODY_END`。reopen 的归档恢复只剥「结束标记所在那一行」与「第一条非空行若是 ARCHIVE_NOTE」。
 - **`src/ledger-edit.ts`**：
   - `escapeCell` / `unescapeCell`：竖线前反斜杠为奇数才算已转义，与 `ledger.ts` 的 `splitCells` 读法一致。标题输入用 `unescapeCell` 归一，别再写 `.replace(/\\\|/g, "|")`。
-  - `extractCriteria()` 合并所有非空 `**验收判据**` 块（去重，`；` 连接）；close 提升与 `show --json criteria` 都走它。
+  - `extractCriteria()` 合并所有非空 `**验收判据**` 块（去重，`joinClauses` 连接：前段以 `；`/`;` 结尾时不再加 `；`）；close 提升与 `show --json criteria` 都走它。`labelName()` 把 `**验收判据：**` 归一成 `验收判据`，labelBlock / labelsIn / W206 都用它。
   - `labelBlock()` 是唯一的标签解析：从 `**标签**` 行到下一个标签行或标题；空行、列表、fence 内容都属于它。`findLabel`、`extractCriteria`、`show --json labels` 都走它。
   - 归档格式常量：`archiveHeading()`、`ARCHIVE_HEADING`、`ARCHIVE_NOTE`、`KEPT_BODY_END`。close / adopt / reopen / rename / check 共用，改格式只改这里，并跑 `keep-body round trip`。
   - `ledger-edit` 与 `ledger-check` 互相 import（只在函数里用对方，模块初始化时不能用）。
 - **`src/ledger.ts`**：
   - `parseLedger` 的 `unreadable: UnreadableRow[]`：E108/E109 丢掉的表行，**以及 E124 的「游离行」**（`table: "stray"`）。下游（`maxIssueId`、`new --id` 撞号、`show` exit 3、`unreadableNote`、`list --json unreadableRows`）都靠它，所以 E124 行自动被保留编号。
   - `strayRows()`（#52）：所在 H2 不是 `怎么用/状态口径/索引/已关闭/正文/附录`（括注去掉后比较），且 (a) 有表头、表头含 `#/编号/ID` 列与 `摘要/标题` 列；或 (b) 表头含 id 列与 `状态` 但无摘要列，且 H2 名匹配 `isTableSection`；或 (c) 无表头、宽 2–5、H2 名匹配 `isTableSection`。**口径必须与 adopt 迁移哪些表保持一致**：adopt 不迁移、原样保留的表若被报 E124，adopt 的输出就过不了自身校验（第八轮复审 #1）。每个能解析出编号的行报一条 E124。H1 与第一个 H2 之间的表不算。
-  - `isTableSection`（台账表小节名正则）现在定义在这里，adopt 从这里 import。
+  - `isTableSection`（台账表小节名正则）与 **`mappingFor`（issue 表的列映射）** 都定义在这里，adopt 从这里 import。第十轮起 `strayRows` 的口径是：台账表小节下 `mappingFor` 接受的表 → E124；其他小节下表头含 id 列与 `摘要`/`标题` 的表 → W225（每表一次，不进 `unreadable`）。adopt 的 `pipeBlocks` 也只收台账表小节下的表。改其中任何一边都要同时看另一边。
 - **`src/ledger-check.ts`**：`PRIORITIES`、`summaryKey`（W212 的 NFKC/大小写/空白折叠）；`checkHashes` 区分 pinned（W202）与仅校验（判据列，给 W240 用）；`checkAppendix` 出 W250/W251/W252/W253。`--strict` 仍只豁免 W250。
 - **`src/ledger-read.ts`**：`ListedIssue` 带 `ids`/`count`；`expandIssues`（上限 10 万）；`viewIssue` 带 `labels`、`criteriaSource`。
 - **`src/adopt.ts`**（改前读完它）：
@@ -215,7 +245,7 @@ issuemd <command> --help
   - `layoutLines`：被消费的表块的表头/分隔行，**加上表格小节里只有表头+分隔行的空表**（#52：混合文件里规范表是空的，以前会被当成说明文字复制进附录）。
   - `Row` 有 `criteria`（真判据）与 `extras`（附加列、溢出格、`原状态：X`）两个字段，**不要再把 extras 拼进 criteria**：开放项 extras 进 `**原表格判据**`，已关闭行在输出表时才拼成「判据；附加列」。`Row.overflow` 记溢出格数，`rawStatus` 记去格式前的状态格。
   - 开放正文组装：每个开放行按 `parseIds` 逐号生成 `bodyEntries`（已有正文或骨架），最后全体 `compareIds` 排序再展开；索引表行仍用 `sortedOpen`。
-  - `movedBodyLines`：被搬进正文/归档的 `### Issue N:` 块，在 H1 说明与外来小节的逐字副本里跳过。
+  - `movedBodyLines`：被搬进正文/归档的 `### Issue N:` 块，在 H1 说明与外来小节的逐字副本里跳过。`topBodyLines`：首个 H2 之前、且是 `bodyById` 选中的那份正文，在 H1 说明与前言里跳过（没选中的同号副本留原处转义）。`appendixBodies`：输入附录里的正文块，不参与挂载，原地改标题。
   - 列映射 `mappingFor`、状态优先级、保留规则、**守恒守卫**（逐行文本 + 编号集合）同前：新增任何「重建」逻辑时，要么把行复制到输出，要么把它加进 `regenerated`（= `rowLines` ∪ `layoutLines`）。
 - **`src/write.ts`**：Myers 行级 diff + 3 行上下文多 hunk。
 - **`scripts/build.mjs [--out DIR]`**：`tsc --outDir .<DIR>-staging` → chmod 755 bin → rename 换入。默认 `dist`；`npm test` 用 `--out .dist-test`。类型错误时目标目录不变、`npm test` 停在 build。
@@ -251,18 +281,18 @@ issuemd <command> --help
 
 ## 仍然接受的已知项
 
-- 原子替换 `lstat`→`rename` 的极小竞态窗口。
+- 原子替换的竞态：issuemd 写者之间已由写锁串行化（第十轮）；**非 issuemd 的写者**（编辑器）在复核与 rename 之间改文件仍会被覆盖（窗口极小）。
 - 读命令把非法 UTF-8 解码成 U+FFFD（只影响输出；这类文件写命令本来就拒绝，所以 snapshot 不一致无影响）。
 - W202 不把 7–39 位纯数字当 hash（会漏掉约 3.7% 的纯数字短 hash）。
 - `adopt` 对已经保留进附录的外来小节重跑时会再报 `foreign-section`。
 - adopt 宽度 2 的 `| # | 说明 |` 把「说明」当摘要；需要更好摘要时人工 `rename`。
 - `build` 换入时两次 rename 之间有微秒级窗口没有目标目录。
-- 没有锁文件 / 排队：并发冲突只靠 E130 / `--if-unchanged` + exit 4 + 调用方重试。
+- 写锁只串行化「复核 + rename」，不排队：并发冲突仍是 exit 4 + 调用方重试。锁残留（进程被 SIGKILL 于毫秒级窗口内）由下一个写者按 pid/30 s 接管；两个写者同时判定残留时理论上可能互删对方新锁（极罕见）。
 - 附录以空行结尾时，`close --keep-body` 的归档前会多一个空行（改它会破坏 close+reopen 逐字节还原）。
 - adopt 守恒守卫的局限：同号的两个正文块会被拒；以「文本集合」比对，测不出「丢了一行、但同样文字别处还有」。
 - diff 超过 2000 步编辑时退化为一整块 -/+（正确但粗）。
-- E124 的无表头判定沿用 adopt 的 `isTableSection` 正则（含 `open`/`issues?`），像 `## Open questions` 下的「首格是数字、宽 2–5、无表头」的管道块会被报——真实台账里没有出现过；需要时把正则收紧，并同步看 adopt。
-- `reopen` 不查重复摘要（重开的摘要与某开放项同名时只有 `check` 的 W212 兜底）。
+- E124 的小节判定沿用 `isTableSection` 正则（含 `open`/`issues?`），像 `## Open questions` 下的「首格是数字、宽 2–5、无表头」的管道块会被报——真实台账里没有出现过；需要时把正则收紧（adopt 用同一个函数，自动同步）。
+- W225 的表里的编号不占用：`new --id 90` 可以与 `## 复核记录` 表里的 `90` 同号（用户 #54 裁定 B：那类表是叙述）。
 - `close --keep-body` 在没有 `## 附录` 的台账上会新建附录；`reopen` 不删它（不知道附录是不是 close 建的），往返后多出 `## 附录`。
 - reopen / body 会把原文里「正文块前缺空行」「正文末尾多个空行」规范成恰好一个空行（只改空白）。
 - CRLF 台账的 dry-run diff 不带 `\r`，不能直接喂给 `patch`（只是预览）。
@@ -276,7 +306,7 @@ issuemd <command> --help
 
 - spec §14 的 Q2（`adopt --prefer` 信息丢失）与 Q5（第二套状态词）：用户明确不做，需要时先 brainstorming。
 - #46 的独立 `adopt --verify=<原文件>` 与 `check` 的「附录重复段落」warning：未做。
-- #18 的锁文件与写命令 `--json`：未做。
+- #18 的写命令 `--json`：未做（写锁第十轮已做，见上）。
 
 ## 验收与命令
 
@@ -331,7 +361,7 @@ npm pack --dry-run --ignore-scripts   # 含 TEMPLATE.md、THIRD_PARTY_NOTICES.md
 
 本轮末尾派独立 subagent 复审 `origin/main..main`（把 origin/main 另行 build 做基线对比）。唯一回归是 `plainStatus` 过宽（见第九轮表最后一行），已先写失败用例再修。复审确认成立的：多号/区间展开与全局排序、`extras` 不进骨架判据、`movedBodyLines` 只输出一份且守恒守卫通过、坏编号行、adopt 自身输出再 adopt 逐字节不变、只读拒绝、转义奇偶与 `splitCells` 一致、keep-body 往返（含 fence 里的标记与说明行）、`--criteria ""`、exit 1/2 划分、`sync` 选项、`rename` 查重。
 
-复审顺带指出、与 origin/main 行为相同（不是回归）、本轮**未修**的缺口，下一轮可做：
+复审顺带指出、与 origin/main 行为相同（不是回归）、第九轮未修的缺口（**第十轮已全部修复**，见「第十轮」）：
 
 1. 没有 H1 时，第一个 H2 之前的 `### Issue N:` 被 preamble 路径原样拷进附录 → adopt 以 E123 自拒。
 2. 输入的 `## 附录` 里已有 `### Issue N:` → 原样拷贝 → E123 自拒（应转义或当正文处理）。
