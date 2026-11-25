@@ -21,7 +21,7 @@
 
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
+import { isStatusWord, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
 import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
@@ -132,7 +132,7 @@ type Block = {
 };
 
 /** Group consecutive `|`-lines into blocks and attach the enclosing group status. */
-function pipeBlocks(lines: string[], sections: Section[]): Block[] {
+function pipeBlocks(lines: string[], sections: Section[], synthetic: Set<number> = new Set()): Block[] {
   const out: Block[] = [];
   let block: { line: number; cells: string[][] } | undefined;
   const finish = () => {
@@ -144,13 +144,13 @@ function pipeBlocks(lines: string[], sections: Section[]): Block[] {
     // fixSeparators also puts a separator under the first data row of a
     // header-less table, so a cell starting with a digit (an id) still
     // means data. `tableHeader` is the rule check's E124 uses too (#56).
-    const header = tableHeader(block.cells);
+    const header = tableHeader(block.cells, synthetic.has(start + 1));
     const width = (header ?? block.cells[0] ?? []).length;
     let mapping = mappingFor(header, width);
     // Header-less width 3 is the orca `# | 摘要 | 判据` shape — unless every
     // row's second cell is a status word (`| 7 | 未决 | 甲 |`, #56).
     const data = block.cells.filter((cells) => !isSeparator(cells) && !isHeader(cells));
-    if (!header && width === 3 && data.length > 0 && data.every((cells) => STATUS_WORDS.has(plainStatus(cells[1] ?? "")?.word ?? ""))) {
+    if (!header && width === 3 && data.length > 0 && data.every((cells) => isStatusWord(cells[1] ?? ""))) {
       mapping = { id: 0, status: 1, summary: 2 };
     }
     if (mapping) {
@@ -395,9 +395,10 @@ function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
  * `origin[i]` is the 1-indexed input line output line `i` came from; an
  * inserted separator borrows the line of the row above it.
  */
-function fixSeparators(lines: string[]): { lines: string[]; count: number; origin: number[] } {
+function fixSeparators(lines: string[]): { lines: string[]; count: number; origin: number[]; synthetic: Set<number> } {
   const out: string[] = [];
   const origin: number[] = [];
+  const synthetic = new Set<number>();
   const fenced = fencedLines(lines);
   let count = 0;
   let index = 0;
@@ -420,12 +421,13 @@ function fixSeparators(lines: string[]): { lines: string[]; count: number; origi
     }
     out.push(blockLines[0]!);
     out.push(`|${"---|".repeat(cells[0]!.length)}`);
+    synthetic.add(out.length); // 1-based line of the separator just added
     out.push(...blockLines.slice(1));
     origin.push(start + 1, start + 1);
     blockLines.slice(1).forEach((_, at) => origin.push(start + at + 2));
     count++;
   }
-  return { lines: out, count, origin };
+  return { lines: out, count, origin, synthetic };
 }
 
 /** Any heading with a trailing `（N）` count loses it. */
@@ -479,7 +481,7 @@ export function adopt(src: string): AdoptResult {
   }
 
   // ---- rows ----------------------------------------------------------
-  const blocks = pipeBlocks(lines, sections);
+  const blocks = pipeBlocks(lines, sections, separated.synthetic);
   const badIds: BadIdRow[] = [];
   const rows = rowsOf(blocks, badIds);
   // Lines that became table rows (plus their block's header/separator) are

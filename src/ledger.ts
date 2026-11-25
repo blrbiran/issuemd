@@ -1,6 +1,7 @@
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
 import { parseId, parseIds, type IdSpan } from "./issue-id.js";
+import { STATUS_CLASSES } from "./statuses.js";
 
 const CORE = ["索引", "已关闭", "正文"] as const;
 
@@ -107,19 +108,31 @@ const ID_COLUMN = ["#", "编号", "ID", "Id", "id"];
 
 const isSeparatorRow = (cells: string[]) => cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell));
 
+/** A cell holding exactly a default status word (`未决`, `**已修**`), nothing more. */
+export function isStatusWord(cell: string): boolean {
+  return Object.hasOwn(STATUS_CLASSES, cell.replace(/\*\*|__/g, "").trim());
+}
+
 /**
  * The header of a pipe block, read the way adopt reads it — the one rule both
- * use (#56/#57): a first row with no digit at all is a header; a first row
- * followed by a separator is a header unless one of its cells starts with a
- * digit (`| 7 | 未决 | 甲 |` above `|---|` is a data row written where the
- * header goes, and adopt migrates it as data). `负责人2` / `Q3` stay headers.
+ * use (#56/#57):
+ * - a first row with no digit at all is a header;
+ * - a first row above a real separator is a header (`| 2026 | 开放 | 关闭 |`,
+ *   `负责人2`) unless it is plainly an issue row written where the header goes:
+ *   its first cell is an id and its second cell is a status word, or nothing
+ *   follows the separator (`| 7 | 未决 | 甲 |` + `|---|`);
+ * - `synthetic`: adopt inserted that separator itself (fixSeparators, under
+ *   the first row of a header-less block), so a row with a digit-leading cell
+ *   is still data.
  */
-export function tableHeader(rows: string[][]): string[] | undefined {
+export function tableHeader(rows: string[][], synthetic = false): string[] | undefined {
   const first = rows[0];
   if (!first || first.length === 0) return undefined;
   if (first.every((cell) => !/\d/.test(cell))) return first;
-  if (rows[1] && isSeparatorRow(rows[1]) && first.every((cell) => !/^\d/.test(cell))) return first;
-  return undefined;
+  if (!rows[1] || !isSeparatorRow(rows[1])) return undefined;
+  if (synthetic) return first.every((cell) => !/^\d/.test(cell)) ? first : undefined;
+  const issueRow = parseIds(first[0] ?? "") != null && (rows.length === 2 || isStatusWord(first[1] ?? ""));
+  return issueRow ? undefined : first;
 }
 
 /** Data rows of a pipe block: everything but its header and separators. */
@@ -161,11 +174,13 @@ function strayRows(
     const header = tableHeader(block.rows);
     const width = (header ?? block.rows[0]).length;
     if (!isTableSection(h2.title)) {
+      // Pipe lines without a separator render as a paragraph, not a table.
+      if (!block.header) continue;
       let idAt = -1;
       if (header) {
         const at = header.findIndex((cell) => ID_COLUMN.includes(cell));
         if (at >= 0 && (header.length === 2 || header.some((cell) => cell === "摘要" || cell === "标题"))) idAt = at;
-      } else if (block.header && mappingFor(undefined, width)) {
+      } else if (mappingFor(undefined, width)) {
         idAt = 0; // an id row in the header slot renders as a table
       }
       if (idAt < 0) continue;

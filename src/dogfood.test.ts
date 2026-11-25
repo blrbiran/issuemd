@@ -888,7 +888,9 @@ describe("#54 issue-shaped tables under a non-ledger heading are text, said once
   test("the id is not tracked but reserved: show says no such issue, new skips it", async () => {
     const path = withSection("变更记录", SHAPES.narrow);
     expect((await run(["show", path, "90"])).code).toBe(1);
-    expect((await run(["new", path, "--title", "新"])).stdout.trim()).toBe("91");
+    expect((await run(["new", path, "--title", "新"])).stdout.trim()).toBe("1");
+    expect((await run(["new", path, "--title", "八九", "--id", "89"])).code).toBe(0);
+    expect((await run(["new", path, "--title", "下一个"])).stdout.trim()).toBe("91");
   });
 });
 
@@ -1669,6 +1671,8 @@ describe("#56/#57 every issue-table shape: check, adopt and new agree", () => {
       const clash = await run(["new", copy, "--title", "撞号", "--id", "7"]);
       expect(clash.code).toBe(2);
       expect(clash.stderr).toContain(`L${lineOf7(path)}`);
+      // Numbering skips 7 when it gets there (6 → 8), not before.
+      expect((await run(["new", copy, "--title", "六", "--id", "6"])).code).toBe(0);
       expect((await run(["new", copy, "--title", "新"])).stdout.trim()).toBe("8");
       const dry = await run(["adopt", path, "--dry-run"]);
       expect(dry.code).toBe(0);
@@ -1705,5 +1709,59 @@ describe("#56/#57 every issue-table shape: check, adopt and new agree", () => {
     const shown = await run(["show", path, "7"]);
     expect(shown.code).toBe(1);
     expect(shown.stderr).toContain(`L${lineOf7(path)}`);
+  });
+});
+
+describe("review12: numeric headers, narrative tables and the status guess", () => {
+  const withSection = (title: string, table: string) =>
+    file(TEMPLATE.replace("## 索引", `## ${title}\n\n${table}\n## 索引`));
+  type Diag = { code: string };
+  const codes = async (path: string) => {
+    const r = JSON.parse((await run(["check", path, "--json"])).stdout) as { errors: Diag[]; warnings: Diag[] };
+    return [...r.errors, ...r.warnings].map((d) => d.code);
+  };
+
+  test("a numeric header row above a real separator is a header (stats table under 总览)", async () => {
+    const path = withSection("状态总览", "| 2026 | 开放 | 关闭 |\n|---|---|---|\n| 12 | 3 | 4 |\n");
+    expect(await codes(path)).toEqual([]);
+    expect((await run(["new", file(text(path)), "--title", "新"])).stdout.trim()).toBe("1");
+    const before = text(path);
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toBe(before);
+  });
+
+  test("numeric headers under other headings are not W225 and reserve nothing", async () => {
+    for (const table of ["| 2024 | 2025 |\n|---|---|\n| 120 | 300 |\n", "| 3 | 4 | 5 |\n|---|---|---|\n| 甲 | 乙 | 丙 |\n"]) {
+      const path = withSection("统计", table);
+      expect(await codes(path)).toEqual([]);
+      expect((await run(["new", path, "--title", "新"])).stdout.trim()).toBe("1");
+    }
+  });
+
+  test("an id row above the separator with rows below is data when its 2nd cell is a status", async () => {
+    const path = withSection("待处理", "| 7 | 未决 | 甲 |\n|---|---|---|\n| 8 | 未决 | 乙 |\n");
+    expect((await codes(path)).filter((c) => c === "E124").length).toBe(2);
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toMatch(/\| 7 \| 未决 \|  \| 甲 \|\n\| 8 \| 未决 \|  \| 乙 \|/);
+  });
+
+  test("cited ids are skipped by default numbering without jumping past them", async () => {
+    const path = withSection("错误码", "| 编号 | 说明 |\n|---|---|\n| 404 | 未找到 |\n| 500 | 服务器错 |\n");
+    expect((await run(["new", path, "--title", "一"])).stdout.trim()).toBe("1");
+    expect((await run(["new", path, "--title", "三", "--id", "403"])).code).toBe(0);
+    expect((await run(["new", path, "--title", "下一个"])).stdout.trim()).toBe("405");
+    expect((await run(["new", path, "--title", "撞", "--id", "404"])).code).toBe(2);
+  });
+
+  test("pipe lines without a separator are not a table: no W225, nothing reserved", async () => {
+    const path = withSection("笔记", "| # | 说明 |\n| 3 | 甲 |\n");
+    expect(await codes(path)).not.toContain("W225");
+    expect((await run(["new", file(text(path)), "--title", "撞", "--id", "3"])).code).toBe(0);
+  });
+
+  test("the width-3 status guess needs an exact status word", async () => {
+    const path = withSection("待处理", "| 7 | 观察（等上游） | 上游修复后重测 |\n");
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toContain("| 7 | 未决 |  | 观察（等上游） |");
   });
 });

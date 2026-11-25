@@ -4,19 +4,8 @@ import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
 import { parseLedger, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
 import { ARCHIVE_HEADING, labelName } from "./ledger-edit.js";
 
-export const STATUS_CLASSES = {
-  未决: "open",
-  部分解决: "open",
-  观察: "open",
-  已修: "closed",
-  延后: "closed",
-  决定不改: "closed",
-  不是缺陷: "closed",
-  范围外: "closed",
-  撤回: "closed",
-  并入: "closed",
-  未分类: "closed",
-} as const satisfies Record<string, TableKind>;
+import { STATUS_CLASSES } from "./statuses.js";
+export { STATUS_CLASSES };
 /** Priorities `new` accepts and `check` knows; "" means "not prioritised". */
 export const PRIORITIES: readonly string[] = ["P0", "P1", "P2", "P3", ""];
 const STATUS_LINES = [

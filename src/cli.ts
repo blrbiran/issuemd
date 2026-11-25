@@ -1073,9 +1073,14 @@ function cmdNew(rest: string[], v: Values): CliResult {
     );
   }
 
-  const max = maxIssueId(ledger.rows, [...ledger.unreadable, ...ledger.cited]);
-  let idText = String(max + 1);
-  if (v.id == null && !Number.isSafeInteger(max + 1)) {
+  const max = maxIssueId(ledger.rows, ledger.unreadable);
+  // Ids cited by W225 tables are reserved but not issues: skip them one by
+  // one instead of jumping past the largest (an error-code table citing 500
+  // must not move the next issue to 501).
+  let next = max + 1;
+  while (unreadableHolding(ledger, String(next), ledger.cited)) next++;
+  let idText = String(next);
+  if (v.id == null && !Number.isSafeInteger(next)) {
     return err(
       `issuemd new: the next id after ${max} is outside the supported integer range; pass --id explicitly\n`,
       2,
