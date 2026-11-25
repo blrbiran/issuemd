@@ -234,3 +234,25 @@ test("a write lock held by a live process makes a write exit 4; a dead holder's 
     rmSync(work, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("an unreadable lock path (a directory, a dangling link) gives exit 4 after the wait, not a spin", async () => {
+  const { mkdtempSync, writeFileSync, rmSync, mkdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const work = mkdtempSync(join(tmpdir(), "issuemd-lockdir-"));
+  try {
+    const ledger = join(work, "l.md");
+    writeFileSync(ledger, readFileSync(new URL("../TEMPLATE.md", import.meta.url)));
+    const { symlinkSync } = await import("node:fs");
+    for (const make of [() => mkdirSync(join(work, ".l.md.issuemd-lock")), () => symlinkSync(join(work, "nowhere"), join(work, ".l.md.issuemd-lock"))]) {
+      rmSync(join(work, ".l.md.issuemd-lock"), { recursive: true, force: true });
+      make();
+      const result = spawnSync("node", [bin, "new", ledger, "--title", "x"], { encoding: "utf8", timeout: 10_000 });
+      expect(result.signal).toBeNull();
+      expect(result.status).toBe(4);
+      expect(result.stderr).toContain("issuemd-lock");
+    }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}, 20_000);

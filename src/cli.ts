@@ -46,6 +46,7 @@ import {
   KEPT_BODY_END,
   insertBlock,
   insertLines,
+  labelName,
   markerPair,
   removeLines,
   endsInFence,
@@ -515,7 +516,7 @@ function cmdShow(rest: string[], v: Values): CliResult {
 
   if (v.label != null) {
     const range = view.body ?? { line: view.line, end: view.line };
-    const found = findLabel(ledger.lines, range.line, range.end, v.label);
+    const found = findLabel(ledger.lines, range.line, range.end, labelName(v.label));
     if (!found) {
       const known = labelsIn(ledger.lines, range.line, range.end);
       return withNote({
@@ -792,24 +793,40 @@ function lockedWrite(
       const fd = openSync(lock, "wx", 0o600);
       try {
         writeSync(fd, `${process.pid}\n`);
-      } finally {
+      } catch (error) {
         closeSync(fd);
+        unlinkSync(lock);
+        throw error;
       }
+      closeSync(fd);
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     let holder = NaN;
     let age = 0;
+    // A lock path issuemd cannot read (a directory, a dangling link, mode
+    // 000) was not made by a writer: never take it over, but never spin on
+    // it either — wait out the deadline like any held lock.
+    let readable = true;
     try {
       holder = Number.parseInt(readFileSync(lock, "utf8"), 10);
       age = Date.now() - statSync(lock).mtimeMs;
-    } catch {
-      continue; // released between our open and read: try again
+    } catch (error) {
+      // ENOENT is "released meanwhile" only if the path itself is gone; a
+      // dangling symlink also reads as ENOENT and would spin forever.
+      let gone = false;
+      try {
+        lstatSync(lock);
+      } catch {
+        gone = true;
+      }
+      if (gone) continue;
+      readable = false;
     }
     // An empty file is a holder that has not written its pid yet.
     const starting = Number.isNaN(holder) && age < LOCK_STALE_MS;
-    if (!starting && (!holderAlive(holder) || age > LOCK_STALE_MS)) {
+    if (readable && !starting && (!holderAlive(holder) || age > LOCK_STALE_MS)) {
       try {
         unlinkSync(lock);
       } catch (error) {
@@ -831,10 +848,12 @@ function lockedWrite(
   try {
     return writeAtomically(path, content, expected);
   } finally {
+    // Release only our own lock: if it was taken over as stale meanwhile,
+    // the file now belongs to another writer.
     try {
-      unlinkSync(lock);
+      if (Number.parseInt(readFileSync(lock, "utf8"), 10) === process.pid) unlinkSync(lock);
     } catch {
-      // Already gone (taken over as stale): nothing to release.
+      // Already gone: nothing to release.
     }
   }
 }
@@ -1846,13 +1865,17 @@ function syncTitles(
     const heading = foldWhitespace(title);
     return heading !== "" && table.length > heading.length && table.includes(heading);
   };
-  const progress = changes.filter((change) => PROGRESS.test(change.oldSummary) || carriesExtra(change));
+  // Only --prefer body loses the table wording; --prefer table copies it into
+  // the heading, so there only real progress words are refused (review 11).
+  const progress = changes.filter((change) =>
+    PROGRESS.test(change.oldSummary) || (prefer === "body" && carriesExtra(change)));
   if (prefer === "body" && progress.length > 0 && !v["move-progress"] && !v["drop-progress"]) {
     const listed = progress.map(({ id, oldSummary }) => `  #${id}  ${oldSummary}`).join("\n");
     return err(
       `issuemd sync --titles: ${progress.length} table summary(ies) carry text the body title lacks (progress notes); nothing written\n` +
         `${listed}\n` +
-        "re-run with --move-progress (keep it in the body) or --drop-progress (discard it)\n",
+        "re-run with --move-progress (keep it in the body) or --drop-progress (discard it), " +
+        "or use --prefer table if the table wording is the title you want\n",
       3,
     );
   }

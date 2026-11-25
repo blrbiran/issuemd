@@ -138,8 +138,9 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
     const labels = new Set<string>();
     for (let current = line + 1; current <= end; current++) {
       if (!visible.has(current)) continue;
-      const label = /^ {0,3}\*\*([^*]+)\*\*(?:\s*[:：]|\s*$)/.exec(lines[current - 1]) ??
-        /^ {0,3}\*\*([^*]+[:：])\*\*/.exec(lines[current - 1]);
+      // `**X：**` followed by text is too often inline Q/A emphasis to count;
+      // alone on its line it is the colon-inside form of a label.
+      const label = /^ {0,3}\*\*([^*]+)\*\*(?:\s*[:：]|\s*$)/.exec(lines[current - 1]);
       if (!label) continue;
       const name = labelName(label[1]);
       if (labels.has(name)) warnings.push({ code: "W206", line: current, id, message: `Duplicate body label: ${name}` });

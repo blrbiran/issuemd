@@ -137,7 +137,17 @@ function pipeBlocks(lines: string[], sections: Section[]): Block[] {
   const finish = () => {
     if (!block) return;
     const start = block.line;
-    const header = block.cells[0] && isHeader(block.cells[0]) ? block.cells[0] : undefined;
+    // A row followed by a separator is a header even when a cell has a digit
+    // (`负责人2`, `Q3`) — the same rule check's parser uses, so E124 and
+    // adopt read the same columns (review 11).
+    const first = block.cells[0];
+    // fixSeparators also puts a separator under the first data row of a
+    // header-less table, so a cell starting with a digit (an id) still
+    // means data.
+    const header = first && (isHeader(first) ||
+      (block.cells[1] != null && isSeparator(block.cells[1]) && first.every((cell) => !/^\d/.test(cell))))
+      ? first
+      : undefined;
     const width = (header ?? block.cells[0] ?? []).length;
     const mapping = mappingFor(header, width);
     if (mapping) {

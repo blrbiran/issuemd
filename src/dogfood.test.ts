@@ -1581,3 +1581,48 @@ test("probe10: show --json for a missing id keeps stdout empty (message on stder
   expect(result.stdout).toBe("");
   expect(result.stderr).toContain("no such issue: 99");
 });
+
+describe("review11", () => {
+  const withSummary = async (summary: string) => {
+    const path = file();
+    expect((await run(["new", path, "--title", "login crash", "--body-file", body("**验收判据**：x\n")])).code).toBe(0);
+    return file(text(path).replace("| 1 | 未决 | P2 | login crash |", `| 1 | 未决 | P2 | ${summary} |`));
+  };
+
+  test("sync --titles --prefer table copies a longer table summary into the heading (nothing is lost)", async () => {
+    const path = await withSummary("login crash on Safari");
+    expect((await run(["sync", path, "--titles", "--prefer", "table"])).code).toBe(0);
+    expect(text(path)).toContain("### Issue 1: login crash on Safari");
+  });
+
+  test("sync --titles --prefer body names --prefer table as the way to keep the table wording", async () => {
+    const path = await withSummary("login crash on Safari");
+    const result = await run(["sync", path, "--titles"]);
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain("--prefer table");
+  });
+
+  test("a header with a digit is still a header for adopt (E124 ⇔ adopt migrates)", async () => {
+    const path = file(TEMPLATE.replace("## 索引", "## 待处理\n\n| # | 状态 | P | 摘要 | 判据 | 负责人2 |\n|---|---|---|---|---|---|\n| 50 | 未决 | P1 | alpha | c | bob |\n\n## 索引"));
+    expect(JSON.parse((await run(["check", path, "--json"])).stdout).errors.map((e: { code: string }) => e.code)).toContain("E124");
+    const adopted = await run(["adopt", path]);
+    expect(adopted.code).toBe(0);
+    expect(text(path)).toMatch(/\| 50 \| 未决 \| P1 \| alpha \|/);
+    expect((await run(["check", path])).stdout).toContain("0 errors");
+  });
+
+  test("bold Q/A lines with a colon inside the bold are not duplicate labels (W206)", async () => {
+    const path = file();
+    expect((await run(["new", path, "--title", "甲", "--body-file", body("**现象**：x\n\n**Q：** 为什么？\n**A：** 因为。\n**Q：** 还有？\n**A：** 没了。\n")])).code).toBe(0);
+    const warnings = JSON.parse((await run(["check", path, "--json"])).stdout).warnings as { code: string }[];
+    expect(warnings.map((w) => w.code)).not.toContain("W206");
+  });
+
+  test("show --label accepts the colon form of the name", async () => {
+    const path = file();
+    expect((await run(["new", path, "--title", "甲", "--body-file", body("**验收判据：** 甲\n")])).code).toBe(0);
+    const result = await run(["show", path, "1", "--label", "验收判据："]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("甲");
+  });
+});
