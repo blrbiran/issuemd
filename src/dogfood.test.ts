@@ -1967,3 +1967,70 @@ describe("round 12 review: count suffix edges", () => {
     expect((await run(["new", file(), "--title", "缓存（３）"])).code).toBe(2);
   });
 });
+
+describe("round 12 probe", () => {
+  const legacy = (summary: string, heading = summary, extra = "") =>
+    file(`# T\n\n## 待处理\n\n| # | 摘要 |\n|---|---|\n| 1 | ${summary} |\n${extra}\n## 正文\n\n### Issue 1: ${heading}\n\nx\n`);
+
+  test("adopt strips every trailing count, not just the last one", async () => {
+    const path = legacy("甲（2）（3）");
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toContain("### Issue 1: 甲\n");
+    expect((await run(["check", path])).code).toBe(0);
+    const year = legacy("乙 (2025)(4)");
+    expect((await run(["adopt", year])).code).toBe(0);
+    expect(text(year)).toContain("### Issue 1: 乙 (2025)\n");
+  });
+
+  test("a title that is only a bracketed number is the title, not a count", async () => {
+    const path = legacy("（3）");
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toContain("### Issue 1: （3）\n");
+    expect(text(path)).toMatch(/\| 1 \| 未决 \|  \| （3） \|/);
+    expect((await run(["check", path])).code).toBe(0);
+  });
+
+  test("a count in both table and heading is stripped from both without a title conflict", async () => {
+    const path = legacy("计数项（3）");
+    const adopted = await run(["adopt", path]);
+    expect(adopted.code).toBe(0);
+    expect(adopted.stdout).not.toContain("open-title-conflict");
+    expect(text(path)).toMatch(/\| 1 \| 未决 \|  \| 计数项 \|/);
+    expect(text(path)).toContain("### Issue 1: 计数项\n");
+  });
+
+  test("an escaped pipe in a body heading matches the unescaped summary (no E106)", async () => {
+    const path = file();
+    expect((await run(["new", path, "--title", "c | d", "--body-file", body("**验收判据**：y\n")])).code).toBe(0);
+    const hand = file(text(path).replace("### Issue 1: c | d", "### Issue 1: c \\| d"));
+    expect(text(hand)).toContain("### Issue 1: c \\| d");
+    expect((await run(["check", hand])).code).toBe(0);
+    const old = legacy("a \\| b");
+    const adopted = await run(["adopt", old]);
+    expect(adopted.code).toBe(0);
+    expect(adopted.stdout).not.toContain("open-title-conflict");
+  });
+
+  test("adopt leaves an H4 outside body blocks verbatim", async () => {
+    const path = legacy("abc", "abc", "\n## 复核记录\n\n#### 复核里的四级标题\n\n内容\n\n");
+    const adopted = await run(["adopt", path]);
+    expect(adopted.code).toBe(0);
+    expect(text(path)).toContain("#### 复核里的四级标题");
+    expect(adopted.stdout).not.toContain("加粗标签");
+  });
+
+  test("adopt still demotes an H4 under an H3 subsection of an H2 issue body (cafe shape)", async () => {
+    const path = file("# T\n\n## 状态总览\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n\n## Issue 1: 甲\n\n### 期望\n\n#### 1. 分层\n\nx\n\n## 复核记录\n\n#### 外来\n\ny\n");
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).toContain("**1. 分层**");
+    expect(text(path)).toContain("#### 外来");
+  });
+});
+
+test("round 12 probe: --if-unchanged accepts the snapshot in upper case", async () => {
+  const path = file();
+  const snapshot = (JSON.parse((await run(["list", path, "--json"])).stdout) as { snapshot: string }).snapshot;
+  expect(snapshot).toMatch(/^[0-9a-f]{16}$/);
+  expect((await run(["new", path, "--title", "甲", "--if-unchanged", snapshot.toUpperCase()])).code).toBe(0);
+  expect((await run(["new", path, "--title", "乙", "--if-unchanged", snapshot.toUpperCase()])).code).toBe(4);
+});

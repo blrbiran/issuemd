@@ -21,8 +21,8 @@
 
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { countSuffix, isStatusWord, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
-import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines } from "./ledger-edit.js";
+import { isStatusWord, stripCountSuffixes, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
+import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines, unescapeCell } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
 
@@ -389,8 +389,19 @@ function neutralizePreserved(content: string[]): string[] {
 function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
   let count = 0;
   const fenced = fencedLines(lines);
+  // Only body blocks have their H4s demoted: from an `Issue` heading (H1–H3;
+  // old cafe ledgers use `## Issue N:` with `### 期望` subsections) to the next
+  // heading at its level or above. A foreign section's H4 stays verbatim.
+  let issueLevel = 0;
   const out = lines.map((line, index) => {
     if (fenced[index]) return line;
+    const outer = /^(#{1,3})[ \t]+(.*)$/.exec(line);
+    if (outer) {
+      const level = outer[1]!.length;
+      if (/^Issue\s/.test(outer[2]!)) issueLevel = level;
+      else if (level <= issueLevel) issueLevel = 0;
+    }
+    if (issueLevel === 0) return line;
     // Closing `#`s are stripped only when whitespace separates them from the
     // text, as in CommonMark — `#### Use C#` keeps its `#`.
     const match = /^(#{4,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
@@ -447,10 +458,11 @@ function stripCounts(lines: string[]): { lines: string[]; count: number } {
   const fenced = fencedLines(lines);
   const out = lines.map((line, index) => {
     if (fenced[index] || !/^#{1,6} /.test(line)) return line;
-    // check reads the title without ATX closing hashes (`## 旧（3） ##`).
-    const [, title, closing] = /^(.*?)((?:[ \t]+#+)?[ \t]*)$/.exec(line)!;
-    const suffix = countSuffix(title!);
-    const next = suffix ? title!.slice(0, suffix.index) + closing : line;
+    // check reads the title without ATX closing hashes (`## 旧（3） ##`) and
+    // an issue heading's title without its `Issue N:` prefix.
+    const [, prefix, title, closing] = /^(#{1,6} +(?:Issue\s+[^:\s]+\s*:\s*)?)(.*?)((?:[ \t]+#+)?[ \t]*)$/.exec(line)!;
+    const stripped = stripCountSuffixes(title!);
+    const next = stripped !== title ? prefix + stripped + closing : line;
     if (next !== line) count++;
     return next;
   });
@@ -737,6 +749,15 @@ export function adopt(src: string): AdoptResult {
     if (body.line >= firstH2 || bodyById.get(body.idText) !== body) continue;
     for (let line = body.line; line <= Math.min(body.end, firstH2 - 1); line++) topBodyLines.add(line);
   }
+  // Open summaries become body headings, so they lose trailing counts the
+  // same way headings do (stripCounts); a row and heading that both carried
+  // the count then agree instead of reporting a title conflict.
+  let summaryCounts = 0;
+  for (const row of open) {
+    const stripped = stripCountSuffixes(row.summary);
+    if (stripped !== row.summary) [row.summary, summaryCounts] = [stripped, summaryCounts + 1];
+  }
+  if (summaryCounts > 0) changes.push(`去掉开放项摘要里的（N）计数：${summaryCounts} 处`);
   const isMultiId = (row: Row) => row.ids.length > 1 || /[–~-]/.test(row.idText);
   for (const row of open) {
     const body = bodyById.get(fullId(row));
@@ -754,7 +775,7 @@ export function adopt(src: string): AdoptResult {
       continue;
     }
     if (isMultiId(row)) continue;
-    if (fold(row.summary) !== fold(body.title)) {
+    if (fold(row.summary) !== fold(unescapeCell(body.title))) {
       decisions.push({
         kind: "open-title-conflict",
         id: row.idText,
@@ -763,7 +784,7 @@ export function adopt(src: string): AdoptResult {
         table: row.summary,
         body: body.title,
       });
-      row.summary = body.title;
+      row.summary = unescapeCell(body.title);
     }
   }
   for (const row of closed) {
@@ -848,7 +869,7 @@ export function adopt(src: string): AdoptResult {
       const body = bodyById.get(id);
       if (body) usedBodyIds.add(body.idText);
       else if (multi) skeletonIds.push(id);
-      if (multi && body && fold(body.title) !== fold(row.summary)) {
+      if (multi && body && fold(unescapeCell(body.title)) !== fold(row.summary)) {
         decisions.push({
           kind: "open-title-conflict",
           id,

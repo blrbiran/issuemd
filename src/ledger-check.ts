@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
 import { countSuffix, parseLedger, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
-import { ARCHIVE_HEADING, labelName } from "./ledger-edit.js";
+import { ARCHIVE_HEADING, labelName, unescapeCell } from "./ledger-edit.js";
 
 import { STATUS_CLASSES } from "./statuses.js";
 export { STATUS_CLASSES };
@@ -35,7 +35,9 @@ function checkHeadings(ledger: Ledger) {
   const bodies: { id: IdSpan; title: string; line: number; end: number }[] = [];
   for (const section of sections) {
     const { level, title, line_start: line } = section;
-    if (countSuffix(title)) {
+    // An issue heading's count is judged on its title alone (`Issue 2: （3）`
+    // is titled `（3）`), as new/rename and adopt judge it.
+    if (countSuffix(/^Issue\s+[^:\s]+\s*:\s*(.*)$/.exec(title)?.[1] ?? title)) {
       errors.push({ code: "E121", line, message: "Heading contains a count; use a stable title" });
     }
     const inBody = line > body.line_start && line <= body.line_end;
@@ -121,7 +123,8 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
       errors.push({ code: "E101", line, id, message: "Body has no index row" });
     }
     const row = byId.get(id) ?? (!span.suffix ? ranges.find(({ span: range }) => range.start <= span.start && span.start <= range.end)?.row : undefined);
-    if (row && foldWhitespace(row.summary) !== foldWhitespace(title)) {
+    // `\|` in a heading renders as `|`, like the escaped cell it must match.
+    if (row && foldWhitespace(row.summary) !== foldWhitespace(unescapeCell(title))) {
       errors.push({ code: "E106", line, id, message: "Body title and index summary differ", expected: row.summary, actual: title });
     }
     const labels = new Set<string>();

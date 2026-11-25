@@ -261,6 +261,8 @@ export async function run(argv: string[]): Promise<CliResult> {
   } else if (values.help) {
     return ok(HELP);
   }
+  // Hex is case-insensitive; snapshots are printed (and compared) in lower case.
+  if (typeof values["if-unchanged"] === "string") values["if-unchanged"] = values["if-unchanged"].toLowerCase();
   const expected = values["if-unchanged"];
   if (expected != null && !SNAPSHOT.test(expected)) {
     return err(`issuemd: --if-unchanged expects the 16-hex-digit snapshot printed by --dry-run or a --json view, got '${expected}'\n`, 2);

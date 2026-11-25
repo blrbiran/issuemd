@@ -118,7 +118,15 @@ const isSeparatorRow = (cells: string[]) => cells.length > 0 && cells.every((cel
  */
 export function countSuffix(title: string): RegExpExecArray | null {
   const match = /[ \t]*[（(]\s*([0-9０-９]+)\s*[）)]\s*$/.exec(title);
-  return match && !/^(?:19|20)\d\d$/.test(match[1]!.normalize("NFKC")) ? match : null;
+  if (!match || /^(?:19|20)\d\d$/.test(match[1]!.normalize("NFKC"))) return null;
+  // A title that is nothing but a bracketed number is the title itself.
+  return title.slice(0, match.index).trim() ? match : null;
+}
+
+/** `title` without any trailing counts (`甲（2）（3）` → `甲`; years stay). */
+export function stripCountSuffixes(title: string): string {
+  for (let suffix = countSuffix(title); suffix; suffix = countSuffix(title)) title = title.slice(0, suffix.index);
+  return title;
 }
 
 /** A cell holding exactly a default status word (`未决`, `**已修**`), nothing more. */
