@@ -44,7 +44,7 @@ issuemd read FILE 附录          # any top-level section, verbatim
 
 An unknown `--status` word is exit `2` (with the vocabulary listed); a closed status on the open table tells you to add `--closed`. If stderr says some table rows **could not be read**, the result is incomplete — run `check` and fix those rows first. If `check` itself would fail, `list`/`counts`/`show` still exit 0 but print a `note: 'issuemd check' reports N error(s) …` line, and their `--json` carries `diagnostics.errors`; a view of a broken ledger must not look healthy.
 
-**Feeding `list` back into per-id commands:** an `id` is the cell as written (`30, 31`, `7–20`). Use `ids[]` (or `--expand`) for `show`/`close`/…; passing the raw cell exits `2` with a message naming the ids.
+**Feeding `list` back into per-id commands:** an `id` is the cell as written. A comma cell (`30, 31`) is not a single issue: use `ids[]` (or `--expand`) and pass one id, or you get exit `2` naming the ids. A pure range cell (`7–20`) is accepted by `show` and renders the whole row.
 
 `issuemd FILE` is not a shortcut: it exits `2` with `unknown command`. Every command takes only its own options (`issuemd <command> --help`); a stray option is exit `2`, not silently ignored.
 

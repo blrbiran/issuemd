@@ -72,7 +72,25 @@
 | #71 | `list` 的 `id`（`30, 31`）不能回灌给 `show`，报错只说「not an issue id」 | 选「只改报错与文档」：多号形状的 id 报错点名 `30、31` 并指向 `--expand`；SKILL 写明用 `ids[]` 或 `--expand`。`show 30` / `show 7–20` 行为不变 |
 | #68/#74 | 复测记录 | 无代码动作；#74 列出的「#56/#57 判据5、#62–#71 仍未修」已在本轮处理 |
 
-验证：`npm run typecheck && npm test` 全绿（本轮末 507，新增 38 条）；三份真实台账 `check` 仍 0 error（dogfood 8 warnings：W202 3 + W261 5；cafe 71：W202 66 + W260 2 + W221 1 + W201 1 + W261 1；orca 184：W202 154 + W261 20 + W201 4 + W250 4 + W206 2）；`../cafe_dogfooding` 的 4 个历史版本真实 adopt 输出**逐字节相同**，报告差异只有新加的「以原级别 H2 并入附录」；2 MB/500 号 split 0.14 s vs check 0.07 s；`list --json --with-body` 在 72 条的真实台账上一次调用取回全部 labels（0 条缺失，单一 snapshot）；acceptance 命令（fixtures/TEMPLATE 0/0、`issueCount 17`、`close --help` 不含 `--json`、`list --title` exit 2、bin 755、`npm pack --dry-run` 含 TEMPLATE/SKILL/dist 且不含 scripts/.dist-test）全部通过。
+验证：`npm run typecheck && npm test` 全绿（本轮末 516，新增 47 条：38 条本轮功能 + 9 条复审(16)）；三份真实台账 `check` 仍 0 error（dogfood 8 warnings：W202 3 + W261 5；cafe 71：W202 66 + W260 2 + W221 1 + W201 1 + W261 1；orca 184：W202 154 + W261 20 + W201 4 + W250 4 + W206 2）；`../cafe_dogfooding` 的 4 个历史版本真实 adopt 输出**逐字节相同**，报告差异只有新加的「以原级别 H2 并入附录」；2 MB/500 号 split 0.14 s vs check 0.07 s；`list --json --with-body` 在 500 条 236 KB 台账上 0.14 s（不带它 0.08 s），72 条真实台账一次调用取回全部 labels（0 条缺失，单一 snapshot）；acceptance 命令（fixtures/TEMPLATE 0/0、`issueCount 17`、`close --help` 不含 `--json`、`list --title` exit 2、bin 755、`npm pack --dry-run` 含 TEMPLATE/SKILL/dist 且不含 scripts/.dist-test）全部通过。
+
+### 复审(16)（合入后独立复审本轮 diff，11 条 finding 全部处理）
+
+复审在临时副本上复现；下面每条都有新用例（`src/round13.test.ts` 的 `review 13` 组）或文档修正。
+
+| # | 发现 | 处理 |
+|---|---|---|
+| 1 | 计数只在正文标题上时，adopt 仍报「去掉开放项摘要里的计数」并出假 `summary-count-stripped`（`表: 甲 文: 甲`） | 该分支只在**摘要**一侧有计数时进入；标题侧的计数由 `stripCounts` 自己报告。R1 现在只有「去掉标题里的（N）计数」 |
+| 2 | `甲（3）` vs `甲(3)` / `甲（３）` / `甲 （3）` 被当成「计数不同」报冲突 | 计数比较改为 NFKC + 去空白后的**值**比较；同值静默，只有真不同（`（3）` vs `（4）`）才冲突 |
+| 3 | 报告里被改名的标题行号是中间坐标，不是输出文件行 | changes 与 foreign-section 消息统一标成 `源 L…`（与决策的 `源 L` 回退同一约定）；决策自身的 `L` 仍是输出坐标 |
+| 4 | `labelBlock` 丢弃 fence 内**所有**以粗体开头的行（Gherkin `**Given**` 被判据吞掉） | 只跳过 `labelName` **等于当前标签**的行；其他 fence 内容照旧是判据，新增 Gherkin 用例 |
+| 5 | 列表项里缩进 4+ 的 fence 不被识别，示例标签行仍进判据 | `fencedLines(lines, maxIndent)` 新增参数，默认 3；`labelBlock` 的块内与 `labelsIn` 用 `Infinity`，缩进的 fence 也按示例处理。`scan` 的标题扫描保持 0–3，见已知项 |
+| 6 | `list --json --with-body` 对 2000 条超线性（9.3 s）：每个标签都对整份 `lines` 重算 `fencedLines` | `withBody` / `viewIssue` 改为按正文块切片后调用 `labelsIn`/`labelBlock`/`extractCriteria`；500 条 0.14 s，线性 |
+| 7 | 区间行（`5–7`）的正文挂在内部号（`6`）时 `--with-body` 取不到 | 回退改为「任一行内 span 覆盖该正文 id」，附 `bodyFrom: "6"` |
+| 8 | 不可读行同时触发新 note 与 `unreadableNote`，同一行报两遍 | `structureNote` 接收已知不可读行号并过滤；全被覆盖时不出 note（JSON 的 `diagnostics` 仍是全量） |
+| 9 | `show` 查无此号时（在坏台账上）不提示 check error | miss 分支也拼 `structureNote`（stderr） |
+| 10 | `badIdText` 断言「这一行存在」，且对写命令给了 `--expand` 这种不解决问题的建议 | 改为「looks like one row holding N ids」；写命令提示 `issuemd split FILE <第一个号>`，`show` 提示 `--expand` |
+| 11 | SKILL 说区间格子（`7–20`）回灌会 exit 2，实际 `show "7–20"` exit 0 | SKILL 改为「comma 格子不行；纯区间格子 `show` 接受并渲染整行」 |
 
 ## 第十二轮（2026-11-25）
 
@@ -318,13 +336,13 @@ issuemd <command> --help
   - `titleProblem()` = 空标题（第十二轮）+ 计数后缀（`countSuffix`，E121）+ 结尾 `#`；`new`/`rename` 用于输入，`reopen` 用于已关闭行的旧摘要。
   - `readOnlyRefusal()` 在 `commit()` 与 adopt 的写入前各调一次（`accessSync W_OK`）。
   - `missingIssue(verb, id)` / `badIdText()`：写命令的「没有这条」走 stderr；`show` 仍用 stdout 的 `(no such issue: N)`。`badIdText` 遇到多号形状（`30, 31`，`parseIds` 得到多个 span）时点名这些号并指向 `list --expand`（第十三轮，dogfood #71）。
-  - 读命令的一致性 helper（第十三轮）：`structureNote(errors)` / `diagnosticsField(errors)`。`cmdList` / `cmdCounts` / `cmdShow` 各跑一次 `checkLedger`；stderr 的 note 与 `--json` 的 `diagnostics` 都只在有 error 时出现。`cmdShow` 的 `withNote` 现在拼 `structureNote + inheritedNote + twinNote`。
-  - `list --with-body`（第十三轮）：`withBody(ledger, issue, blocks)` 在 `ledger-read.ts`，与 `viewIssue` 同源解析兄弟号正文；必须配 `--json`，否则 exit 2。
+  - 读命令的一致性 helper（第十三轮）：`structureNote(errors, knownLines)` / `diagnosticsField(errors)`。`cmdList` / `cmdCounts` / `cmdShow` 各跑一次 `checkLedger`；stderr 的 note 与 `--json` 的 `diagnostics` 都只在有 error 时出现，`structureNote` 会跳过已由 `unreadableNote` 描述的行（同一行不报两遍；`diagnostics` 仍是全量）。`cmdShow` 的 `withNote` 现在拼 `structureNote + inheritedNote + twinNote`，查无此号的分支也拼 `structureNote`。
+  - `list --with-body`（第十三轮）：`withBody(ledger, issue, blocks)` 在 `ledger-read.ts`，与 `viewIssue` 同源解析兄弟号正文（含区间行内部号的正文，`bodyFrom` 标明）；必须配 `--json`，否则 exit 2。两者都先把正文块切片再调 `labelsIn`/`labelBlock`/`extractCriteria`——用整份 `lines` 会让 `fencedLines` 按标签数 × 文件长重算（复审(16) 6）。
   - `readBodyFile` 剥 BOM 与开头空行，拒绝 fence 外的 `KEPT_BODY_END`。reopen 的归档恢复只剥「结束标记所在那一行」与「第一条非空行若是 ARCHIVE_NOTE」。
 - **`src/ledger-edit.ts`**：
   - `escapeCell` / `unescapeCell`：竖线前反斜杠为奇数才算已转义，与 `ledger.ts` 的 `splitCells` 读法一致。标题输入用 `unescapeCell` 归一，别再写 `.replace(/\\\|/g, "|")`。
   - `extractCriteria()` 合并所有非空 `**验收判据**` 块（去重，`joinClauses` 连接：前段以 `；`/`;` 结尾时不再加 `；`）；close 提升与 `show --json criteria` 都走它。`labelName()` 把 `**验收判据：**` 归一成 `验收判据`，labelBlock / labelsIn / W206 都用它。
-  - `labelBlock()` 是唯一的标签解析：从 `**标签**` 行到下一个标签行或标题；空行、列表、fence 内容都属于它。**fence 内形似标签的行不算内容**（第十三轮，dogfood #61）——fence 里的普通内容（`npm test`）仍算判据。`findLabel`、`extractCriteria`、`show --json labels` 都走它。
+  - `labelBlock()` 是唯一的标签解析：从 `**标签**` 行到下一个标签行或标题；空行、列表、fence 内容都属于它。**fence 内与本标签同名的标签行不算内容**（第十三轮，dogfood #61；只跳同名标签，Gherkin 的 `**Given**` 仍是判据——复审(16) 4）；块内 fence 允许任意缩进（`fencedLines(own, Infinity)`），列表项里的示例也能识别。fence 里的普通内容（`npm test`）仍算判据。`findLabel`、`extractCriteria`、`show --json labels` 都走它。
   - 归档格式常量：`archiveHeading()`、`ARCHIVE_HEADING`、`ARCHIVE_NOTE`、`KEPT_BODY_END`。close / adopt / reopen / rename / check 共用，改格式只改这里，并跑 `keep-body round trip`。
   - `ledger-edit` 与 `ledger-check` 互相 import（只在函数里用对方，模块初始化时不能用）。
 - **`src/ledger.ts`**：
@@ -343,8 +361,8 @@ issuemd <command> --help
   - W225 的 `cited-table` 决定不在 adopt() 里产生，而在 `cmdAdopt` 对输出跑 check 后补上（早退路径也有）；报告因此在 check 之后渲染。
   - 开头：输入 `check` 0 error 且无 W220 → 原样返回。E124 是 error，所以「规范骨架 + 旧表」的混合文件会走完整转换。
   - `demoteHeadings`（第十二轮）：只在正文块里把 H4–H6 降级——从 `Issue` 标题（H1–H3，行首 0–3 空格）到下一个同级或更高级标题。旧 cafe 是 `## Issue N:` + `### 期望` + `####`，所以不能写成「下一个 H1–H3 结束」。
-  - `stripCounts` 现在返回 `renames`（被改写的标题行 + 原名/新名，输入坐标）。`adopt()` 用 `separated.origin` 把它映射到输出坐标：报告里的「去掉标题里的（N）计数」点名每一处；`foreign-section` 的消息据此区分「原样移入附录」与「标题去掉计数后移入附录」，H2 另加「以原级别 H2 并入附录」（第十三轮，dogfood #72）。
-  - 开放项摘要计数（第十三轮，dogfood #73）：**先按原始摘要与原始正文标题比**（`headingTitleOf(originalTextAt(body.line))` 取 stripCounts 前的标题）。两侧相同 → 静默剥；单侧带计数且剥后相同 → `summary-count-stripped` 决定（带 id 与新旧值）；两侧计数不同 → `open-title-conflict`；其余交给后面的冲突循环。别再把「先剥所有开放摘要、再判冲突」写回来——那会把真漂移吞掉。
+  - `stripCounts` 现在返回 `renames`（被改写的标题行 + 原名/新名，输入坐标）。`adopt()` 用 `separated.origin` 把它映射到输出坐标：报告里的「去掉标题里的（N）计数」点名每一处（**报告里标 `源 L…`**，因为此时输出行号还没定——复审(16) 3）；`foreign-section` 的消息据此区分「原样移入附录」与「标题去掉计数后移入附录」，H2 另加「以原级别 H2 并入附录」（第十三轮，dogfood #72）。
+  - 开放项摘要计数（第十三轮，dogfood #73）：**先按原始摘要与原始正文标题比**（`headingTitleOf(originalTextAt(body.line))` 取 stripCounts 前的标题）。两侧相同 → 静默剥；**只有摘要带计数**且剥后相同 → `summary-count-stripped` 决定（带 id 与新旧值）；两侧都带计数时比较归一化后的计数值：同值静默、不同值才是 `open-title-conflict`；只在正文标题上的计数由 `stripCounts` 报告，不产生摘要决定（复审(16) 1/2）。别再把「先剥所有开放摘要、再判冲突」写回来——那会把真漂移吞掉。
   - 早退文案（第十三轮）：有 W225 警告时写「结构合法（check 0 error）；另有 N 张表按 W225 原样保留、不迁移，无需转换」，没有 W225 时仍写「已是规范台账」。
   - 正文标题与摘要的比较一律先 `unescapeCell(title)`：E106、adopt 的 `open-title-conflict`、`sync --titles`（第十二轮）。
   - `layoutLines`：被消费的表块的表头/分隔行，**加上表格小节里只有表头+分隔行的空表**（#52：混合文件里规范表是空的，以前会被当成说明文字复制进附录）。
@@ -406,6 +424,7 @@ issuemd <command> --help
 - **写命令的 `(no changes)` 是一个输出契约变化**（第十三轮 #66）：以前无改动的 `status`/`priority`/`rename`/`body`/`sync` 是零 stdout，现在是一行 `(no changes)`；依赖「stdout 为空」判断的脚本需要调整。
 - **外来 H2 进附录仍保持 H2**（第十三轮 #72）：报告会写「以原级别 H2 并入附录」，但 `## 附录` 之后的下一个 H2 在结构上会结束附录小节（`checkAppendix` 也只扫到那里）。不降级是刻意的——降级会破坏 W225 的编号占用。
 - `list --json --with-body` 只给开放项补 `labels`/`criteria`（已关闭项本来就有判据列）；兄弟号正文用 `bodyFrom` 标明来源，不复制成自己的。
+- `scan` 的标题扫描仍只认 0–3 空格缩进的 fence（`scan.ts` 顶部文档化的取舍）。列表项里缩进 4+ 的 fence 现在对判据/标签识别有效（`fencedLines` 的 `maxIndent` 参数），但其中的 `# 标题` 仍可能被当成真标题——这是扫描器的旧限制，不在第十三轮范围内。
 - 原子替换的竞态：issuemd 写者之间已由写锁串行化（第十轮）；**非 issuemd 的写者**（编辑器）在复核与 rename 之间改文件仍会被覆盖（窗口极小）。
 - 读命令把非法 UTF-8 解码成 U+FFFD（只影响输出；这类文件写命令本来就拒绝，所以 snapshot 不一致无影响）。
 - W202 不把 7–39 位纯数字当 hash（会漏掉约 3.7% 的纯数字短 hash）。

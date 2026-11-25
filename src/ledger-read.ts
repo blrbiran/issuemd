@@ -116,18 +116,22 @@ export function withBody(
   const row = findRow(ledger, first);
   if (!row || row.table !== "open") return issue;
   const key = (span: IdSpan) => `${span.start}${span.suffix}`;
+  const covers = (span: IdSpan, id: IdSpan) =>
+    span.suffix === id.suffix && span.start <= id.start && id.start <= span.end;
   const exact = blocks.find((candidate) => key(candidate.id) === row.id);
-  const block = exact ??
-    row.row.ids.map((span) => blocks.find((candidate) => key(candidate.id) === key(span))).find((candidate) => candidate != null);
+  // A range row (`5–7`) may keep its body under an interior id; a comma row
+  // under any of its ids. Either is the row's body (`bodyFrom` says which).
+  const block = exact ?? blocks.find((candidate) => row.row.ids.some((span) => covers(span, candidate.id)));
   if (!block) return issue;
+  const bodyLines = ledger.lines.slice(block.line - 1, block.end);
   const labels: Record<string, string> = {};
-  for (const name of labelsIn(ledger.lines, block.line, block.end)) {
-    labels[name] = labelBlock(ledger.lines, block.line, block.end, name)?.text ?? "";
+  for (const name of labelsIn(bodyLines, 1, bodyLines.length)) {
+    labels[name] = labelBlock(bodyLines, 1, bodyLines.length, name)?.text ?? "";
   }
   const out: ListedIssue = { ...issue, labels };
   const owner = key(block.id);
   if (owner !== row.id) out.bodyFrom = owner;
-  const criteria = extractCriteria(ledger.lines.slice(block.line - 1, block.end));
+  const criteria = extractCriteria(bodyLines);
   if (criteria) {
     out.criteria = criteria;
     out.criteriaSource = "body";
@@ -202,7 +206,9 @@ export function findLabel(
 /** Every distinct `**label**` in a line range, in document order. */
 export function labelsIn(lines: string[], start: number, end: number): string[] {
   const out: string[] = [];
-  const fenced = fencedLines(lines);
+  // A fence nested in a list item may be indented past three columns; its
+  // lines are still examples, not labels.
+  const fenced = fencedLines(lines, Infinity);
   for (let line = start; line <= end && line <= lines.length; line++) {
     if (fenced[line - 1]) continue;
     const match = /^ {0,3}\*\*([^*]+)\*\*/.exec(lines[line - 1]!);
@@ -275,15 +281,18 @@ export function viewIssue(
       id: owner!,
     };
     if (owner !== found.id) view.body.inherited = true;
+    // Work on the block's own slice: `fencedLines` and the label scan then
+    // cost O(body), not O(file) per label (review 13 performance finding).
+    const bodyLines = ledger.lines.slice(block.line - 1, block.end);
     const labels: Record<string, string> = {};
-    for (const name of labelsIn(ledger.lines, block.line, block.end)) {
-      labels[name] = labelBlock(ledger.lines, block.line, block.end, name)?.text ?? "";
+    for (const name of labelsIn(bodyLines, 1, bodyLines.length)) {
+      labels[name] = labelBlock(bodyLines, 1, bodyLines.length, name)?.text ?? "";
     }
     view.labels = labels;
     // Open issues keep their criteria in the body; expose them the same way
     // a closed issue exposes its column, so consumers need not parse Markdown.
     // Same text `close` would promote (every non-empty 验收判据 block).
-    const promoted = found.table === "open" ? extractCriteria(ledger.lines.slice(block.line - 1, block.end)) : undefined;
+    const promoted = found.table === "open" ? extractCriteria(bodyLines) : undefined;
     if (promoted) {
       view.criteria = promoted;
       view.criteriaSource = "body";

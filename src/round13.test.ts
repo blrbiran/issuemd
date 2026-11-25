@@ -399,3 +399,97 @@ describe("#71 a multi-id id cell points at the row, not just 'not an id'", () =>
     for (const issue of expanded.issues) expect((await run(["show", path, issue.id])).code).toBe(0);
   });
 });
+
+describe("review 13", () => {
+  const withTitles = (table: string, heading: string, section = "") => file(TEMPLATE
+    .replace("| # | 状态 | P | 摘要 |\n|---|---|---|---|\n",
+      `| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 1 | 未决 | P2 | ${table} |\n`)
+    .replace("## 正文\n", `## 正文\n\n### Issue 1: ${heading}\n\n**现象**：x\n\n**验收判据**：甲\n`) + section);
+
+  test("a count only on the body heading is not reported as a summary change", async () => {
+    const dry = await run(["adopt", withTitles("甲", "甲（3）"), "--dry-run"]);
+    expect(dry.code).toBe(0);
+    expect(dry.stdout).not.toContain("summary-count-stripped");
+    expect(dry.stdout).not.toContain("去掉开放项摘要里的");
+    expect(dry.stdout).toContain("去掉标题里的");
+  });
+
+  test("the same count written differently is silent, not a conflict", async () => {
+    for (const [table, heading] of [["甲（3）", "甲(3)"], ["甲（3）", "甲（３）"], ["甲 （3）", "甲（3）"]]) {
+      const path = withTitles(table, heading);
+      const dry = await run(["adopt", path, "--dry-run"]);
+      expect(dry.stdout).not.toContain("open-title-conflict");
+      expect(dry.stdout).not.toContain("summary-count-stripped");
+      expect((await run(["adopt", path])).code).toBe(0);
+      expect((await run(["check", path])).code).toBe(0);
+      expect(text(path)).not.toContain("（3）");
+      expect(text(path)).not.toContain("(3)");
+    }
+  });
+
+  test("rename coordinates in the report are labelled as source lines", async () => {
+    const source = one() + "\n## 复核记录\n\n### 第三轮复核（3）\n\n本轮结论：通过。\n";
+    const path = file(source);
+    const sourceLine = source.split("\n").findIndex((line) => line.includes("第三轮复核（3）")) + 1;
+    const dry = await run(["adopt", path, "--dry-run"]);
+    expect(dry.stdout).toContain(`源 L${sourceLine}「第三轮复核（3）」`);
+  });
+
+  test("a fenced Gherkin step is ordinary criteria content", async () => {
+    const path = file(one("甲", "**现象**：x\n\n**验收判据**：\n\n```gherkin\n**Given** a ledger\n**When** I run check\n**Then** exit 0\n```\n"));
+    const json = JSON.parse((await run(["show", path, "1", "--json"])).stdout);
+    expect(json.criteria).toContain("**Given** a ledger");
+    expect((await run(["close", path, "1", "--criteria-from-body"])).code).toBe(0);
+  });
+
+  test("a label example in a fence indented under a list item stays out of criteria", async () => {
+    const path = file(one("甲", "**现象**：x\n\n**验收判据**：\n- 运行下面的例子：\n    ```markdown\n    **验收判据**：清单里的示例\n    ```\n"));
+    const json = JSON.parse((await run(["show", path, "1", "--json"])).stdout);
+    expect(json.criteria).not.toContain("清单里的示例");
+    expect(json.criteria).toContain("运行下面的例子");
+  });
+
+  test("list --with-body stays linear on a few hundred issues", async () => {
+    const rows: string[] = [];
+    const bodies: string[] = [];
+    for (let id = 1; id <= 300; id++) {
+      rows.push(`| ${id} | 未决 | P2 | 条目 ${id} |`);
+      bodies.push(`### Issue ${id}: 条目 ${id}\n\n**现象**：现象 ${id}\n\n**验收判据**：判据 ${id}\n`);
+    }
+    const path = file(TEMPLATE
+      .replace("| # | 状态 | P | 摘要 |\n|---|---|---|---|\n", `| # | 状态 | P | 摘要 |\n|---|---|---|---|\n${rows.join("\n")}\n`)
+      .replace("## 正文\n", `## 正文\n\n${bodies.join("\n")}`));
+    const started = performance.now();
+    const result = await run(["list", path, "--json", "--with-body"]);
+    const elapsed = performance.now() - started;
+    expect(result.code).toBe(0);
+    const doc = JSON.parse(result.stdout);
+    expect(doc.issues).toHaveLength(300);
+    expect(doc.issues[299].criteria).toBe("判据 300");
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  test("with-body attaches a body kept under an interior id of a range", async () => {
+    const path = file(TEMPLATE
+      .replace("| # | 状态 | P | 摘要 |\n|---|---|---|---|\n",
+        "| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 5–7 | 未决 | P2 | 大区间 |\n")
+      .replace("## 正文\n", "## 正文\n\n### Issue 6: 大区间\n\n**现象**：x\n\n**验收判据**：六号判据\n"));
+    const doc = JSON.parse((await run(["list", path, "--json", "--with-body"])).stdout);
+    expect(doc.issues[0]).toMatchObject({ id: "5–7", bodyFrom: "6", criteria: "六号判据" });
+  });
+
+  test("an unreadable row is reported once, not twice", async () => {
+    const path = file(one() + "\n## 待处理\n\n| 7 | 未决 | 甲 |\n|---|---|---|\n");
+    const listed = await run(["list", path]);
+    expect(listed.stderr).toContain("could not be read");
+    expect(listed.stderr).not.toContain("note: 'issuemd check'");
+  });
+
+  test("show for a missing id on a broken ledger still notes the check errors", async () => {
+    const path = file(CANONICAL.replace("| 2 | 未决 | P1 | 侧栏宽度不可调 |", "| 2 | 未决 | P1 | 侧栏宽度不可调（改） |"));
+    const shown = await run(["show", path, "99"]);
+    expect(shown.code).toBe(1);
+    expect(shown.stderr).toContain("reports");
+    expect(shown.stderr).toContain("E106");
+  });
+});

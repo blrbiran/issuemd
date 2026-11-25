@@ -191,9 +191,11 @@ function badIdText(verb: string, id: string): CliResult | undefined {
   const spans = parseIds(id);
   if (spans && spans.length > 1) {
     const spelled = spans.map(spanText).join(", ");
+    const hint = verb === "show"
+      ? "pass one id, or use 'issuemd list FILE --expand'"
+      : `pass one id, or split that row first with 'issuemd split FILE ${spanText(spans[0]!)}'`;
     return err(
-      `issuemd ${verb}: '${id}' is one row holding ${spans.length} ids (${spelled}), not a single issue; ` +
-        `pass one id, or use 'issuemd list FILE --expand'\n`,
+      `issuemd ${verb}: '${id}' looks like one row holding ${spans.length} ids (${spelled}), not a single issue; ${hint}\n`,
       2,
     );
   }
@@ -445,7 +447,8 @@ function cmdList(rest: string[], v: Values): CliResult {
     ? `'${v.status}' is ${statusCategory(v.status)}; ${table === "open" ? "add --closed" : "drop --closed"} to list it\n`
     : "";
   const incomplete = unreadableNote(ledger);
-  const stderr = structureNote(report.errors) + wrongTable + incomplete;
+  const stderr = structureNote(report.errors, new Set(ledger.unreadable.map((row) => row.line))) +
+    wrongTable + incomplete;
   let issues = rows.map((row) => toListedIssue(row, table));
   if (v.expand) {
     const expanded = expandIssues(issues);
@@ -504,12 +507,14 @@ function unreadableNote(ledger: ReturnType<typeof parseLedger>): string {
  * and `show` used to exit 0 with no hint while `check` exited 3, so a caller
  * could not tell it was reading a ledger the tool itself rejects (dogfood
  * #63). Exit codes stay 0/1 — reading a broken ledger to repair it is a
- * legitimate use.
+ * legitimate use. Errors already described by `unreadableNote` (same lines)
+ * are left out, so one bad row is not reported twice.
  */
-function structureNote(errors: Diagnostic[]): string {
-  if (errors.length === 0) return "";
-  const first = errors[0]!;
-  return `note: 'issuemd check' reports ${errors.length} error(s) (first: ${first.code} L${first.line}` +
+function structureNote(errors: Diagnostic[], known: Set<number> = new Set()): string {
+  const fresh = errors.filter(({ line }) => !known.has(line));
+  if (fresh.length === 0) return "";
+  const first = fresh[0]!;
+  return `note: 'issuemd check' reports ${fresh.length} error(s) (first: ${first.code} L${first.line}` +
     `${first.id ? ` #${first.id}` : ""}); this view may not reflect the ledger\n`;
 }
 
@@ -535,7 +540,8 @@ function cmdCounts(rest: string[], v: Values): CliResult {
   const ledger = parseLedger(loaded.src);
   const unusable = unusableLedger(ledger);
   if (unusable) return unusable;
-  const stderr = structureNote(report.errors) + unreadableNote(ledger);
+  const stderr = structureNote(report.errors, new Set(ledger.unreadable.map((row) => row.line))) +
+    unreadableNote(ledger);
   if (v.json) return { code: 0, stdout: JSON.stringify({ file, snapshot: snapshotOf(loaded.src), counts: report.counts, ...diagnosticsField(report.errors) }, null, 2) + "\n", stderr };
   return { code: 0, stdout: summaryLine(report.counts) + "\n", stderr };
 }
@@ -565,7 +571,10 @@ function cmdShow(rest: string[], v: Values): CliResult {
     const citedNote = cited ? `issuemd show: #${id} is not tracked, but is cited at L${cited.line} (${cited.reason})\n` : "";
     const missing = badIdText("show", id) ??
       (v.json ? { code: 1, stdout: "", stderr: `issuemd show: no such issue: ${id}\n` } : noMatch(`(no such issue: ${id})\n`));
-    return citedNote && missing.code === 1 ? { ...missing, stderr: citedNote + missing.stderr } : missing;
+    // A miss on a ledger whose check fails is worth a note too (review 13).
+    const missNote = structureNote(report.errors, new Set(ledger.unreadable.map((row) => row.line)));
+    const result = citedNote && missing.code === 1 ? { ...missing, stderr: citedNote + missing.stderr } : missing;
+    return missNote === "" ? result : { ...result, stderr: missNote + result.stderr };
   }
   // The same id may also sit in a row show cannot read (an old 待处理 table,
   // E124): this view is then only one of two conflicting records.
@@ -579,7 +588,7 @@ function cmdShow(rest: string[], v: Values): CliResult {
   const inheritedNote = view.body?.inherited
     ? `note: the body shown belongs to #${view.body.id} (same row; #${view.id} has no body block of its own)\n`
     : "";
-  const baseNote = structureNote(report.errors) + inheritedNote;
+  const baseNote = structureNote(report.errors, new Set(ledger.unreadable.map((row) => row.line))) + inheritedNote;
   const withNote = (result: CliResult): CliResult =>
     baseNote === "" && twinNote === "" ? result : { ...result, stderr: baseNote + twinNote + result.stderr };
 

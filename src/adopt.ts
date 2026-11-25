@@ -528,8 +528,11 @@ export function adopt(src: string): AdoptResult {
   if (stripped.count > 0) {
     // Name the changed headings: a bare count left the reader unable to tell
     // which section the report's "原样移入附录" was talking about (#72).
+    // These are source coordinates: the output order (bodies sorted, sections
+    // rebuilt) is not known yet, and the decisions carry the output L.
     const named = [...renames].slice(0, 5)
-      .map(([line, rename]) => `L${line}「${headingText(rename.before)}」→「${headingText(rename.after)}」`)
+      .map(([line, rename]) =>
+        `源 L${sourceLineOf(line)}「${headingText(rename.before)}」→「${headingText(rename.after)}」`)
       .join("、");
     changes.push(`去掉标题里的（N）计数：${stripped.count} 处` + (named ? `（${named}${renames.size > 5 ? "…" : ""}）` : ""));
   }
@@ -815,21 +818,32 @@ export function adopt(src: string): AdoptResult {
     const strippedTitle = stripCountSuffixes(rawTitle);
     const summaryCount = countSuffix(rawSummary)?.[0];
     const titleCount = countSuffix(rawTitle)?.[0];
-    if ((summaryCount || titleCount) && fold(strippedSummary) === fold(strippedTitle)) {
+    // `（3）` / `(3)` / `（３）` / `（ 3 ）` are the same count; compare values,
+    // not just presence (review 13).
+    const countKey = (count: string | undefined) => (count ?? "").normalize("NFKC").replace(/\s+/gu, "");
+    if (fold(strippedSummary) === fold(strippedTitle) && (summaryCount || titleCount)) {
       if (summaryCount && titleCount) {
-        // `甲（3）` vs `甲（4）`: stripping both would hide a real difference.
-        decisions.push({
-          kind: "open-title-conflict",
-          id: row.idText,
-          line: body.line,
-          message: "表格摘要与正文标题的（N）计数不同；默认按 --prefer=body 采用正文标题",
-          table: rawSummary,
-          body: rawTitle,
-        });
-        row.summary = unescapeCell(body.title);
-      } else {
-        // Only one side carried a count: dropping it is mechanical, but the
-        // reader must see which summary moved (#73).
+        if (countKey(summaryCount) !== countKey(titleCount)) {
+          // `甲（3）` vs `甲（4）`: stripping both would hide a real difference.
+          decisions.push({
+            kind: "open-title-conflict",
+            id: row.idText,
+            line: body.line,
+            message: "表格摘要与正文标题的（N）计数不同；默认按 --prefer=body 采用正文标题",
+            table: rawSummary,
+            body: rawTitle,
+          });
+          row.summary = unescapeCell(body.title);
+        } else if (strippedSummary !== rawSummary) {
+          // Same count written differently (`甲（3）` / `甲(3)`): the heading
+          // already lost it in stripCounts; drop it from the summary silently.
+          [row.summary, summaryCounts] = [strippedSummary, summaryCounts + 1];
+        }
+        // A count only on the body heading was already handled by stripCounts
+        // and reported there; the summary did not change (review 13).
+      } else if (summaryCount) {
+        // Only the table summary carried a count: dropping it is mechanical,
+        // but the reader must see which summary moved (#73).
         summaryCounts++;
         decisions.push({
           kind: "summary-count-stripped",
@@ -1056,7 +1070,9 @@ export function adopt(src: string): AdoptResult {
     const renamed: string[] = [];
     for (let line = section.line_start; line <= section.line_end; line++) {
       const rename = renames.get(line);
-      if (rename) renamed.push(`L${line}「${headingText(rename.before)}」→「${headingText(rename.after)}」`);
+      if (rename) {
+        renamed.push(`源 L${sourceLineOf(line)}「${headingText(rename.before)}」→「${headingText(rename.after)}」`);
+      }
     }
     const content: string[] = [];
     for (let line = section.line_start + 1; line <= section.line_end; line++) {

@@ -161,22 +161,27 @@ export function ascendingRows(rows: LedgerRow[]): boolean {
  * (delimiters included). Both the criteria extractor and the controlled-block
  * rewriter must ignore fenced lookalikes: a code block in an issue body or the
  * appendix can legitimately contain `**验收判据**：…` or a marker pair.
+ *
+ * `maxIndent` defaults to CommonMark's 3 columns. A body block nested in a
+ * list item may indent its fence further; callers that only need "is this line
+ * an example" pass `Infinity` (scan keeps its own 0–3 rule for headings).
  */
-export function fencedLines(lines: string[]): boolean[] {
+export function fencedLines(lines: string[], maxIndent = 3): boolean[] {
   const out = new Array<boolean>(lines.length).fill(false);
   let fence: { char: string; len: number } | undefined;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!;
-    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    const match = /^([ \t]*)(`{3,}|~{3,})(.*)$/.exec(line);
     if (!fence) {
-      if (match && !(match[1]!.startsWith("`") && match[2]!.includes("`"))) {
-        fence = { char: match[1]![0]!, len: match[1]!.length };
+      if (match && match[1]!.length <= maxIndent && !(match[2]!.startsWith("`") && match[3]!.includes("`"))) {
+        fence = { char: match[2]![0]!, len: match[2]!.length };
         out[index] = true;
       }
       continue;
     }
     out[index] = true;
-    if (match && match[1]![0] === fence.char && match[1]!.length >= fence.len && /^[ \t]*$/.test(match[2]!)) {
+    if (match && match[1]!.length <= maxIndent && match[2]![0] === fence.char &&
+        match[2]!.length >= fence.len && /^[ \t]*$/.test(match[3]!)) {
       fence = undefined;
     }
   }
@@ -287,7 +292,9 @@ export function labelBlock(
     };
     const first = match[2]!.trim();
     if (first) current.push(first);
-    const ownFenced = fencedLines(own);
+    // Inside the block, fences may be indented by a list item; they are still
+    // examples when extended.
+    const ownFenced = fencedLines(own, Infinity);
     for (let index = 1; index < own.length; index++) {
       const raw = own[index]!;
       if (raw.trim() === "") {
@@ -295,14 +302,17 @@ export function labelBlock(
         continue;
       }
       // Fence delimiters are markup; the code inside is kept, one line each.
-      if (ownFenced[index] && /^ {0,3}(`{3,}|~{3,})/.test(raw)) {
+      if (ownFenced[index] && /^[ \t]*(`{3,}|~{3,})/.test(raw)) {
         flush();
         blank = false;
         continue;
       }
-      // A label-shaped line inside a fence is an *example* of the label, not
-      // a second criteria block (dogfood #61: `close` already promised this).
-      if (ownFenced[index] && LABEL_LINE.test(raw)) {
+      // A line that is this very label inside a fence is an *example* of the
+      // label, not a second criteria block (dogfood #61: `close` already
+      // promised this). Other bold-leading lines in the fence are content —
+      // Gherkin steps (`**Given** …`) must survive (review 13).
+      const fencedLabel = /^[ \t]*\*\*([^*]+)\*\*/.exec(raw);
+      if (ownFenced[index] && fencedLabel && labelName(fencedLabel[1]!) === label) {
         flush();
         blank = false;
         continue;
