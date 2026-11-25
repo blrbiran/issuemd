@@ -232,6 +232,8 @@ export function bodySkeleton(id: string, title: string, criteria = ""): string[]
 
 /** `**label**：rest` at the start of a line (up to three spaces of indent). */
 const LABEL_LINE = /^ {0,3}\*\*([^*]+)\*\*\s*[:：]?\s*(.*)$/;
+/** `**验收判据：**` and `**验收判据**：` name the same label. */
+export const labelName = (raw: string) => raw.trim().replace(/[:：]\s*$/, "").trim();
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const UNORDERED_MARKER = /^\s*[-*+]\s+/;
 
@@ -266,7 +268,7 @@ export function labelBlock(
   for (let line = start; line <= last; line++) {
     if (fenced[line - 1]) continue;
     const match = LABEL_LINE.exec(lines[line - 1]!);
-    if (!match || match[1]!.trim() !== label) continue;
+    if (!match || labelName(match[1]!) !== label) continue;
     let stop = line + 1;
     while (stop <= last) {
       const text = lines[stop - 1]!;
@@ -304,13 +306,18 @@ export function labelBlock(
       if (ownFenced[index]) flush();
     }
     flush();
-    const text = segments.join("；").replace(/[ \t]+/g, " ").trim();
+    const text = joinClauses(segments).replace(/[ \t]+/g, " ").trim();
     return { label, line, lines: own, text };
   }
   return undefined;
 }
 
 /** The `**验收判据**` block of a body as one line; undefined when absent or empty. */
+/** `；`-join, but a part that already ends in a clause mark keeps its own. */
+export function joinClauses(parts: string[]): string {
+  return parts.reduce((out, part, at) => (at === 0 ? part : /[；;]\s*$/.test(out) ? out + part : `${out}；${part}`), "");
+}
+
 export function extractCriteria(bodyLines: string[]): string | undefined {
   // A body may repeat the label (W206); every distinct non-empty block counts,
   // or close would drop the second one without a word.
@@ -322,7 +329,7 @@ export function extractCriteria(bodyLines: string[]): string | undefined {
     if (found.text !== "" && !texts.includes(found.text)) texts.push(found.text);
     from = found.line + found.lines.length;
   }
-  return texts.length > 0 ? texts.join("；") : undefined;
+  return texts.length > 0 ? joinClauses(texts) : undefined;
 }
 
 // ---- controlled blocks -------------------------------------------------

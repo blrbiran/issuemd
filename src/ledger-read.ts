@@ -8,7 +8,7 @@
 
 import type { IdSpan } from "./issue-id.js";
 import { bodyBlocks, parseLedger, type LedgerRow, type TableKind } from "./ledger.js";
-import { fencedLines, labelBlock, type LabelBlock, extractCriteria } from "./ledger-edit.js";
+import { fencedLines, labelBlock, labelName, type LabelBlock, extractCriteria } from "./ledger-edit.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
 
 export type ListedIssue = {
@@ -160,7 +160,7 @@ export function labelsIn(lines: string[], start: number, end: number): string[] 
   for (let line = start; line <= end && line <= lines.length; line++) {
     if (fenced[line - 1]) continue;
     const match = /^ {0,3}\*\*([^*]+)\*\*/.exec(lines[line - 1]!);
-    if (match && !out.includes(match[1]!.trim())) out.push(match[1]!.trim());
+    if (match && !out.includes(labelName(match[1]!))) out.push(labelName(match[1]!));
   }
   return out;
 }

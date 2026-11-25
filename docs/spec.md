@@ -382,7 +382,7 @@ issuemd new FILE --id 77 --title "…"        # 显式给号（撞号报错）
 
 事务：取号（默认 `max+1`，区间端点参与）→ 插入索引行（升序）→ 插入正文骨架 → 内存重跑 check → 落盘。
 
-正文骨架默认 `**现象** / **根因** / **期望** / **验收判据**` 四个加粗标签；`--body-file PATH|-` 替换的是**标题以下**的正文（不要自己写 `### Issue N:`，标题来自 `--title`）。正文文件里的 `#` / `##` 顶层标题会被拒绝（它会提前结束正文块而 `check` 仍通过），未闭合的 fence 也会被拒绝；`###` 与 Setext 标题由写入门禁以 E110 拒绝；开头的 BOM 与开头的空行会被剥掉（标题下恰好一个空行，`show --json` 的 `body.text` 去掉标题后原样回写不产生改动）；fence 外的 `<!-- issuemd:kept-body:end -->` 行被拒绝（它是归档的结束标记，`close --keep-body` 会在那里截断）。`reopen` 只把归档自己的结束标记与说明行当标记，正文里 fence 中的同样文字原样恢复。
+正文骨架默认 `**现象** / **根因** / **期望** / **验收判据**` 四个加粗标签；`--body-file PATH|-` 替换的是**标题以下**的正文（不要自己写 `### Issue N:`，标题来自 `--title`）。正文文件里的 `#` / `##` 顶层标题会被拒绝（它会提前结束正文块而 `check` 仍通过），未闭合的 fence 也会被拒绝；`###` 与 Setext 标题由写入门禁以 E110 拒绝；以 `### Issue N:` 开头（把 `show --json` 的 `body.text` 原样回写）时 exit 2 并提示删掉那一行；开头的 BOM 与开头的空行会被剥掉（标题下恰好一个空行，`show --json` 的 `body.text` 去掉标题后原样回写不产生改动）；fence 外的 `<!-- issuemd:kept-body:end -->` 行被拒绝（它是归档的结束标记，`close --keep-body` 会在那里截断）。`reopen` 只把归档自己的结束标记与说明行当标记，正文里 fence 中的同样文字原样恢复。
 
 `--priority` 只接受 `P0`–`P3` 或空串（默认 `P2`）。默认取号 `max+1` 超出安全整数范围时 exit 2，要求显式 `--id`。不可读的表行（E108/E109）与规范表以外的 issue 表行（E124）里的编号也参与取号与撞号检查。新摘要与某个**开放**项的摘要规范化后相同时 exit 2、不写，并点名已有编号——重试的调用方据此知道「已经记过」（dogfood #34）；确需另记一条加 `--allow-duplicate-title`。已关闭项同名不拦。
 
@@ -401,7 +401,7 @@ issuemd close FILE 57 --criteria-from-body   # 或 --criteria "…"
 | 参数 | 行为 |
 |---|---|
 | `--criteria TEXT` | 用给定文本；空串或全空白 → exit 2（多半是变量没设，要空判据请用 `--no-criteria`） |
-| `--criteria-from-body` | 提升正文 `**验收判据**` 块；块不存在或为空（fence 里的示例不算）→ exit 2，不写 |
+| `--criteria-from-body` | 提升正文 `**验收判据**` 块（`**验收判据：**` 写法等同；标签下 fence 里的内容属于判据；多段或列表以 `；` 连接，条目已以 `；`/`;` 结尾时不重复）；块不存在或为空（fence 里出现的标签行是示例，不算）→ exit 2，不写 |
 | `--no-criteria` | 明确以空判据关闭 |
 | 都不给 | 正文有非空判据 → 自动提升；没有 → `--keep-body` 时允许空判据（正文整体保留，信息不丢），否则 exit 2，要求三选一 |
 
@@ -453,7 +453,7 @@ issuemd counts FILE [--json]
 
 | 开关 | 行为 |
 |---|---|
-| `--titles` | 对齐正文标题与索引摘要；方向必须显式：`--prefer=body`（默认）把正文标题写回表格，`--prefer=table` 反过来；命中 W260 时必须配 `--move-progress` 或 `--drop-progress` |
+| `--titles` | 对齐正文标题与索引摘要；方向必须显式：`--prefer=body`（默认）把正文标题写回表格，`--prefer=table` 反过来；命中 W260，或表格摘要在正文标题之外还多出文字（`标题甲（进展：已修一半）`、`标题甲 [WIP]`）时，必须配 `--move-progress` 或 `--drop-progress`（否则 exit 3、不写）；两者完全不同的措辞照常对齐 |
 | `--fix-tables` | 补 `\|---\|`（修 E122），列数按表头补齐或报 E108 |
 | `--guide` | 重写 `## 怎么用` 与 `## 状态口径` 受控块 |
 | `--move-progress` / `--drop-progress` | W260 护栏：搬运进展进正文 / 明确丢弃 |
@@ -465,7 +465,7 @@ issuemd counts FILE [--json]
 
 **护栏**：`sync --titles` 一旦命中 W260，**默认拒绝执行**并 exit 3，要求显式二选一。这样「只改 N 行」的承诺不会被悄悄违反。`--prefer=table` 命中 W260 时同样拒绝（它会把进展词抄进正文标题），两个进展开关只与 `--prefer=body` 搭配；`--prefer` 只能配 `--titles`。无事可做的 `--titles --dry-run` 与其他 dry-run 一样输出 `(no changes)` 并在 stderr 给 `snapshot`。
 
-写命令找不到编号时 exit 1，提示写在 stderr（不混进 `--dry-run` 的 stdout diff）；读命令 `show` 仍在 stdout 打 `(no such issue: N)`。
+写命令找不到编号时 exit 1，提示写在 stderr（不混进 `--dry-run` 的 stdout diff）；读命令 `show` 仍在 stdout 打 `(no such issue: N)`；`show --json` 时 stdout 为空、提示在 stderr（stdout 只能是 JSON）。
 
 ---
 

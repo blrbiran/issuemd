@@ -498,7 +498,10 @@ function cmdShow(rest: string[], v: Values): CliResult {
     if (bad) {
       return err(`issuemd show: #${id} is in an unreadable table row (L${bad.line}: ${bad.reason}); fix it, then re-run\n`, 3);
     }
-    return badIdText("show", id) ?? noMatch(`(no such issue: ${id})\n`);
+    // With --json, stdout is JSON or nothing: a script parsing it must not
+    // get the text-mode placeholder.
+    return badIdText("show", id) ??
+      (v.json ? { code: 1, stdout: "", stderr: `issuemd show: no such issue: ${id}\n` } : noMatch(`(no such issue: ${id})\n`));
   }
   // The same id may also sit in a row show cannot read (an old 待处理 table,
   // E124): this view is then only one of two conflicting records.
@@ -955,6 +958,16 @@ function readBodyFile(spec: string, verb = "new"): { lines: string[] } | CliResu
     if (endsInFence(lines)) {
       return err(`issuemd ${verb}: --body-file ends inside an unclosed code fence\n`, 2);
     }
+    // The most common slip: piping `show --json` body.text (which includes
+    // the heading) straight back. The gate would only say E105/E106.
+    if (lines.length > 0 && /^ {0,3}#{1,6}[ \t]+Issue\s+\S+?\s*:/.test(lines[0]!)) {
+      return err(
+        `issuemd ${verb}: --body-file starts with an issue heading ('${lines[0]!.trim()}'); ` +
+          "the body is the text below the heading, which issuemd writes itself. Drop that first line " +
+          "(show --json body.text includes it)\n",
+        2,
+      );
+    }
     // A top-level heading inside a body ends the issue block early: `show`
     // stops at it and `close` leaves it behind as orphaned content, all while
     // `check` stays green.
@@ -1142,7 +1155,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
   } else if (v["criteria-from-body"]) {
     if (fromBody == null) {
       return err(
-        `issuemd close: #${idText} has no non-empty **验收判据** in its body (fenced examples do not count); ` +
+        `issuemd close: #${idText} has no non-empty **验收判据** in its body (a label line inside a code fence is an example and does not count); ` +
           "pass --criteria TEXT or --no-criteria\n",
         2,
       );
@@ -1825,11 +1838,19 @@ function syncTitles(
       : { code: 0, stdout: "", stderr: skippedNote };
   }
 
-  const progress = changes.filter((change) => PROGRESS.test(change.oldSummary));
+  // Progress text is whatever the table summary carries beyond the body
+  // title (`标题甲（进展：已修一半）`, `标题甲 [WIP]`), not only the few words
+  // PROGRESS knows: replacing that summary would drop it silently (probe 10).
+  const carriesExtra = ({ oldSummary, title }: Change) => {
+    const table = foldWhitespace(oldSummary);
+    const heading = foldWhitespace(title);
+    return heading !== "" && table.length > heading.length && table.includes(heading);
+  };
+  const progress = changes.filter((change) => PROGRESS.test(change.oldSummary) || carriesExtra(change));
   if (prefer === "body" && progress.length > 0 && !v["move-progress"] && !v["drop-progress"]) {
     const listed = progress.map(({ id, oldSummary }) => `  #${id}  ${oldSummary}`).join("\n");
     return err(
-      `issuemd sync --titles: ${progress.length} summary/summary pair(s) carry progress text; nothing written\n` +
+      `issuemd sync --titles: ${progress.length} table summary(ies) carry text the body title lacks (progress notes); nothing written\n` +
         `${listed}\n` +
         "re-run with --move-progress (keep it in the body) or --drop-progress (discard it)\n",
       3,

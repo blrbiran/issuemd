@@ -1503,3 +1503,81 @@ describe("review10: E124/W225 and adopt agree; top bodies that cannot move stay 
     }
   });
 });
+
+describe("probe10: sync --titles never drops table-summary text silently", () => {
+  const drifted = async (suffix: string) => {
+    const path = file();
+    expect((await run(["new", path, "--title", "标题甲", "--body-file", body("**验收判据**：x\n")])).code).toBe(0);
+    return file(text(path).replace("| 1 | 未决 | P2 | 标题甲 |", `| 1 | 未决 | P2 | 标题甲${suffix} |`));
+  };
+
+  for (const suffix of ["（进展：已修一半）", " [WIP]", " → 修复中"]) {
+    test(`'${suffix}' is refused without --move/--drop-progress`, async () => {
+      const path = await drifted(suffix);
+      const before = text(path);
+      const result = await run(["sync", path, "--titles"]);
+      expect(result.code).toBe(3);
+      expect(result.stderr).toContain("--move-progress");
+      expect(text(path)).toBe(before);
+    });
+  }
+
+  test("--move-progress keeps the text in the body; --drop-progress discards it", async () => {
+    const moved = await drifted("（进展：已修一半）");
+    expect((await run(["sync", moved, "--titles", "--move-progress"])).code).toBe(0);
+    expect(text(moved)).toContain("已修一半");
+    expect(text(moved)).toContain("| 1 | 未决 | P2 | 标题甲 |");
+    const dropped = await drifted("（进展：已修一半）");
+    expect((await run(["sync", dropped, "--titles", "--drop-progress"])).code).toBe(0);
+    expect(text(dropped)).not.toContain("已修一半");
+  });
+
+  test("a plain rename drift still syncs without extra flags", async () => {
+    const path = file();
+    expect((await run(["new", path, "--title", "标题甲", "--body-file", body("**验收判据**：x\n")])).code).toBe(0);
+    const renamed = file(text(path).replace("| 1 | 未决 | P2 | 标题甲 |", "| 1 | 未决 | P2 | 完全不同的说法 |"));
+    expect((await run(["sync", renamed, "--titles"])).code).toBe(0);
+    expect(text(renamed)).toContain("| 1 | 未决 | P2 | 标题甲 |");
+  });
+});
+
+test("probe10: list items ending in ；/; are joined without a doubled separator", async () => {
+  const path = file();
+  expect((await run(["new", path, "--title", "乙", "--body-file", body("**验收判据**：\n\n- 不再白屏；\n- 日志无报错;\n- 第三条\n")])).code).toBe(0);
+  const shown = JSON.parse((await run(["show", path, "1", "--json"])).stdout);
+  expect(shown.criteria).toBe("不再白屏；日志无报错;第三条");
+  expect((await run(["close", path, "1"])).code).toBe(0);
+  expect(text(path)).toContain("| 不再白屏；日志无报错;第三条 |");
+});
+
+test("probe10: a colon inside the bold label (**验收判据：**) is the same label", async () => {
+  for (const form of ["**验收判据：** 甲", "**验收判据:** 甲"]) {
+    const path = file();
+    expect((await run(["new", path, "--title", "乙", "--body-file", body(`**现象**：x\n\n${form}\n`)])).code).toBe(0);
+    const shown = JSON.parse((await run(["show", path, "1", "--json"])).stdout);
+    expect(shown.criteria).toBe("甲");
+    expect(Object.keys(shown.labels)).toEqual(["现象", "验收判据"]);
+    expect((await run(["close", path, "1"])).code).toBe(0);
+    expect(text(path)).toContain("| 乙 | 甲 |");
+  }
+});
+
+test("probe10: a body file that starts with its issue heading says to drop that line", async () => {
+  const path = file();
+  expect((await run(["new", path, "--title", "甲", "--body-file", body("**验收判据**：x\n")])).code).toBe(0);
+  const before = text(path);
+  const full = JSON.parse((await run(["show", path, "1", "--json"])).stdout).body.text as string;
+  const result = await run(["body", path, "1", "--body-file", body(full)]);
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("### Issue 1: 甲");
+  expect(result.stderr).toMatch(/heading/);
+  expect(text(path)).toBe(before);
+  expect((await run(["new", path, "--title", "乙", "--body-file", body("### Issue 2: 乙\n\nx\n")])).code).toBe(2);
+});
+
+test("probe10: show --json for a missing id keeps stdout empty (message on stderr)", async () => {
+  const result = await run(["show", file(), "99", "--json"]);
+  expect(result.code).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("no such issue: 99");
+});

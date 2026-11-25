@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
 import { parseLedger, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
-import { ARCHIVE_HEADING } from "./ledger-edit.js";
+import { ARCHIVE_HEADING, labelName } from "./ledger-edit.js";
 
 export const STATUS_CLASSES = {
   未决: "open",
@@ -138,10 +138,12 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
     const labels = new Set<string>();
     for (let current = line + 1; current <= end; current++) {
       if (!visible.has(current)) continue;
-      const label = /^ {0,3}\*\*([^*]+)\*\*(?:\s*[:：]|\s*$)/.exec(lines[current - 1]);
+      const label = /^ {0,3}\*\*([^*]+)\*\*(?:\s*[:：]|\s*$)/.exec(lines[current - 1]) ??
+        /^ {0,3}\*\*([^*]+[:：])\*\*/.exec(lines[current - 1]);
       if (!label) continue;
-      if (labels.has(label[1])) warnings.push({ code: "W206", line: current, id, message: `Duplicate body label: ${label[1]}` });
-      labels.add(label[1]);
+      const name = labelName(label[1]);
+      if (labels.has(name)) warnings.push({ code: "W206", line: current, id, message: `Duplicate body label: ${name}` });
+      labels.add(name);
     }
     if (end - line > 300 || Buffer.byteLength(lines.slice(line, end).join("\n")) > 20 * 1024) {
       warnings.push({ code: "W201", line, id, message: "Issue body exceeds 300 lines or 20 KiB" });
