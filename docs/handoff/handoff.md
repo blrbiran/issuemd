@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-25（第十一轮收尾：台账 #56/#57 的表形状缺口、W225 编号改为占用、读入竞态 exit 4、两次复审与一次黑盒探测的修复，见「第十一轮」）。写给下一位接手者。
+更新于 2026-11-25（第十二轮收尾：Q3 标题年份不算计数、Q4 `list --json citedRows`，以及一次黑盒探测、两次复审的修复，见「第十二轮」）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -17,8 +17,8 @@
 
 `issuemd` P0–P5 早已完成；`0.1.0` 已发布到 npm。dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`，现 58 条，**不在本仓库、不要改它，状态由测试者自己更新**）的 #1–#58 均已处理：修好，或经用户裁定不做（#55/#58 是复测记录，其建议见「第十轮」「第十一轮」）。
 
-- 第十轮已由用户 push（第十一轮开始时 `origin/main` = 第十轮 handoff 提交）。
-- 第十一轮的提交都已 ff 合入本地 `main`，**尚未 push、尚未发版**（用户 2026-11-25：暂不发版，时机由用户定）。第八–十一轮合起来有新错误码（W225）、新选项、新的输出约定、写锁文件、W225 编号占用，下次发版建议 `npm version minor`（0.2.0）。
+- 第十一轮已由用户 push（第十二轮开始时 `origin/main` = 第十一轮 handoff 提交）。
+- 第十二轮的提交都已 ff 合入本地 `main`，**尚未 push、尚未发版**（用户 2026-11-25：暂不发版，时机由用户定）。第八–十二轮合起来有新错误码（W225）、新选项、新的输出约定（`citedRows`）、写锁文件、W225 编号占用、E121 口径变化，下次发版建议 `npm version minor`（0.2.0）。
 - 测试全绿（数量以 `npm test` 末行为准）。`dist/` 已用 `main` 重新 build。
 - 当前没有进行中的开发任务；下一轮输入通常是测试者的新条目或复测。没有新条目时，可照第九轮的做法派黑盒 subagent 自测。
 
@@ -34,19 +34,49 @@
 
 ## 等待用户决策 / 动作
 
-1. **push**：第十一轮的提交在本地 `main` 上，需用户 `git push`。
+1. **push**：第十二轮的提交在本地 `main` 上，需用户 `git push`。
 2. **发版（用户决定时机，2026-11-25 明确「暂不发版」）**：`npm version minor` → `npm publish`（`prepack` 会自动 build `dist/`）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`、`.dist-test`。
 3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。#53 建议把已达标条目与「owner 裁定不做」的判据在台账里标注出来，这同样留给测试者。
 4. `.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。其他 clone 拉到那次提交时，git 会删掉它们工作区里的 `.cafe`，需从上一提交恢复（`git show <移出前的提交>:.cafe > .cafe`）。
 
 5. 第十轮报审 Q1–Q3 用户已同意（写锁保留；`sync --titles` 拒绝保留）。其中 Q2「W225 编号不占用」在第十一轮被用户改判为**占用**（见下）。
 
-6. **第十一轮报审（已按推荐执行，请复核）**：
+7. **第十二轮报审（已按推荐执行，请复核）**：
+   - Q1（已执行）年份只按数值范围区分：4 位 19xx/20xx 不算计数。代价：恰好落在 1900–2099 的真实计数（`## 已关闭（2013）`）漏报 E121；`（1894）` 这类年份仍报。推荐维持（真实台账没有这么大的标题计数）。
+   - Q2（已执行）E121 口径放宽到与 adopt 一致：括号内带空白 `（ 3 ）`、全角数字 `（２）`、ATX 结尾 `##` 都算计数——以前能过 check 的这类标题现在报 E121（三份真实台账不受影响）。只有 `（3）` 一个括号的标题算标题本身。推荐维持。
+   - Q3（未做，推荐暂不做）`new`/`rename` 会把标题里的空白（含 U+3000）折叠成一个半角空格，不是逐字节保存用户输入；摘要查重、E106 都按折叠后比较，改了反而不一致。
+   - Q4（未做，推荐暂不做）`check` 不报空摘要/空正文标题（`| 1 | 未决 |  |  |` + `### Issue 1: `）。本轮已让 adopt 不再制造空标题、`reopen` 拒绝空摘要；要不要加 warning 等实例再定。
+   - Q5（沿用第十一轮 Q2，推荐暂不做）更多「台账表小节」词。
+   - Q6 台账 #56–#58 仍由测试者复测（我们不写台账）。
+
+6. **第十一轮报审（已按推荐执行；第十二轮用户回复「按你的建议走」：Q1 维持、Q2 不做、Q3/Q4 已做）**：
    - Q1（已执行，用户事先同意推荐）W225 表的编号**占用**：默认取号到达时逐个跳过，`new --id N` exit 2 点名那一行，`show N` exit 1 + stderr 提示。复审后收窄为「逐个跳过」而不是「跳到最大被引用编号之后」（错误码表里的 500 不会把下一个 issue 推到 501）。代价：`| # | 步骤 |` 这类叙述表也报 W225（`--strict` 失败），消除法是把 `#` 列改名。
    - Q2（未做，推荐暂不做）更多「台账表小节」词：`关闭/开放/已解决/已完成/已修复/进行中/TODO/Backlog` 目前只报 W225 而不是 E124。改成 E124 意味着 adopt 会从这些小节迁移表行，而无状态列的行默认「未决」——`## 已完成` 下的行会被当成开放项。真实台账没出现过，等实例再定。
    - Q3（未做，推荐做）标题里的年份 `（2025）` 被当成计数：`check` 报 E121、`new --title "版本（2026）"` 被拒、adopt 会剥掉它。建议把 4 位 19xx/20xx 排除在计数之外；要同时改 E121（ledger-check）、`titleProblem`（cli）、`stripCounts`（adopt）三处，口径必须一致。
    - Q4（未做，可选）`list --json` 不暴露被 W225 占用的编号；agent 只能靠 `check --json` 的 W225 或 `new` 的报错得知。可加 `citedIds`。
    - Q5 台账 #56–#58 由测试者复测、更新状态（我们不写台账）。#58 第二、三节的「建议关闭/标注」也留给测试者。
+
+## 第十二轮（2026-11-25）
+
+输入：台账无新条目（仍到 #58）；用户对第十一轮报审回复「按你的建议走」。做了 Q3、Q4，之后派黑盒 subagent（probe12）与两次独立复审（复审(14) 看 Q3/Q4，复审(15) 看黑盒修复）。用例在 `src/dogfood.test.ts` 末尾的 `round 12 …` 组。
+
+| 来源 | 问题 | 处理 |
+|---|---|---|
+| Q3 | 标题里的年份 `（2025）` 被当成计数：E121、`new --title "版本（2026）"` 被拒、adopt 剥掉 | `ledger.ts` 的 `countSuffix` 是唯一规则（4 位 19xx/20xx 不算），E121（ledger-check）、`titleProblem`（cli）、`stripCounts`（adopt）共用 |
+| Q4 | `list --json` 不暴露 W225 占用的编号 | 顶层 `citedRows: [{line, reason, ids}]`（没有时省略；开放与 `--closed` 都带） |
+| 复审(14) 1 | `## 旧记录（3） ##`：check 去掉 ATX 结尾 `#` 后判 E121，adopt 对整行判、不剥 → adopt 自拒（旧问题） | `stripCounts` 先分出结尾 `#` |
+| 复审(14) 4 | 全角数字 `（２）` 不算计数，而摘要查重用 NFKC（旧问题） | `[0-9０-９]`，年份判定前 NFKC |
+| 黑盒 D1 | `甲（2）（3）` adopt 只剥一层 → 自拒 | `stripCountSuffixes` 反复剥到没有 |
+| 黑盒 D2 | 标题只有 `（3）` 时 adopt 剥成空标题（`new`/`rename` 禁止空标题） | 只有括号数字的标题不算计数；`Issue N:` 标题只看冒号后；`reopen` 遇空摘要 exit 2 提示 rename |
+| 黑盒 M1 | 表与标题都带 `（3）`：adopt 只剥标题，报假的 `open-title-conflict` | 开放行摘要同规则去计数（`changes` 里计数） |
+| 黑盒 D3 | 正文标题 `c \| d` 对单元格 `c \| d`（都渲染成 `c | d`）报 E106；adopt 报冲突后自拒 | E106 与 adopt 的冲突比较先 `unescapeCell(title)`；复审(15) 2：`sync --titles` 同口径 |
+| 黑盒 D4 | 外来小节里的 `####` 被降级成粗体，报告却写「原样移入附录」 | 只在正文块里降级：从 `Issue` 标题（H1–H3）到下一个同级或更高级标题。旧 cafe 形状（`## Issue N:` + `### 期望` + `####`）仍降级——先错修成「下一个 H1–H3 即结束」，用 cafe 历史版本对比发现后改正 |
+| 黑盒 M2 | 守恒拒绝时 `source L36:` 后引的是转换后的 `**小节**` | 引原文 |
+| 黑盒 Q3 | `--if-unchanged` 拒绝大写十六进制 | 先转小写 |
+| 复审(15) 1 | D4 的修法只认行首无缩进的 `### Issue`：缩进 1–3 空格的正文里的 H4 不再降级 → adopt 自拒（回归）；缩进或 `##\t` 的计数标题本来就不剥（旧问题） | 降级、剥计数都按 CommonMark 认 0–3 空格缩进与制表符；缩进的 `####` 也降级 |
+| 黑盒其余 | sync 拒绝写计数 exit 3（rename/new 是 2）；W225 表里超安全整数的编号不进 `citedRows`、不报 E109；附录里 kept-row 的行首 `|` 被转义；`⑵` 不算计数 | 未改，记入已知项 |
+
+验证：`npm run typecheck && npm test` 全绿（本轮末 469）；4 个 fixture、TEMPLATE、三份真实台账（只读副本：cafe 0/60→98、dogfood 0/3→59、orca 0/139→480）、4 个 cafe 历史版本（`../cafe_dogfooding` 的 git 旧版）在本轮前后 build 下 adopt 输出与退出码逐字节相同；黑盒确认本轮写命令与 adopt 的 dry-run diff 在 CRLF / 无尾换行变体下仍能被 `patch` 应用。
 
 ## 第十一轮（2026-11-25）
 
@@ -266,7 +296,7 @@ issuemd <command> --help
   - 插入正文块用 `insertBlock`（两侧恰好一个空行）；`close --keep-body` 的归档插入仍是 `insertLines` + 手动前导空行——`reopen` 的逐字节还原依赖它，别改成 insertBlock。
   - `cmdClose` 的判据规则：`--criteria` > `--no-criteria` > `--criteria-from-body`（空则拒）> 正文自动提升 > `--keep-body` 允许空 > 否则 exit 2。
   - `cmdNew`：先查重复摘要（只比开放行，`summaryKey` 归一），再取号；成功后 stdout 是编号（只在非 dry-run 时替换 `commit()` 的空 stdout）。`cmdRename` 同样查重复摘要（排除自己那一行；目标是已关闭项时不查）。
-  - `titleProblem()` = 计数后缀（E121）+ 结尾 `#`；`new`/`rename` 用于输入，`reopen` 用于已关闭行的旧摘要。
+  - `titleProblem()` = 空标题（第十二轮）+ 计数后缀（`countSuffix`，E121）+ 结尾 `#`；`new`/`rename` 用于输入，`reopen` 用于已关闭行的旧摘要。
   - `readOnlyRefusal()` 在 `commit()` 与 adopt 的写入前各调一次（`accessSync W_OK`）。
   - `missingIssue(verb, id)` / `badIdText()`：写命令的「没有这条」走 stderr；`show` 仍用 stdout 的 `(no such issue: N)`。
   - `readBodyFile` 剥 BOM 与开头空行，拒绝 fence 外的 `KEPT_BODY_END`。reopen 的归档恢复只剥「结束标记所在那一行」与「第一条非空行若是 ARCHIVE_NOTE」。
@@ -282,7 +312,8 @@ issuemd <command> --help
   - `isTableSection`（台账表小节名正则）、**`mappingFor`（issue 表的列映射）**、**`tableHeader`（首行是不是表头）**、`isStatusWord` 都定义在这里，adopt 从这里 import。改其中任何一个都要同时看 check 与 adopt 两边。
   - `tableHeader(rows, synthetic)`（第十一轮）：首行不含数字 → 表头；首行下不是分隔行 → 无表头；`synthetic`（adopt 的 `fixSeparators` 自己补的分隔行）→ 有以数字开头的格就是数据（旧规则）；真实分隔行 → 表头，除非首行是 issue 行：首格是编号且其余格有非数字文字（`issueLike`），并且第二格是状态词 / 分隔行下没有行 / 下面每行都 `issueLike`。统计表（`| 2026 | 开放 | 关闭 |` 下接纯数字行）因此仍是表头。
   - `strayRows` 口径（第十一轮）：只跳过台账真正读的那一节（`OWN_TABLES` 里标题精确相等的**第一个** H2）；`## 索引（旧）`、`## 已关闭（2025）`、第二个 `## 索引` 都照常判。台账表小节下 `tableHeader` + `mappingFor` 接受的表 → 每行 E124 + `unreadable`；其他小节下有真实分隔行、且（表头含 id 列与 `摘要`/`标题`，或表头只有两列含 id 列，或表头位置是 issue 行）→ 每表一次 W225，每行编号进 **`cited`**。`## 路线图` 的 `| ID | 状态 | 说明 |` 不报。
-  - `parseLedger().cited`：W225 表里的编号，**不进 `unreadable`**（否则读命令会说「结果不完整」、`show` exit 3）。只有 `cmdNew`（取号逐个跳过、`--id` 撞号 exit 2）和 `cmdShow`（miss 时 stderr 提示）用它。库导出的 `maxIssueId` 不看它。
+  - `parseLedger().cited`：W225 表里的编号，**不进 `unreadable`**（否则读命令会说「结果不完整」、`show` exit 3）。`cmdNew`（取号逐个跳过、`--id` 撞号 exit 2）、`cmdShow`（miss 时 stderr 提示）和 `list --json` 的 `citedRows`（第十二轮）用它。库导出的 `maxIssueId` 不看它。
+  - **`countSuffix` / `stripCountSuffixes`**（第十二轮）：「标题末尾的计数」唯一定义。4 位 19xx/20xx 年份不算；全角数字算；整个标题只是 `（3）` 不算。调用方负责先去掉 `#` 标记、ATX 结尾 `#`、`Issue N:` 前缀：E121（ledger-check 对 Issue 标题取冒号后）、`titleProblem`（cli）、`stripCounts`（adopt，反复剥）、adopt 对开放行摘要也剥。
 - **`src/ledger-check.ts`**：`PRIORITIES`、`summaryKey`（W212 的 NFKC/大小写/空白折叠）；`checkHashes` 区分 pinned（W202）与仅校验（判据列，给 W240 用）；`checkAppendix` 出 W250/W251/W252/W253。`--strict` 仍只豁免 W250。
 - **`src/ledger-read.ts`**：`ListedIssue` 带 `ids`/`count`；`expandIssues`（上限 10 万）；`viewIssue` 带 `labels`、`criteriaSource`。
 - **`src/statuses.ts`**：默认状态词表 `STATUS_CLASSES`（第十一轮从 ledger-check 移出，ledger.ts 要用且不能与 ledger-check 循环引用）；`ledger-check` 仍 re-export。
@@ -290,6 +321,8 @@ issuemd <command> --help
   - `pipeBlocks(lines, sections, synthetic)`：表头走 `tableHeader`，`synthetic` 是 `fixSeparators` 补分隔行的行号集合。无表头宽 3 的块带 `rowStatus`：`rowsOf` 逐行判断，第二格是精确状态词的行按 `# | 状态 | 摘要`，其余按 `# | 摘要 | 判据`。
   - W225 的 `cited-table` 决定不在 adopt() 里产生，而在 `cmdAdopt` 对输出跑 check 后补上（早退路径也有）；报告因此在 check 之后渲染。
   - 开头：输入 `check` 0 error 且无 W220 → 原样返回。E124 是 error，所以「规范骨架 + 旧表」的混合文件会走完整转换。
+  - `demoteHeadings`（第十二轮）：只在正文块里把 H4–H6 降级——从 `Issue` 标题（H1–H3，行首 0–3 空格）到下一个同级或更高级标题。旧 cafe 是 `## Issue N:` + `### 期望` + `####`，所以不能写成「下一个 H1–H3 结束」。
+  - 正文标题与摘要的比较一律先 `unescapeCell(title)`：E106、adopt 的 `open-title-conflict`、`sync --titles`（第十二轮）。
   - `layoutLines`：被消费的表块的表头/分隔行，**加上表格小节里只有表头+分隔行的空表**（#52：混合文件里规范表是空的，以前会被当成说明文字复制进附录）。
   - `Row` 有 `criteria`（真判据）与 `extras`（附加列、溢出格、`原状态：X`）两个字段，**不要再把 extras 拼进 criteria**：开放项 extras 进 `**原表格判据**`，已关闭行在输出表时才拼成「判据；附加列」。`Row.overflow` 记溢出格数，`rawStatus` 记去格式前的状态格。
   - 开放正文组装：每个开放行按 `parseIds` 逐号生成 `bodyEntries`（已有正文或骨架），最后全体 `compareIds` 排序再展开；索引表行仍用 `sortedOpen`。
@@ -324,6 +357,9 @@ issuemd <command> --help
 20. 「首行是不是表头」不能简单地按「有没有以数字开头的格」判断：adopt 自己补分隔行后，无表头表的首个数据行就在分隔行上面（要当数据）；而真实的统计表、年份表头（`| 2024 | 2025 |`）要当表头。所以 `tableHeader` 区分 `synthetic`，真实分隔行上只认明显的 issue 行（第十一轮复审(12)、黑盒 3 来回修过两次）。
 21. W225 的编号放在 `cited` 而不是 `unreadable`：`unreadable` 会让读命令说结果不完整、`show` exit 3，叙述表不该有这种后果。
 22. 默认取号对 `cited` 逐个跳过，不是取最大值：错误码表里的 500 不能把下一个 issue 推到 501。
+23. 标题计数判定只有 `countSuffix` 一处；新加任何「看标题末尾数字」的逻辑都调它，并且先剥掉 `#`、ATX 结尾 `#`、`Issue N:` 前缀——否则 check 与 adopt 又会互相指认（第十二轮复审(14) 1、黑盒 D2）。
+24. 改 adopt 的机械改写（降级、剥计数、补分隔行）后，除了 fixture，还要拿 `../cafe_dogfooding` 的 git 历史版本对比新旧 build 的 adopt 输出：第十二轮 D4 的第一版修法只有在 cafe 历史版本上才暴露。
+25. 标题正则要认 CommonMark 的 0–3 空格缩进与制表符（`scan` 就是这么读的），否则 check 看得见的标题 adopt 看不见（复审(15) 1）。
 
 ## 已完成的审查与验证
 
@@ -355,6 +391,12 @@ issuemd <command> --help
 - W253 只扫 `## 附录` 内；旧版 adopt 留在附录之后外来 H2 里的转义正文副本不报（第九轮起 adopt 不再产生）。
 - 英文表头（`| ID | Status | Title |`）adopt 不认，整表进附录（`foreign-section`，有报告）。
 - 结构已坏的台账（E103/E112）上 `check` 头部的分状态计数可能对不上总数；开放表里有未声明状态（W220）或关闭类状态（E112）时，`counts` 的括号里只列默认开放状态词，同样加不出总数。
+- 年份与计数只按数值区分（第十二轮 Q1）：`## 已关闭（2013）` 不报 E121；`（1894）` 报。`⑵` 这类带圈/括号数字字符不算计数。
+- `check` 不报空摘要 / 空正文标题（第十二轮 Q4）；adopt 不会再制造它们，`reopen` 拒绝。
+- `new`/`rename` 把标题空白（含 U+3000）折叠成一个半角空格（第十二轮 Q3）。
+- `sync --titles` 因「会引入 E121」拒绝时 exit 3（写入门禁），`new`/`rename` 对同一规则是 exit 2。
+- W225 表里超出安全整数的编号（`99999999999999999999`）既不进 `citedRows`，也不报 E109；kept-row 进附录时行首 `|` 被转义（`\| 备注 | x |`，防止它在附录里又成表）。
+- 正文里的 setext 标题（`文字` + `===`）让 adopt 以 E110 自拒（旧行为）；同一编号两份正文块被守恒守卫拒绝（旧行为）。
 - 游离行（E124）首格解析不出编号时整行不报（无法判断它是 issue）；`new` 的重复摘要检查只看规范开放表，不看游离行——有 E124 的台账本来就该先 `adopt`。
 
 ## 还没做 / 仅供参考
