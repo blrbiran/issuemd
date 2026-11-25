@@ -85,7 +85,7 @@ const COMMANDS = {
   read: { usage: "issuemd read    FILE <H2 heading>", options: [] },
   new: { usage: "issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-] [--allow-duplicate-title]", options: ["title", "id", "status", "priority", "body-file", "allow-duplicate-title", "dry-run", "if-unchanged"] },
   close: { usage: "issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]", options: ["status", "criteria", "criteria-from-body", "no-criteria", "keep-body", "dry-run", "if-unchanged"] },
-  reopen: { usage: "issuemd reopen  FILE ID [--status S]", options: ["status", "dry-run", "if-unchanged"] },
+  reopen: { usage: "issuemd reopen  FILE ID [--status S] [--allow-duplicate-title]", options: ["status", "allow-duplicate-title", "dry-run", "if-unchanged"] },
   status: { usage: "issuemd status  FILE ID NEW_STATUS", options: ["dry-run", "if-unchanged"] },
   rename: { usage: "issuemd rename  FILE ID \"NEW TITLE\" [--allow-duplicate-title]", options: ["allow-duplicate-title", "dry-run", "if-unchanged"] },
   body: { usage: "issuemd body    FILE ID --body-file PATH|-", options: ["body-file", "dry-run", "if-unchanged"] },
@@ -1196,6 +1196,18 @@ function cmdReopen(rest: string[], v: Values): CliResult {
         `rename it first: issuemd rename ${file} ${idText} "…"\n`,
       2,
     );
+  }
+  // Reopening is the third way two open rows end up with one summary (a
+  // duplicate closed as 并入, then reopened); refuse it like new/rename.
+  if (!v["allow-duplicate-title"]) {
+    const twin = ledger.rows.open.find((row) => summaryKey(row.summary) === summaryKey(found.row.summary));
+    if (twin) {
+      return err(
+        `issuemd reopen: open issue #${twin.ids.map(spanText).join(", ")} already has this summary ('${twin.summary}'); ` +
+          `nothing written. Rename one of them (issuemd rename ${file} ${idText} "…") or add --allow-duplicate-title\n`,
+        2,
+      );
+    }
   }
 
   // "" is a legal priority (most open rows in real ledgers have none).

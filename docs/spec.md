@@ -436,6 +436,7 @@ error: #56 当前 观察（open），目标 已修（closed）跨分类，请用
 - `priority FILE ID P`：只改 `P` 单元格，开放/已关闭都行；`P` 只能是 `P0`–`P3` 或空。
 - `split FILE ID`：把 ID 所在的多号行或区间行拆成每号一行（字段原样复制、升序原位）；开放表里拆出的号没有正文时补骨架；单号行 exit 2；超过 1000 个号 exit 2。
 - `reopen --status S`：S 必须是开放分类，默认 `未决`。
+- `reopen` 的摘要与某个开放项规范化后相同（例如以 `并入` 关闭的重复项被重开）时 exit 2、不写，点名已有编号并给出 `issuemd rename`；确需重开加 `--allow-duplicate-title`，之后由 W212 持续报出。
 - 所有 per-id 命令（close/reopen/status/rename/body/priority）对多号行、区间行用同一句话拒绝，并给出 `issuemd split FILE <id>`；`close`/`reopen` 先判行形状、再判开关状态。
 
 ### 7.6 `counts`
@@ -502,7 +503,7 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 台账写（全部 --dry-run，原子写且保持 BOM/行尾/模式位）
   issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-] [--allow-duplicate-title]
   issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]
-  issuemd reopen  FILE ID [--status S]
+  issuemd reopen  FILE ID [--status S] [--allow-duplicate-title]
   issuemd status  FILE ID NEW_STATUS
   issuemd rename  FILE ID "NEW TITLE" [--allow-duplicate-title]
   issuemd body    FILE ID --body-file PATH|-

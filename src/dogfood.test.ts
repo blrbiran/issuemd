@@ -1434,3 +1434,18 @@ describe("review9: adopt gaps that made it refuse its own output", () => {
     expect(out.slice(out.indexOf("## 附录"))).toContain("乙的正文");
   });
 });
+
+test("reopen refuses a summary another open issue already has, like new/rename", async () => {
+  const path = file();
+  expect((await run(["new", path, "--title", "缓存失效", "--body-file", body("**验收判据**：x\n")])).code).toBe(0);
+  expect((await run(["close", path, "1", "--status", "并入", "--no-criteria"])).code).toBe(0);
+  expect((await run(["new", path, "--title", "缓存失效"])).code).toBe(0);
+  const before = text(path);
+  const refused = await run(["reopen", path, "1"]);
+  expect(refused.code).toBe(2);
+  expect(refused.stderr).toContain("#2");
+  expect(refused.stderr).toContain("--allow-duplicate-title");
+  expect(text(path)).toBe(before);
+  expect((await run(["reopen", path, "1", "--allow-duplicate-title"])).code).toBe(0);
+  expect(JSON.parse((await run(["check", path, "--json"])).stdout).warnings.map((w: { code: string }) => w.code)).toContain("W212");
+});
