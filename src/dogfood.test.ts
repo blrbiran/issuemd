@@ -1373,3 +1373,64 @@ test("review: negated or doubtful status cells are not read as closed", async ()
   }
   expect(out).toMatch(/\| 5 \| 已修 \| P2 \| done \| 原状态：✅ 已修 \|/);
 });
+
+describe("review9: adopt gaps that made it refuse its own output", () => {
+  const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
+  const adoptClean = async (path: string) => {
+    const result = await run(["adopt", path]);
+    expect(result.stderr).not.toContain("nothing written");
+    expect(result.code).toBe(0);
+    const checked = await run(["check", path]);
+    expect(checked.stdout).toContain("0 errors");
+    return text(path);
+  };
+
+  test("a body before the first H2 with no H1 moves into 正文, once", async () => {
+    const path = file("### Issue 1: 甲\n\n正文一\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n");
+    const out = await adoptClean(path);
+    expect(out).toMatch(/## 正文\n\n### Issue 1: 甲\n\n正文一\n/);
+    expect(count(out, "正文一")).toBe(1);
+  });
+
+  test("an orphan body before the first H2 is kept once in 附录", async () => {
+    const path = file("### Issue 9: 孤\n\n孤儿正文\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n");
+    const out = await adoptClean(path);
+    expect(count(out, "孤儿正文")).toBe(1);
+    expect(out.slice(out.indexOf("## 附录"))).toContain("孤儿正文");
+  });
+
+  test("an `### Issue N:` already in 附录 is kept there, not re-parsed as a body", async () => {
+    const path = file("# T\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n\n## 附录\n\n### Issue 1: 甲\n\n旧正文\n");
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.code).toBe(0);
+    const out = await adoptClean(path);
+    expect(count(out, "旧正文")).toBe(1);
+    expect(out.slice(out.indexOf("## 附录"))).toContain("旧正文");
+    // 正文 gets a skeleton; the old text is pointed at, not silently promoted.
+    expect(out).toMatch(/## 正文\n\n### Issue 1: 甲\n\n\*\*现象\*\*/);
+    expect(result.stdout + result.stderr).toContain("#1");
+  });
+
+  test("a 正文 body wins over a same-id copy in 附录", async () => {
+    const path = file("# T\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n\n## 正文\n\n### Issue 1: 甲\n\n新正文\n\n## 附录\n\n### Issue 1: 甲\n\n旧正文\n");
+    const out = await adoptClean(path);
+    expect(out).toMatch(/### Issue 1: 甲\n\n新正文\n/);
+    expect(count(out, "旧正文")).toBe(1);
+  });
+
+  test("a range body heading `### Issue 3–5:` is kept in 附录 instead of refusing", async () => {
+    const path = file("# T\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 3–5 | 未决 | 甲组 |\n\n## 正文\n\n### Issue 3–5: 甲组\n\n区间正文\n");
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.stderr).not.toContain("would not survive");
+    const out = await adoptClean(path);
+    expect(count(out, "区间正文")).toBe(1);
+    expect(out.slice(out.indexOf("## 附录"))).toContain("区间正文");
+  });
+
+  test("a closed multi-id row's body under the H1 is kept once (附录), not also in the header", async () => {
+    const path = file("# T\n\n### Issue 3: 乙\n\n乙的正文\n\n## 已关闭\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 3, 4 | 已修 | 乙 |\n");
+    const out = await adoptClean(path);
+    expect(count(out, "乙的正文")).toBe(1);
+    expect(out.slice(out.indexOf("## 附录"))).toContain("乙的正文");
+  });
+});

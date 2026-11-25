@@ -737,7 +737,24 @@ export function adopt(src: string): AdoptResult {
       message: `首格「${bad.idText}」不是合法的编号或区间；整行按原文移入附录，其中的编号不会被保留，需人工改正后重新 adopt 或手工补行`,
     });
   }
-  const bodies = bodyHeadings(sections);
+  // An `### Issue N:` already inside 附录 is history (an old archive, a
+  // pasted copy), not the issue's body: attaching it would pull it into 正文
+  // and, with a 正文 body of the same id, keep whichever came last. It stays
+  // in 附录 under a heading that is no longer an issue heading.
+  const inAppendix = (line: number) =>
+    appendix != null && line > appendix.line_start && line <= appendix.line_end;
+  const allBodies = bodyHeadings(sections);
+  const bodies = allBodies.filter((body) => !inAppendix(body.line));
+  const appendixBodies = allBodies.filter((body) => inAppendix(body.line));
+  // Bodies above the first H2 (under the H1, or with no H1 at all) are never
+  // header prose: they move to 正文/附录 like any other body, and the header
+  // and preamble copies skip them (review of round nine, gaps 1 and 4).
+  const firstH2 = sections.find((section) => section.level === 2)?.line_start ?? lines.length + 1;
+  const topBodyLines = new Set<number>();
+  for (const body of bodies) {
+    if (body.line >= firstH2) continue;
+    for (let line = body.line; line <= Math.min(body.end, firstH2 - 1); line++) topBodyLines.add(line);
+  }
   // Keyed by the full id text (`2` vs `2a`), not the numeric part.
   const bodyById = new Map(bodies.map((body) => [body.idText, body]));
   const isMultiId = (row: Row) => row.ids.length > 1 || /[–~-]/.test(row.idText);
@@ -1003,7 +1020,7 @@ export function adopt(src: string): AdoptResult {
   // any section, so the loop above never sees them.
   const firstTop = sections.find((section) => section.level <= 2);
   const preambleEnd = firstTop ? firstTop.line_start - 1 : lines.length;
-  const preamble = trimBlankEdges(lines.slice(0, preambleEnd))
+  const preamble = trimBlankEdges(lines.slice(0, preambleEnd).filter((_, at) => !topBodyLines.has(at + 1)))
     .filter((line) => !/^>\s*(?:唯一台账|读法：)/.test(line));
   if (preamble.length > 0) {
     foreignOut.push(...preamble, "");
@@ -1025,11 +1042,15 @@ export function adopt(src: string): AdoptResult {
     for (const section of h3) {
       for (let line = section.line_start; line <= section.line_end; line++) claimed.add(line);
     }
+    const bodyLines = new Set(bodies.map((body) => body.line));
     for (const section of h3) {
-      if (/^Issue\s/.test(section.title)) continue;
+      if (bodyLines.has(section.line_start)) continue;
       const heading = lines[section.line_start - 1]!;
+      // `### Issue 3–5:` names no single id, so no body can carry it.
       keep(heading, trimBlankEdges(lines.slice(section.line_start, section.line_end)), section.line_start,
-        `正文里的非 Issue 小节「${section.title}」；原样移入附录`);
+        /^Issue\s/.test(section.title)
+          ? `正文标题「${section.title}」不是单个编号，无法挂到某条 issue；原样移入附录，需要时用 issuemd body 逐号写入`
+          : `正文里的非 Issue 小节「${section.title}」；原样移入附录`);
       for (let line = section.line_start + 1; line <= section.line_end; line++) preservedLines.add(line);
     }
     const prose: string[] = [];
@@ -1043,8 +1064,21 @@ export function adopt(src: string): AdoptResult {
   }
   const appendixOut: string[] = [];
   if (appendix) {
-    const existing = trimBlankEdges(lines.slice(appendix.line_start, appendix.line_end));
+    const retitled = new Map(appendixBodies.map((body) =>
+      [body.line, `### #${body.idText} ${body.title}（附录里原有的正文）`]));
+    const existing = trimBlankEdges(lines.slice(appendix.line_start, appendix.line_end)
+      .map((text, at) => retitled.get(appendix.line_start + 1 + at) ?? text));
     if (existing.length > 0) appendixOut.push(...existing, "");
+    for (const body of appendixBodies) {
+      const open = bodyEntries.some((entry) => `${entry.span.start}${entry.span.suffix}` === body.idText);
+      decisions.push({
+        kind: "orphan-body",
+        id: body.idText,
+        line: body.line,
+        message: `附录里原有的正文块 #${body.idText} 留在附录，标题改为非 Issue 形式` +
+          (open ? `；#${body.idText} 是开放项，正文里用的是另一份正文或新补的骨架，需要时用 issuemd body 换成这段` : ""),
+      });
+    }
   }
   for (const row of archived) {
     const body = bodyById.get(fullId(row))!;
@@ -1086,7 +1120,7 @@ export function adopt(src: string): AdoptResult {
   const afterH1 = h1 ? sections.find((section) => section.line_start > h1.line_start && section.level <= 2) : undefined;
   const headerOwn = h1
     ? trimBlankEdges(lines.slice(h1.line_start, (afterH1?.line_start ?? lines.length + 1) - 1)
-      .filter((_, at) => !movedBodyLines.has(h1.line_start + 1 + at)))
+      .filter((_, at) => !movedBodyLines.has(h1.line_start + 1 + at) && !topBodyLines.has(h1.line_start + 1 + at)))
     : [];
   const header = headerOwn.length > 0
     ? neutralizePreserved(headerOwn)
