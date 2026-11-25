@@ -335,6 +335,30 @@ export function joinClauses(parts: string[]): string {
   return parts.reduce((out, part, at) => (at === 0 ? part : /[；;]\s*$/.test(out) ? out + part : `${out}；${part}`), "");
 }
 
+/**
+ * Whether a label block has anything a reader can see. A bare HTML comment
+ * renders as nothing, so a block holding only comments is empty; text beside
+ * a comment counts, and fenced content is visible even when it looks like a
+ * comment. (The first cut flattened the block and matched greedily, which
+ * swallowed `<!-- x --> 正文 <!-- y -->` — round 14 review.)
+ */
+function blockHasVisibleContent(own: string[]): boolean {
+  const fenced = fencedLines(own, Infinity);
+  const first = LABEL_LINE.exec(own[0] ?? "")?.[2] ?? "";
+  const plain: string[] = [first];
+  let fencedContent = false;
+  for (let index = 1; index < own.length; index++) {
+    const raw = own[index]!;
+    if (fenced[index]) {
+      if (!/^[ \t]*(`{3,}|~{3,})/.test(raw) && raw.trim() !== "") fencedContent = true;
+      continue;
+    }
+    plain.push(raw);
+  }
+  if (fencedContent) return true;
+  return plain.join("\n").replace(/<!--[\s\S]*?-->/g, "").trim() !== "";
+}
+
 export function extractCriteria(bodyLines: string[]): string | undefined {
   // A body may repeat the label (W206); every distinct non-empty block counts,
   // or close would drop the second one without a word.
@@ -343,10 +367,7 @@ export function extractCriteria(bodyLines: string[]): string | undefined {
   for (;;) {
     const found = labelBlock(bodyLines, from, bodyLines.length, "验收判据");
     if (!found) break;
-    // A block holding only an HTML comment renders as nothing: it is not a
-    // criteria anyone can check (round 14). Comments beside real text stay.
-    const text = /^<!--.*-->$/.test(found.text.trim()) ? "" : found.text;
-    if (text !== "" && !texts.includes(text)) texts.push(text);
+    if (blockHasVisibleContent(found.lines) && found.text !== "" && !texts.includes(found.text)) texts.push(found.text);
     from = found.line + found.lines.length;
   }
   return texts.length > 0 ? joinClauses(texts) : undefined;

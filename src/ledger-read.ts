@@ -7,7 +7,7 @@
  */
 
 import type { IdSpan } from "./issue-id.js";
-import { bodyBlocks, parseLedger, type LedgerRow, type TableKind } from "./ledger.js";
+import { bodyBlocks, parseLedger, type BodyBlock, type LedgerRow, type TableKind } from "./ledger.js";
 import { fencedLines, labelBlock, labelName, type LabelBlock, extractCriteria } from "./ledger-edit.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
 
@@ -38,6 +38,18 @@ export function spanText(span: IdSpan): string {
 /** True when `id` is one of the numbers a row cell's span covers. */
 function covers(span: IdSpan, id: IdSpan): boolean {
   return span.suffix === id.suffix && span.start <= id.start && id.start <= span.end;
+}
+
+/**
+ * A body under `candidate` may belong to a multi-id row only when no *other*
+ * row spells that id itself: an overlapping id means the body belongs to that
+ * row, and presenting it as "same row" would be wrong (E103 is a broken
+ * ledger; round 14 review).
+ */
+function mayBorrow(ledger: ReturnType<typeof parseLedger>, rowLine: number, candidate: BodyBlock): boolean {
+  const wanted = `${candidate.id.start}${candidate.id.suffix}`;
+  return ![...ledger.rows.open, ...ledger.rows.closed].some((row) =>
+    row.line !== rowLine && row.ids.some((span) => spanText(span) === wanted));
 }
 
 export function filterRows(
@@ -124,7 +136,8 @@ export function withBody(
   const exact = blocks.find((candidate) => key(candidate.id) === row.id);
   // A range row (`5–7`) may keep its body under an interior id; a comma row
   // under any of its ids. Either is the row's body (`bodyFrom` says which).
-  const block = exact ?? blocks.find((candidate) => row.row.ids.some((span) => covers(span, candidate.id)));
+  const block = exact ?? blocks.find((candidate) =>
+    row.row.ids.some((span) => covers(span, candidate.id)) && mayBorrow(ledger, row.row.line, candidate));
   if (!block) return issue;
   const bodyLines = ledger.lines.slice(block.line - 1, block.end);
   const labels: Record<string, string> = {};
@@ -262,8 +275,8 @@ export function viewIssue(
   // `withBody` reads it; a comma row under any of its ids. Without `covers`,
   // `show 5`/`show 7` said "(无正文块)" while `show 6` and `list --with-body`
   // found it (round 14 black-box finding).
-  const block = exact ??
-    blocks.find((candidate) => found.row.ids.some((span) => covers(span, candidate.id)));
+  const block = exact ?? blocks.find((candidate) =>
+    found.row.ids.some((span) => covers(span, candidate.id)) && mayBorrow(ledger, found.row.line, candidate));
   const owner = block ? key(block.id) : undefined;
   const view: IssueView = {
     id: found.id,

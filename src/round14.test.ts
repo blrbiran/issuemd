@@ -290,3 +290,73 @@ describe("W261: a criteria block holding only an HTML comment is not criteria", 
     expect((await run(["close", path, "1", "--criteria-from-body"])).code).toBe(0);
   });
 });
+describe("review 14: follow-ups found by the independent review", () => {
+  test("a BOM followed by a blank first line: the diff still applies when H1 becomes first", async () => {
+    const legacy = readFileSync(new URL("../fixtures/orca-shaped.md", import.meta.url), "utf8");
+    const path = file("﻿\n" + legacy);
+    const dry = await run(["adopt", path, "--dry-run"]);
+    expect(dry.code).toBe(0);
+    const out = `${path}.patched`;
+    const patched = spawnSync("patch", ["-s", "-o", out, path], { input: dry.stdout });
+    expect(patched.stderr.toString() + patched.stdout.toString()).toBe("");
+    expect(patched.status).toBe(0);
+    const copy = file("﻿\n" + legacy);
+    expect((await run(["adopt", copy])).code).toBe(0);
+    expect(readFileSync(out)).toEqual(readFileSync(copy));
+  });
+
+  test("visible text around comments is criteria; a fenced comment is content", async () => {
+    const inline = await withIssue("**验收判据**：<!-- x --> 正文 <!-- y -->\n");
+    expect((await run(["check", inline, "--json"])).stdout).not.toContain("W261");
+    const fenced = await withIssue("**验收判据**\n\n```html\n<!-- x -->\n```\n");
+    expect((await run(["check", fenced, "--json"])).stdout).not.toContain("W261");
+    expect((await run(["close", fenced, "1", "--criteria-from-body"])).code).toBe(0);
+  });
+
+  test("renaming to the summary already shown keeps the escaped heading bytes", async () => {
+    const path = file(TEMPLATE
+      .replace("| # | 状态 | P | 摘要 |\n|---|---|---|---|\n",
+        "| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 1 | 未决 | P2 | a \\| b |\n| 2 | 未决 | P2 | a | b |\n")
+      .replace("## 正文", "## 正文\n\n### Issue 1: a \\| b\n\n**验收判据**：x\n\n### Issue 2: a | b\n\n**验收判据**：y\n"));
+    const before = text(path);
+    const result = await run(["rename", path, "1", "a | b"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("(no changes)\n");
+    expect(text(path)).toBe(before);
+  });
+
+  test("a range does not borrow a body whose id has a row of its own", async () => {
+    const path = file(TEMPLATE
+      .replace("| # | 状态 | P | 摘要 |\n|---|---|---|---|\n",
+        "| # | 状态 | P | 摘要 |\n|---|---|---|---|\n| 6 | 未决 | P2 | separate |\n| 5–7 | 未决 | P2 | range |\n")
+      .replace("## 正文", "## 正文\n\n### Issue 6: separate\n\n**验收判据**：separate\n"));
+    expect((await run(["check", path])).code).toBe(3); // E103 + E102: a broken ledger
+    const shown = JSON.parse((await run(["show", path, "5", "--json"])).stdout);
+    expect(shown.body).toBeUndefined();
+    expect(shown.criteria).toBeUndefined();
+    const listed = JSON.parse((await run(["list", path, "--json", "--with-body"])).stdout);
+    const range = (listed.issues as { id: string; bodyFrom?: string }[]).find((issue) => issue.id === "5–7");
+    expect(range?.bodyFrom).toBeUndefined();
+  });
+
+  test("a multi-line --criteria is folded instead of misdiagnosed", async () => {
+    const path = await withIssue("**验收判据**：x\n");
+    const result = await run(["close", path, "1", "--criteria", "甲\n乙"]);
+    expect(result.code).toBe(0);
+    const view = JSON.parse((await run(["show", path, "1", "--json"])).stdout);
+    expect(view.criteria).toBe("甲 乙");
+  });
+
+  test("reopen without --status leaves an already-open status alone", async () => {
+    const path = await withIssue("**验收判据**：x\n");
+    expect((await run(["status", path, "1", "观察"])).code).toBe(0);
+    const result = await run(["reopen", path, "1"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe("(no changes)\n");
+    expect(text(path)).toContain("| 1 | 观察 |");
+    // An explicit --status still applies a different open status.
+    const changed = await run(["reopen", path, "1", "--status", "部分解决"]);
+    expect(changed.code).toBe(0);
+    expect(text(path)).toContain("| 1 | 部分解决 |");
+  });
+});

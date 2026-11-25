@@ -1297,8 +1297,10 @@ function cmdClose(rest: string[], v: Values): CliResult {
   let criteria: string;
   if (v.criteria != null) {
     // Input convention, as for titles: `\|` is how a caller spells a literal
-    // pipe (unescapeCell); the cell then stores the escaped form.
-    criteria = unescapeCell(v.criteria);
+    // pipe (unescapeCell); the cell then stores the escaped form. A cell
+    // cannot hold a newline, so fold it here exactly as escapeCell would —
+    // otherwise the lossy check below would blame the wrong character.
+    criteria = unescapeCell(v.criteria).replace(/[\r\n]+/g, " ");
   } else if (v["no-criteria"]) {
     criteria = "";
   } else if (v["criteria-from-body"]) {
@@ -1447,17 +1449,19 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   const refused = perIdRefusal("reopen", idText, found);
   if (refused) return refused;
   if (found.table === "open") {
-    // Already open: asking for the status it already has changes nothing
-    // (the `(no changes)` contract); asking for another open status is a
+    // Already open. Without --status there is nothing to do: the default
+    // target is 未决, but silently turning 观察 into 未决 is a change nobody
+    // asked for (round 14 review). An explicit, different open status is a
     // plain status update. Neither can create a second open row, so the
     // duplicate-summary guard below does not apply to this branch.
-    if (found.row.status === reopenStatus) {
+    const wanted = v.status;
+    if (wanted == null || wanted === found.row.status) {
       return v["dry-run"]
         ? { code: 0, stdout: "(no changes)\n", stderr: snapshotNote(loaded) }
         : ok("(no changes)\n");
     }
     const lines = [...loaded.lines];
-    lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 1, reopenStatus);
+    lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 1, wanted);
     return commit(file, loaded, errors, lines, !!v["dry-run"]);
   }
   // Closed rows may carry summaries that cannot be a body heading (older
@@ -1619,10 +1623,17 @@ function cmdRename(rest: string[], v: Values): CliResult {
   if (!found) return missingIssue("rename", idText);
   const refused = perIdRefusal("rename", idText, found);
   if (refused) return refused;
+  // Renaming to the summary the row already shows changes nothing: return
+  // before the duplicate guard or the body-heading rewrite can turn the no-op
+  // into an error or a byte change (round 14 review).
+  if (next === found.row.summary) {
+    return v["dry-run"]
+      ? { code: 0, stdout: "(no changes)\n", stderr: snapshotNote(loaded) }
+      : ok("(no changes)\n");
+  }
   // Renaming is the other way two open rows end up with one summary; refuse
-  // it like `new` does (dogfood #34). Renaming a duplicate to the summary it
-  // already shows changes nothing, so the no-op must not become an error.
-  if (found.table === "open" && next !== found.row.summary && !v["allow-duplicate-title"]) {
+  // it like `new` does (dogfood #34).
+  if (found.table === "open" && !v["allow-duplicate-title"]) {
     const twin = ledger.rows.open.find(
       (row) => row.line !== found.row.line && summaryKey(row.summary) === summaryKey(next),
     );

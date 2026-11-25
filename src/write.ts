@@ -171,9 +171,11 @@ export function unifiedDiff(
       // a BOM file (round 14 black-box finding).
       const oldText = bom !== "" && oldAt[k] === 0 ? bom + op.text : op.text;
       const newText = bom !== "" && newAt[k] === 0 ? bom + op.text : op.text;
-      // A context line that is last on only one side differs in its newline,
-      // so it is spelled as a removal plus an addition.
-      if (op.kind === " " && oldLast !== newLast) {
+      // A context line that is last on only one side differs in its newline;
+      // one that is first on only one side differs in its BOM. Either way it
+      // is spelled as a removal plus an addition so `patch` can reproduce
+      // both byte strings (round 14 review: a BOM-only first line moving).
+      if (op.kind === " " && (oldLast !== newLast || oldText !== newText)) {
         items.push({ kind: "-", text: oldText, bare: oldLast }, { kind: "+", text: newText, bare: newLast });
       } else {
         items.push({ kind: op.kind, text: op.kind === "-" ? oldText : newText, bare: oldLast || newLast });
