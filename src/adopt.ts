@@ -447,8 +447,10 @@ function stripCounts(lines: string[]): { lines: string[]; count: number } {
   const fenced = fencedLines(lines);
   const out = lines.map((line, index) => {
     if (fenced[index] || !/^#{1,6} /.test(line)) return line;
-    const suffix = countSuffix(line);
-    const next = suffix ? line.slice(0, suffix.index) : line;
+    // check reads the title without ATX closing hashes (`## 旧（3） ##`).
+    const [, title, closing] = /^(.*?)((?:[ \t]+#+)?[ \t]*)$/.exec(line)!;
+    const suffix = countSuffix(title!);
+    const next = suffix ? title!.slice(0, suffix.index) + closing : line;
     if (next !== line) count++;
     return next;
   });

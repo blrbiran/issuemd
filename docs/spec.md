@@ -297,7 +297,7 @@ Ledger
 | E111 | 已关闭项的编号仍出现在正文区 | cafe 13 条孤儿 |
 | E112 | 缺骨架节或表头不符 | 新增 |
 | E120 | 不是合法台账（无 `## 索引` / `## 已关闭` / `## 正文`） | 新增 |
-| E121 | 标题以 `（N）` / `(N)` 计数结尾（括号内可有空白）；四位年份 19xx/20xx 不算。check、`new`/`rename`/`reopen` 的标题检查与 adopt 的剥计数共用同一条规则 | 2.2 |
+| E121 | 标题以 `（N）` / `(N)` 计数结尾（括号内可有空白，全角数字也算；ATX 结尾的 `##` 不影响判定）；四位年份 19xx/20xx 不算——只按数值范围区分，所以恰好落在 1900–2099 的真实计数（`## 已关闭（2013）`）会漏报，1894 之类的年份仍报。check、`new`/`rename`/`reopen` 的标题检查与 adopt 的剥计数共用同一条规则 | 2.2 |
 | E122 | 管道块缺分隔行 | 2.4 |
 | E123 | 附录区出现 `### Issue` | 新增 |
 | E124 | 小节名像台账表（`待处理`、`总览`、`已关闭`…，即 adopt 会迁移表行的小节；`索引` / `已关闭` 本身除外）的 H2 里出现 adopt 会迁移的表行：与 adopt 共用同一个列映射（`mappingFor`）——表头含 `#`/`编号`/`ID` 列，且有 `摘要`/`标题` 列，或有 `状态`/`P`/判据类列可推断摘要，或只有两列；无表头时宽 2–5。口径与 adopt 迁移哪些表完全一致（adopt 也只从这类小节读表行）：其他小节名下的同形表见 W225，`## 路线图` 下的 `| ID | 状态 | 说明 |` 什么都不报。表头判定与 adopt 同一个函数（`tableHeader`）：首行不含数字 → 表头；首行下没有分隔行 → 按 adopt 补分隔行后的读法：有以数字开头的格就是数据行、否则是表头；首行后接真实分隔行 → 表头（`| 2026 | 开放 | 关闭 |`、`负责人2`），除非它明显是写在表头位置的 issue 行：首格是编号、其余格里有非数字文字，并且第二格恰好是状态词、或分隔行下面没有行、或下面至少有一行也是这样的编号行（`| 7 | 未决 | 甲 |` + `|---|`；`| 7 | 甲 | 乙 |` + `|---|` + `| 8 | 丙 | 丁 |`。统计表 `| 2026 | 开放 | 关闭 |` 下接 `| 12 | 3 | 4 |` 仍是表头。dogfood #56、第十一轮复审）。只有台账真正读取的那一节（第一个 `## 索引` / `## 已关闭`）被跳过：`## 索引（旧）`、`## 已关闭（2025）`、第二个 `## 索引` 里的表照常报 E124、编号占用。adopt 自己补的分隔行（无表头表）沿用旧规则：含以数字开头的单元格 → 数据行。这些行不进 `rows`，但其编号按不可读行处理：参与取号与撞号，`show` exit 3 指向该行，读命令 stderr 提示结果不完整。修法：`issuemd adopt FILE` 把它们搬进索引/已关闭（dogfood #52） | 新增 |
@@ -518,7 +518,7 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 
 退出码：0 成功 / 1 没有这条 issue 或结果为空 / 2 用法或 I/O 错误 / **3 check 发现 error** / **4 文件在读取后被改动（E130），重读后重试**。`issuemd FILE` 不是命令简写，exit 2。
 
-每个命令只接受自己的选项（见 `issuemd <command> --help`）；给了别的命令的选项（`list --title`、`new --json`、`check --closed`）一律 exit 2，不静默忽略。`list --status` / `--priority` 的值不在词表、也不在台账里出现时 exit 2；关闭类状态用在开放表上会提示加 `--closed`。读命令遇到不可读的表行时在 stderr 说明结果不完整，`list --json` 附 `unreadableRows`；W225 表占用的编号不是不可读行，`list --json`（开放与 `--closed` 都）附 `citedRows: [{ line, reason, ids }]`（没有时省略），agent 不必跑 `check` 也知道哪些编号不会被分配（第十二轮）；`show` 查到的编号若还出现在某条不可读行（如 E124 的旧表）里，照常输出并在 stderr 点名那一行；`list --json` 每项带 `ids` 与 `count`，顶层带 `rowCount` / `issueCount`（`issueCount` 与 `counts` 一致）。`show --json` 带 `labels`（所有标签块的单行形式）与 `criteria` + `criteriaSource`（`table` 或开放项的 `body`）。读命令的 `--json` 都带 `snapshot`；写命令都接受 `--if-unchanged S`（见 §7）。
+每个命令只接受自己的选项（见 `issuemd <command> --help`）；给了别的命令的选项（`list --title`、`new --json`、`check --closed`）一律 exit 2，不静默忽略。`list --status` / `--priority` 的值不在词表、也不在台账里出现时 exit 2；关闭类状态用在开放表上会提示加 `--closed`。读命令遇到不可读的表行时在 stderr 说明结果不完整，`list --json` 附 `unreadableRows`；W225 表占用的编号不是不可读行，`list --json`（开放与 `--closed` 都）附 `citedRows: [{ line, reason, ids }]`（没有时省略），agent 不必跑 `check` 也知道哪些编号不会被分配（第十二轮；W225 表引用的编号若同时是已登记的 issue 也照列）；`show` 查到的编号若还出现在某条不可读行（如 E124 的旧表）里，照常输出并在 stderr 点名那一行；`list --json` 每项带 `ids` 与 `count`，顶层带 `rowCount` / `issueCount`（`issueCount` 与 `counts` 一致）。`show --json` 带 `labels`（所有标签块的单行形式）与 `criteria` + `criteriaSource`（`table` 或开放项的 `body`）。读命令的 `--json` 都带 `snapshot`；写命令都接受 `--if-unchanged S`（见 §7）。
 
 ### 9.1 不要把这些命令加回来
 

@@ -1950,3 +1950,20 @@ describe("round 12 Q4: list --json names the ids W225 tables reserve", () => {
     expect("citedRows" in plain).toBe(false);
   });
 });
+
+describe("round 12 review: count suffix edges", () => {
+  test("adopt strips a count before ATX closing hashes, so its output passes check", async () => {
+    const path = file("# T\n\n## 旧记录（3） ##\n\n文字\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 1 | 未决 | 甲 |\n");
+    expect((await run(["adopt", path])).code).toBe(0);
+    expect(text(path)).not.toContain("（3）");
+    expect((await run(["check", path])).code).toBe(0);
+  });
+
+  test("full-width digits count as a count, and a full-width year as a year", async () => {
+    const codes = async (heading: string) =>
+      (JSON.parse((await run(["check", file(TEMPLATE.replace("## 正文", `${heading}\n\nx\n\n## 正文`)), "--json"])).stdout) as { errors: { code: string }[] }).errors.map((e) => e.code);
+    expect(await codes("## 发布（２）")).toContain("E121");
+    expect(await codes("## 发布（２０２５）")).not.toContain("E121");
+    expect((await run(["new", file(), "--title", "缓存（３）"])).code).toBe(2);
+  });
+});
