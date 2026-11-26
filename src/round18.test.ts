@@ -402,4 +402,25 @@ test("reopen protects a commit hash adjacent to an unmatched backtick", async ()
   expect(checked.warnings.some(({ code, message }: { code: string; message: string }) => code === "W202" && message.includes("a1b2c3d"))).toBe(false);
 });
 
+test("reopen does not confuse a closure-criterion substring in archive prose with the criterion itself", async () => {
+  const source = canonical.replace("**现象**：侧栏固定 240px，无法拖拽。", "**现象**：run the test suite before closing.");
+  const file = ledgerFile("reopen-criterion-substring.md", source);
+  expect((await run(["close", file, "2", "--keep-body", "--criteria", "test"])).code).toBe(0);
+  expect((await run(["reopen", file, "2"])).code).toBe(0);
+  const issue = JSON.parse((await run(["show", file, "2", "--json"])).stdout);
+  expect(issue.labels["关闭时判据"]).toBe("test");
+  expect(issue.criteria).toBe("重启后保持上次宽度。");
+});
+
+test("sync does not report a title change when its candidate is refused", async () => {
+  const source = canonical.replace("| 2 | 未决 | P1 | 侧栏宽度不可调 |", "| 2 | 未决 | P1 | 侧栏宽度不可调（2） |");
+  const file = ledgerFile("sync-refused-candidate.md", source);
+  const before = readFileSync(file, "utf8");
+  const result = await run(["sync", file, "--titles", "--prefer", "table"]);
+  expect(result.code).toBe(3);
+  expect(result.stderr).toContain("E121");
+  expect(result.stderr).not.toContain("updated #2");
+  expect(readFileSync(file, "utf8")).toBe(before);
+});
+
 afterAll(() => rmSync(dir, { recursive: true, force: true }));

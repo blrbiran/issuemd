@@ -1629,8 +1629,10 @@ function cmdReopen(rest: string[], v: Values): CliResult {
     if (noteAt >= 0 && ARCHIVE_NOTE.test(content[noteAt]!)) content.splice(noteAt, 1);
     restored = trimBlank(content);
     // The closed row's criteria may have been given on the command line and
-    // exist nowhere in the archived text; reopening must not lose them.
-    if (criteria !== "" && extractCriteria(restored) !== criteria && !restored.some((line) => line.includes(criteria))) {
+    // exist nowhere in the archived text; preserve it as a labeled history value.
+    const archivedCriteria = extractCriteria(restored);
+    const archivedHistory = findLabel(restored, 1, restored.length, "关闭时判据")?.text.trim();
+    if (criteria !== "" && archivedCriteria !== criteria && archivedHistory !== criteria) {
       restored.push("", `**关闭时判据**：${criterionEvidence}`);
     }
     // `close` inserted one blank line before the archive; take it back.
@@ -2256,6 +2258,7 @@ function syncTitles(
   }
 
   const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  if (result.code !== 0) return skippedNote ? { ...result, stderr: result.stderr + skippedNote } : result;
   const changesNote = changes.map((change) => prefer === "body"
     ? `updated #${change.id} summary: ${JSON.stringify(change.oldSummary)} → ${JSON.stringify(change.title)}`
     : `updated #${change.id} body title: ${JSON.stringify(change.title)} → ${JSON.stringify(change.oldSummary)}`

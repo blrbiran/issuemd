@@ -143,11 +143,11 @@
 - Modify: `skills/issuemd/SKILL.md`
 - Modify: `docs/handoff/handoff.md`
 
-- [ ] **Step 1: Update `docs/spec.md`** for W262/W263, reserved rows under malformed comments, title delimiter refusal, close error-loss rules, sync consent, split W212 warning, reopen criterion provenance, stable JSON diagnostics/citedRows, count formatting, and verification exit behavior.
-- [ ] **Step 2: Update `skills/issuemd/SKILL.md` and `README.md`** with the user-facing command behavior for these changes.
-- [ ] **Step 3: Run `npm run typecheck && npm test`**; expected all tests pass. If a failure occurs, diagnose before proceeding.
-- [ ] **Step 4: Review full diff for scope and data-safety violations**; do not write the external ledger.
-- [ ] **Step 5: Run read-only CLI verification**: canonical fixture and `TEMPLATE.md` remain clean; test `cafe-shaped.md` and `orca-shaped.md` retain their documented old-format results; run `check` and `adopt --dry-run` on all three real ledgers. If current files differ from the previous handoff's recorded warning counts, record current values as newer external data; do not edit them or require them to match stale counts.
-- [ ] **Step 6: Obtain independent TypeScript code review** and fix any confirmed important findings with regression tests.
+- [x] **Step 1: Update `docs/spec.md`** for W262/W263, reserved rows under malformed comments, title delimiter refusal, close error-loss rules, sync consent, split W212 warning, reopen criterion provenance, stable JSON diagnostics/citedRows, count formatting, and verification exit behavior.
+- [x] **Step 2: Update `skills/issuemd/SKILL.md` and `README.md`** with the user-facing command behavior for these changes.
+- [x] **Step 3: Run `npm run typecheck && npm test`**; expected all tests pass. If a failure occurs, diagnose before proceeding.
+- [x] **Step 4: Review full diff for scope and data-safety violations**; do not write the external ledger.
+- [x] **Step 5: Run read-only CLI verification**: canonical fixture and `TEMPLATE.md` remain clean; test `cafe-shaped.md` and `orca-shaped.md` retain their documented old-format results; run `check` and `adopt --dry-run` on all three real ledgers. If current files differ from the previous handoff's recorded warning counts, record current values as newer external data; do not edit them or require them to match stale counts.
+- [x] **Step 6: Obtain independent TypeScript code review** and fix any confirmed important findings with regression tests.
 - [ ] **Step 7: Commit the verified change, fast-forward merge to local `main`, then run `npm run build`** and confirm `dist/bin/issuemd.js` remains executable (755). Never push or publish.
 - [ ] **Step 8: Update handoff** with issue disposition, tests, current ledger baselines, branch/merge state, remaining user decisions (push/release), and next actions. Describe the base relatively; do not write a fixed HEAD hash.
