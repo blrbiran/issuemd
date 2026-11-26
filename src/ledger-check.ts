@@ -325,15 +325,27 @@ function checkHashes(ledger: Ledger, file: string, verify: boolean) {
   };
   const hashes = new Map<string, { line: number; pinned: boolean }>();
   const collect = (text: string, line: number, pinned: boolean) => {
-    for (const match of text.replace(UUID, " ").matchAll(/\b[0-9a-f]{7,40}\b/g)) {
+    const ticks = [...text.matchAll(/`+/g)];
+    const codeRanges: [number, number][] = [];
+    for (let at = 0; at < ticks.length; at++) {
+      const opening = ticks[at]!;
+      const closingAt = ticks.findIndex((candidate, index) => index > at && candidate[0].length === opening[0].length);
+      if (closingAt < 0) continue;
+      const closing = ticks[closingAt]!;
+      codeRanges.push([opening.index!, closing.index! + closing[0].length]);
+      at = closingAt;
+    }
+    for (const match of text.replace(UUID, (uuid) => " ".repeat(uuid.length)).matchAll(/\b[0-9a-f]{7,40}\b/g)) {
       // Dates, millisecond timestamps and other plain numbers are not pinned
       // hashes. An all-digit run is only treated as a commit at full SHA-1
       // length; in between, `20261124` and `1732406400000` are far more
       // common than an all-numeric short hash.
       if (!/[a-f]/.test(match[0]) && match[0].length !== 40) continue;
+      const inCode = codeRanges.some(([start, end]) => match.index! > start && match.index! < end);
+      const isPinned = pinned && !inCode;
       const known = hashes.get(match[0]);
-      if (!known) hashes.set(match[0], { line, pinned });
-      else if (pinned && !known.pinned) hashes.set(match[0], { line, pinned });
+      if (!known) hashes.set(match[0], { line, pinned: isPinned });
+      else if (isPinned && !known.pinned) hashes.set(match[0], { line, pinned: true });
     }
   };
   ledger.lines.forEach((line, index) => {
@@ -352,10 +364,28 @@ function checkHashes(ledger: Ledger, file: string, verify: boolean) {
   }
   if (!verify) return;
   const hashesToCheck = [...hashes.keys()];
+  const cwd = file === "-" ? process.cwd() : dirname(resolve(file));
+  const env = { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0" };
+  const repository = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
+    cwd, encoding: "utf8", env,
+  });
+  if (repository.error) throw new Error(`git rev-parse could not inspect the ledger directory: ${repository.error.message}`);
+  if (repository.status !== 0 || repository.stdout.trim() !== "true") {
+    if (repository.status !== 0 && !/not a git repository/i.test(repository.stderr)) {
+      throw new Error("git rev-parse could not determine whether the ledger directory is a Git worktree");
+    }
+    const firstLine = hashes.get(hashesToCheck[0]!)!.line;
+    ledger.warnings.push({
+      code: "W263",
+      line: firstLine,
+      message: "Commit verification skipped: the ledger directory is not a Git repository",
+    });
+    return;
+  }
   const result = spawnSync("git", ["cat-file", "--batch-check=%(objecttype)"], {
-    cwd: file === "-" ? process.cwd() : dirname(resolve(file)),
+    cwd,
     input: hashesToCheck.map((hash) => `${hash}^{commit}\n`).join(""),
-    encoding: "utf8", env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0" },
+    encoding: "utf8", env,
   });
   if (result.status !== 0) throw new Error("git cat-file could not verify commits in the ledger directory");
   const objects = result.stdout.split(/\r?\n/);

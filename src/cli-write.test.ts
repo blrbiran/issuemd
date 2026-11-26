@@ -513,7 +513,7 @@ describe("sync --titles", () => {
   test("aligns the summary with the body title", async () => {
     const path = ledger();
     writeFileSync(path, text(path).replace("| 2 | 未决 | P1 | 侧栏宽度不可调 |", "| 2 | 未决 | P1 | 宽度问题 |"));
-    expect((await run(["sync", path, "--titles"])).code).toBe(0);
+    expect((await run(["sync", path, "--titles", "--prefer", "body", "--drop-progress"])).code).toBe(0);
     expect(text(path)).toContain("| 2 | 未决 | P1 | 侧栏宽度不可调 |");
     expect((await clean(path)).code).toBe(0);
   });
@@ -539,7 +539,7 @@ describe("sync --titles", () => {
   test("--move-progress keeps the old summary in the body", async () => {
     const path = ledger();
     writeFileSync(path, text(path).replace("| 2 | 未决 | P1 | 侧栏宽度不可调 |", "| 2 | 未决 | P1 | 宽度问题，仍缺记忆 |"));
-    expect((await run(["sync", path, "--titles", "--move-progress"])).code).toBe(0);
+    expect((await run(["sync", path, "--titles", "--prefer", "body", "--move-progress"])).code).toBe(0);
     const after = text(path);
     expect(after).toContain("> **进展（来自旧表）**：宽度问题，仍缺记忆");
     expect(after).toContain("| 2 | 未决 | P1 | 侧栏宽度不可调 |");
@@ -549,7 +549,7 @@ describe("sync --titles", () => {
   test("--drop-progress discards it", async () => {
     const path = ledger();
     writeFileSync(path, text(path).replace("| 2 | 未决 | P1 | 侧栏宽度不可调 |", "| 2 | 未决 | P1 | 宽度问题，仍缺记忆 |"));
-    expect((await run(["sync", path, "--titles", "--drop-progress"])).code).toBe(0);
+    expect((await run(["sync", path, "--titles", "--prefer", "body", "--drop-progress"])).code).toBe(0);
     expect(text(path)).not.toContain("仍缺记忆");
     expect((await clean(path)).code).toBe(0);
   });
@@ -608,7 +608,7 @@ describe("regressions found in review", () => {
     writeFileSync(path, text(path)
       .replace("| 2 | 未决 | P1 | 侧栏宽度不可调 |", "| 2 | 未决 | P1 | 宽度，仍缺记忆 |")
       .replace("### Issue 2: 侧栏宽度不可调\n\n**现象**", "### Issue 2: 侧栏宽度不可调\n**现象**"));
-    expect((await run(["sync", path, "--titles", "--move-progress"])).code).toBe(0);
+    expect((await run(["sync", path, "--titles", "--prefer", "body", "--move-progress"])).code).toBe(0);
     const between = text(path).split("### Issue 3:")[0]!;
     expect(between).toContain("> **进展（来自旧表）**：宽度，仍缺记忆");
   });
@@ -668,7 +668,7 @@ describe("second review round", () => {
     writeFileSync(path, text(path)
       .replace("| 4 | 观察 | P3 | 长列表滚动掉帧 |", "| 4 | 观察 | P3 | 长列表滚动掉帧 |\n| 21 | 未决 | P2 | 表里说二十一 |\n| 21a | 未决 | P2 | 表里说二十一甲 |")
       .replace("### Issue 4: 长列表滚动掉帧", "### Issue 4: 长列表滚动掉帧\n\n**现象**：四。\n\n### Issue 21: 正文说二十一\n\n**现象**：二一。\n\n### Issue 21a: 正文说二十一甲\n\n**现象**：二一甲。"));
-    expect((await run(["sync", path, "--titles"])).code).toBe(0);
+    expect((await run(["sync", path, "--titles", "--prefer", "body", "--drop-progress"])).code).toBe(0);
     const after = text(path);
     expect(after).toContain("| 21 | 未决 | P2 | 正文说二十一 |");
     expect(after).toContain("| 21a | 未决 | P2 | 正文说二十一甲 |");

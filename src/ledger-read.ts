@@ -272,18 +272,33 @@ export function withBody(
   return out;
 }
 
+export function openStatusCounts(rows: LedgerRow[]): Record<string, number | null> {
+  const counts = new Map<string, bigint>();
+  for (const row of rows) {
+    const rowCount = row.ids.reduce((sum, span) => sum + BigInt(span.end - span.start + 1), 0n);
+    counts.set(row.status, (counts.get(row.status) ?? 0n) + rowCount);
+  }
+  return Object.fromEntries([...counts].map(([status, count]) => [
+    status,
+    count <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(count) : null,
+  ]));
+}
+
 /**
- * The summary line `check` and `counts` share. Only statuses that actually
- * occur are listed, in vocabulary order, so the line is stable run to run.
+ * The summary line shared by `check` and `counts`. Include raw open-table
+ * statuses too: W220 must not make the status breakdown appear smaller than
+ * the open total.
  */
-export function summaryLine(counts: {
-  open: number | null;
-  closed: number | null;
-  byStatus: Record<string, number | null>;
-}): string {
-  const open = Object.entries(STATUS_CLASSES)
-    .filter(([status, kind]) => kind === "open" && Object.hasOwn(counts.byStatus, status))
-    .map(([status]) => `${status} ${counts.byStatus[status] ?? "?"}`);
+export function summaryLine(
+  counts: { open: number | null; closed: number | null; byStatus: Record<string, number | null> },
+  openByStatus: Record<string, number | null>,
+): string {
+  const knownOpen = Object.keys(STATUS_CLASSES).filter((status) => STATUS_CLASSES[status as keyof typeof STATUS_CLASSES] === "open");
+  const ordered = [
+    ...knownOpen.filter((status) => Object.hasOwn(openByStatus, status)),
+    ...Object.keys(openByStatus).filter((status) => !Object.hasOwn(STATUS_CLASSES, status)),
+  ];
+  const open = ordered.map((status) => `${status} ${openByStatus[status] ?? "?"}`);
   const breakdown = open.length ? ` (${open.join(", ")})` : "";
   return `open ${counts.open ?? "?"}${breakdown}   closed ${counts.closed ?? "?"}`;
 }

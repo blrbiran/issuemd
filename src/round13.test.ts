@@ -69,10 +69,10 @@ describe("#63 read views say when check fails", () => {
     expect(doc.diagnostics.errors.some((error: { code: string; id?: string }) => error.code === "E102" && error.id === "4")).toBe(true);
   });
 
-  test("a clean ledger adds no stderr note and no diagnostics field", async () => {
+  test("a clean ledger adds no stderr note and stable empty diagnostics", async () => {
     const result = await run(["list", file(CANONICAL), "--json"]);
     expect(result.stderr).toBe("");
-    expect(JSON.parse(result.stdout).diagnostics).toBeUndefined();
+    expect(JSON.parse(result.stdout).diagnostics).toEqual({ errors: [], warnings: [] });
   });
 });
 

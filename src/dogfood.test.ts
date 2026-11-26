@@ -1529,19 +1529,24 @@ describe("probe10: sync --titles never drops table-summary text silently", () =>
 
   test("--move-progress keeps the text in the body; --drop-progress discards it", async () => {
     const moved = await drifted("（进展：已修一半）");
-    expect((await run(["sync", moved, "--titles", "--move-progress"])).code).toBe(0);
+    expect((await run(["sync", moved, "--titles", "--prefer", "body", "--move-progress"])).code).toBe(0);
     expect(text(moved)).toContain("已修一半");
     expect(text(moved)).toContain("| 1 | 未决 | P2 | 标题甲 |");
     const dropped = await drifted("（进展：已修一半）");
-    expect((await run(["sync", dropped, "--titles", "--drop-progress"])).code).toBe(0);
+    expect((await run(["sync", dropped, "--titles", "--prefer", "body", "--drop-progress"])).code).toBe(0);
     expect(text(dropped)).not.toContain("已修一半");
   });
 
-  test("a plain rename drift still syncs without extra flags", async () => {
+  test("a plain rename drift requires an explicit title choice", async () => {
     const path = file();
     expect((await run(["new", path, "--title", "标题甲", "--body-file", body("**验收判据**：x\n")])).code).toBe(0);
     const renamed = file(text(path).replace("| 1 | 未决 | P2 | 标题甲 |", "| 1 | 未决 | P2 | 完全不同的说法 |"));
-    expect((await run(["sync", renamed, "--titles"])).code).toBe(0);
+    const before = text(renamed);
+    const blocked = await run(["sync", renamed, "--titles"]);
+    expect(blocked.code).toBe(3);
+    expect(blocked.stderr).toContain("--prefer body");
+    expect(text(renamed)).toBe(before);
+    expect((await run(["sync", renamed, "--titles", "--prefer", "body", "--drop-progress"])).code).toBe(0);
     expect(text(renamed)).toContain("| 1 | 未决 | P2 | 标题甲 |");
   });
 });

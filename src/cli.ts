@@ -65,6 +65,7 @@ import {
   expandIssues,
   formatListedIssue,
   labelsIn,
+  openStatusCounts,
   spanText,
   summaryLine,
   toListedIssue,
@@ -382,15 +383,20 @@ function cmdCheck(rest: string[], v: Values): CliResult {
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
   try {
-    const report = checkLedger(loaded.src, file, {
+    const ledger = parseLedger(loaded.src);
+    const report = checkParsedLedger(ledger, file, {
       strict: v.strict,
       verifyCommits: v["verify-commits"],
     });
     const code = report.ok ? 0 : 3;
     if (v.json) {
-      return { code, stdout: JSON.stringify({ ...report, snapshot: snapshotOf(loaded.src) }, null, 2) + "\n", stderr: "" };
+      return {
+        code,
+        stdout: JSON.stringify({ ...report, ...citedRowsField(ledger), snapshot: snapshotOf(loaded.src) }, null, 2) + "\n",
+        stderr: "",
+      };
     }
-    const lines = [`file: ${file}`, summaryLine(report.counts)];
+    const lines = [`file: ${file}`, summaryLine(report.counts, openStatusCounts(ledger.rows.open))];
     for (const [severity, diagnostics] of [["error", report.errors], ["warning", report.warnings]] as const) {
       const groups = new Map<string, Diagnostic[]>();
       for (const diagnostic of diagnostics) {
@@ -449,9 +455,19 @@ function cmdList(rest: string[], v: Values): CliResult {
   const wrongTable = v.status != null && statusCategory(v.status) != null && statusCategory(v.status) !== table
     ? `'${v.status}' is ${statusCategory(v.status)}; ${table === "open" ? "add --closed" : "drop --closed"} to list it\n`
     : "";
+  const otherTable = table === "open" ? "closed" : "open";
+  const wrongPriority = v.priority != null &&
+      !ledger.rows[table].some((row) => row.priority === v.priority) &&
+      ledger.rows[otherTable].some((row) => row.priority === v.priority)
+    ? `'${v.priority}' only occurs in the ${otherTable} table; ${table === "open" ? "add --closed" : "drop --closed"} to list it\n`
+    : "";
+  const undeclaredStatus = v.status != null && statusCategory(v.status) == null &&
+      everyRow.some((row) => row.status === v.status)
+    ? `warning W220: status '${v.status}' is undeclared; this filter matches the existing row as written\n`
+    : "";
   const incomplete = unreadableNote(ledger);
   const stderr = structureNote(report.errors, new Set(ledger.unreadable.map((row) => row.line))) +
-    wrongTable + incomplete;
+    wrongTable + wrongPriority + undeclaredStatus + incomplete;
   let issues = rows.map((row) => toListedIssue(row, table));
   if (v.expand) {
     const expanded = expandIssues(issues);
@@ -468,7 +484,6 @@ function cmdList(rest: string[], v: Values): CliResult {
       .filter((row) => row.table === table || row.table === "stray")
       .map(({ line, reason, ids }) => ({ line, reason, ...(ids ? { ids: ids.map(spanText) } : {}) }));
     // IDs reserved by external tables are exposed separately from unreadable rows.
-    const citedRows = ledger.cited.map(({ line, reason, ids }) => ({ line, reason, ids: (ids ?? []).map(spanText) }));
     const body = JSON.stringify(
       {
         file,
@@ -478,8 +493,8 @@ function cmdList(rest: string[], v: Values): CliResult {
         issueCount: issues.reduce((sum, issue) => sum + issue.count, 0),
         issues,
         ...(unreadableRows.length ? { unreadableRows } : {}),
-        ...(citedRows.length ? { citedRows } : {}),
-        ...diagnosticsField(report.errors),
+        ...citedRowsField(ledger),
+        ...diagnosticsField(report.errors, report.warnings),
       },
       null,
       2,
@@ -524,17 +539,28 @@ function structureNote(errors: Diagnostic[], known: Set<number> = new Set()): st
     `${first.id ? ` #${first.id}` : ""}); this view may not reflect the ledger\n`;
 }
 
-/** The same fact for `--json` consumers: only present when there are errors. */
-function diagnosticsField(errors: Diagnostic[]): { diagnostics?: { errors: Record<string, unknown>[] } } {
-  if (errors.length === 0) return {};
+function diagnosticJson(diagnostic: Diagnostic): Record<string, unknown> {
+  const { code, line, id, message, expected, actual } = diagnostic;
+  return {
+    code, line, ...(id !== undefined ? { id } : {}), message,
+    ...(expected !== undefined ? { expected, actual } : {}),
+  };
+}
+
+/** Stable machine-readable diagnostics for JSON read views. */
+function diagnosticsField(errors: Diagnostic[], warnings: Diagnostic[]) {
   return {
     diagnostics: {
-      errors: errors.map(({ code, line, id, message, expected, actual }) => ({
-        code, line, ...(id !== undefined ? { id } : {}), message,
-        ...(expected !== undefined ? { expected, actual } : {}),
-      })),
+      errors: errors.map(diagnosticJson),
+      warnings: warnings.map(diagnosticJson),
     },
   };
+}
+
+/** The same cited-row view for every JSON command that exposes ledger data. */
+function citedRowsField(ledger: ReturnType<typeof parseLedger>) {
+  const citedRows = ledger.cited.map(({ line, reason, ids }) => ({ line, reason, ids: (ids ?? []).map(spanText) }));
+  return citedRows.length ? { citedRows } : {};
 }
 
 function cmdCounts(rest: string[], v: Values): CliResult {
@@ -548,8 +574,8 @@ function cmdCounts(rest: string[], v: Values): CliResult {
   if (unusable) return unusable;
   const stderr = structureNote(report.errors, new Set(ledger.unreadable.map((row) => row.line))) +
     unreadableNote(ledger);
-  if (v.json) return { code: 0, stdout: JSON.stringify({ file, snapshot: snapshotOf(loaded.src), counts: report.counts, ...diagnosticsField(report.errors) }, null, 2) + "\n", stderr };
-  return { code: 0, stdout: summaryLine(report.counts) + "\n", stderr };
+  if (v.json) return { code: 0, stdout: JSON.stringify({ file, snapshot: snapshotOf(loaded.src), counts: report.counts, ...citedRowsField(ledger), ...diagnosticsField(report.errors, report.warnings) }, null, 2) + "\n", stderr };
+  return { code: 0, stdout: summaryLine(report.counts, openStatusCounts(ledger.rows.open)) + "\n", stderr };
 }
 
 function cmdShow(rest: string[], v: Values): CliResult {
@@ -618,11 +644,11 @@ function cmdShow(rest: string[], v: Values): CliResult {
         ? { code: 1, stdout: "", stderr: `(empty label: ${v.label})\n${why}` }
         : { code: 1, stdout: `(empty label: ${v.label})\n`, stderr: why });
     }
-    if (v.json) return withNote(ok(JSON.stringify({ ...view, paragraph: found.text, snapshot: snapshotOf(loaded.src), ...diagnosticsField(report.errors) }, null, 2)));
+    if (v.json) return withNote(ok(JSON.stringify({ ...view, paragraph: found.text, snapshot: snapshotOf(loaded.src), ...diagnosticsField(report.errors, report.warnings) }, null, 2)));
     return withNote(ok(found.lines.join("\n")));
   }
 
-  if (v.json) return withNote(ok(JSON.stringify({ ...view, snapshot: snapshotOf(loaded.src), ...diagnosticsField(report.errors) }, null, 2)));
+  if (v.json) return withNote(ok(JSON.stringify({ ...view, snapshot: snapshotOf(loaded.src), ...diagnosticsField(report.errors, report.warnings) }, null, 2)));
 
   const lines = [`#${view.id}  ${view.status}  ${view.priority || "-"}  ${view.summary}`];
   lines.push(`L${view.body?.line ?? view.line}-${view.body?.end ?? view.end}`);
@@ -816,10 +842,16 @@ function commit(
    * (dogfood #64). Everything else keeps the strict "no new error" gate.
    */
   tolerate?: (diagnostic: Diagnostic) => boolean,
+  /** Existing errors a verb is allowed to resolve intentionally. */
+  allowLost?: (diagnostic: Diagnostic) => boolean,
+  /** Optional observer for warnings computed with the candidate snapshot. */
+  observeCheck?: (report: ReturnType<typeof checkLedger>) => void,
 ): CliResult {
   const newLines = terminate(candidate, loaded.doc, loaded.lines);
   const content = joinDocument(newLines, loaded.doc);
-  const after = checkLedger(content, file).errors;
+  const checked = checkLedger(content, file);
+  const after = checked.errors;
+  observeCheck?.(checked);
   // Count, don't set: several codes (E110, E108, E122, …) carry no id, so a
   // second copy of an error that already exists must still be refused. One
   // baseline error buys exactly one identical candidate error, no more.
@@ -842,6 +874,31 @@ function commit(
         formatDiagnostics(refused) + "\n",
       3,
     );
+  }
+  if (allowLost) {
+    const remaining = new Map<string, number>();
+    for (const diagnostic of after) {
+      const key = diagnosticKey(diagnostic);
+      remaining.set(key, (remaining.get(key) ?? 0) + 1);
+    }
+    const lost = before.filter((diagnostic) => {
+      const key = diagnosticKey(diagnostic);
+      const count = remaining.get(key) ?? 0;
+      if (count > 0) {
+        remaining.set(key, count - 1);
+        return false;
+      }
+      return !allowLost(diagnostic);
+    });
+    if (lost.length > 0) {
+      const detail = lost.map((diagnostic) => {
+        const fix = diagnostic.code === "E106" && diagnostic.id
+          ? `; align its title with 'issuemd rename ${file} ${diagnostic.id} \"…\"' or 'issuemd sync ${file} --titles'`
+          : "; repair the existing error before closing (run 'issuemd check')";
+        return `  L${diagnostic.line}${diagnostic.id ? ` #${diagnostic.id}` : ""} ${diagnostic.code}: ${diagnostic.message}${fix}`;
+      }).join("\n");
+      return err(`issuemd close: refusing to make ${lost.length} existing error(s) disappear:\n${detail}\n`, 3);
+    }
   }
   if (dryRun) {
     const diff = unifiedDiff(loaded.lines, newLines, file, loaded.doc.finalNewline, loaded.doc.eol, loaded.doc.bom ? "\uFEFF" : "");
@@ -1050,6 +1107,11 @@ function statusCategory(status: string): "open" | "closed" | undefined {
  */
 /** Why a summary cannot become a body heading, or null. */
 function titleProblem(title: string): string | null {
+  // Raw comment delimiters in a generated Markdown heading can hide the rest
+  // of the document even though they look like ordinary title text.
+  if (title.includes("<!--") || title.includes("-->")) {
+    return "the title contains a raw HTML comment delimiter; write it as '< !--' or '&lt;!--' instead.";
+  }
   // new/rename refuse an empty title up front; reopen of an empty summary
   // would otherwise write `### Issue N: ` (round-twelve probe).
   if (title.trim() === "") return "the title is empty.";
@@ -1430,9 +1492,48 @@ function cmdClose(rest: string[], v: Values): CliResult {
     formatRow([idText, status, found.row.priority, found.row.summary, criteria]),
   ]);
 
-  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const result = commit(
+    file, loaded, errors, lines, !!v["dry-run"], undefined,
+    (diagnostic) => diagnostic.code === "E102" && diagnostic.id === idText,
+  );
   if (keepBody && result.code === 0) {
     return { code: 0, stdout: result.stdout, stderr: result.stderr + `W250: kept the body of #${idText} by moving it into 附录\n` };
+  }
+  return result;
+}
+
+function inlineCodeRanges(text: string): [number, number][] {
+  const ticks = [...text.matchAll(/`+/g)];
+  const ranges: [number, number][] = [];
+  for (let at = 0; at < ticks.length; at++) {
+    const opening = ticks[at]!;
+    const closingAt = ticks.findIndex((candidate, index) => index > at && candidate[0].length === opening[0].length);
+    if (closingAt < 0) continue;
+    const closing = ticks[closingAt]!;
+    ranges.push([opening.index!, closing.index! + closing[0].length]);
+    at = closingAt;
+  }
+  return ranges;
+}
+
+function inlineCodeCommitHashes(text: string): string {
+  const ranges = inlineCodeRanges(text);
+  const hashes = [...text.matchAll(/\b[0-9a-f]{7,40}\b/g)];
+  let result = text;
+  for (const match of hashes.reverse()) {
+    const hash = match[0];
+    if (!/[a-f]/.test(hash) && hash.length !== 40) continue;
+    const index = match.index!;
+    if (ranges.some(([start, end]) => index > start && index < end)) continue;
+    let start = index;
+    while (start > 0 && text[start - 1] === "`") start--;
+    let end = index + hash.length;
+    while (end < text.length && text[end] === "`") end++;
+    const content = text.slice(start, end);
+    const ticksInside = [...content.matchAll(/`+/g)].reduce((max, run) => Math.max(max, run[0].length), 0);
+    const delimiter = "`".repeat(ticksInside + 1);
+    const replacement = `${delimiter} ${content} ${delimiter}`;
+    result = result.slice(0, start) + replacement + result.slice(end);
   }
   return result;
 }
@@ -1497,6 +1598,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   // "" is a legal priority (most open rows in real ledgers have none).
   const priority = found.row.priority;
   const criteria = found.row.criteria.trim();
+  const criterionEvidence = inlineCodeCommitHashes(criteria);
   // `close --keep-body` archived the body in 附录 precisely so it could be
   // recovered. Restore it instead of leaving an empty skeleton and a W250
   // heading that claims the (now open) issue still has a kept body.
@@ -1529,7 +1631,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
     // The closed row's criteria may have been given on the command line and
     // exist nowhere in the archived text; reopening must not lose them.
     if (criteria !== "" && extractCriteria(restored) !== criteria && !restored.some((line) => line.includes(criteria))) {
-      restored.push("", `**关闭时判据**：${criteria}`);
+      restored.push("", `**关闭时判据**：${criterionEvidence}`);
     }
     // `close` inserted one blank line before the archive; take it back.
     const start = archived.line_start > 1 && loaded.lines[archived.line_start - 2]!.trim() === ""
@@ -1568,12 +1670,25 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   );
   if (!bodySection) return err("issuemd reopen: the 正文 section is missing\n", 3);
   const bodyAt = bodyInsertAt(reopened, found.span, bodySection.line_end);
-  const bodyLines = restored && restored.length > 0
-    ? [`### Issue ${spanText(found.span)}: ${found.row.summary}`, "", ...restored, ""]
-    : bodySkeleton(spanText(found.span), found.row.summary, criteria);
+  let bodyLines: string[];
+  if (restored && restored.length > 0) {
+    bodyLines = [`### Issue ${spanText(found.span)}: ${found.row.summary}`, "", ...restored, ""];
+  } else {
+    const acceptance = found.row.status === "已修" ? criterionEvidence : "";
+    bodyLines = bodySkeleton(spanText(found.span), found.row.summary, acceptance);
+    if (found.row.status !== "已修" && criterionEvidence !== "") {
+      const criteriaAt = bodyLines.findIndex((line) => /^\*\*验收判据\*\*/.test(line));
+      if (criteriaAt >= 0) bodyLines[criteriaAt] = `**关闭理由**：${criterionEvidence}`;
+    }
+  }
   lines = insertBlock(lines, bodyAt, bodyLines);
 
-  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  if (result.code !== 0 || extractCriteria(bodyLines.slice(2)) != null) return result;
+  return {
+    ...result,
+    stderr: result.stderr + `issuemd reopen: #${idText} has no acceptance criteria; add **验收判据** before closing (W261)\n`,
+  };
 }
 
 function cmdStatus(rest: string[], v: Values): CliResult {
@@ -1775,17 +1890,46 @@ function cmdSplit(rest: string[], v: Values): CliResult {
     ? spans.filter((span) => !bodyIds.has(`${span.start}${span.suffix}`)).map(spanText)
     : [];
   const rowIds = new Set(spans.map(spanText));
+  const priorW212 = checkParsedLedger(ledger, file).warnings.filter(({ code }) => code === "W212");
+  const priorCounts = new Map<string, number>();
+  for (const diagnostic of priorW212) {
+    const key = diagnosticKey(diagnostic);
+    priorCounts.set(key, (priorCounts.get(key) ?? 0) + 1);
+  }
+  const addedW212: Diagnostic[] = [];
   // The ids this row covers are the only E102s split may multiply: they were
   // already reported (once, for the first missing one) before the split.
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], (diagnostic) =>
-    diagnostic.code === "E102" && diagnostic.id != null && rowIds.has(diagnostic.id));
-  if (result.code !== 0 || missing.length === 0) return result;
+    diagnostic.code === "E102" && diagnostic.id != null && rowIds.has(diagnostic.id),
+    undefined,
+    (report) => {
+      const remaining = new Map(priorCounts);
+      for (const diagnostic of report.warnings.filter(({ code }) => code === "W212")) {
+        const key = diagnosticKey(diagnostic);
+        const count = remaining.get(key) ?? 0;
+        if (count > 0) remaining.set(key, count - 1);
+        else addedW212.push(diagnostic);
+      }
+    });
+  if (result.code !== 0) return result;
+  const duplicateIds = [...new Set(addedW212.flatMap(({ id, message }) => [
+    ...(id == null ? [] : [id]),
+    ...[...message.matchAll(/#(\d+[a-z]?)/g)].map((match) => match[1]!),
+  ]))];
+  const namedIds = duplicateIds.length <= 3
+    ? duplicateIds.map((id) => `#${id}`).join(", ")
+    : `#${duplicateIds[0]} … #${duplicateIds.at(-1)} (${duplicateIds.length} ids)`;
+  const duplicateNote = addedW212.length > 0
+    ? `issuemd split: introduced ${addedW212.length} W212 duplicate-summary warning(s) for ${namedIds}; ` +
+      "run 'issuemd rename FILE ID \"…\"' to distinguish them; details: 'issuemd check FILE --json'\n"
+    : "";
+  if (missing.length === 0) return duplicateNote ? { ...result, stderr: result.stderr + duplicateNote } : result;
   const ids = missing.length <= 3
     ? missing.map((id) => `#${id}`).join(", ")
     : `${missing.length} ids (#${missing[0]}, … (${missing.length - 2} more), #${missing.at(-1)})`;
   const note = `issuemd split: no body block for ${ids}; ` +
     "nothing was invented — write one with 'issuemd body FILE ID --body-file -'\n";
-  return { ...result, stderr: result.stderr + note };
+  return { ...result, stderr: result.stderr + duplicateNote + note };
 }
 
 function cmdAdopt(rest: string[], v: Values): CliResult {
@@ -2061,25 +2205,17 @@ function syncTitles(
       : { code: 0, stdout: "(no changes)\n", stderr: skippedNote };
   }
 
-  // Progress text is whatever the table summary carries beyond the body
-  // title (`标题甲（进展：已修一半）`, `标题甲 [WIP]`), not only the few words
-  // PROGRESS knows: replacing that summary would drop it silently (probe 10).
-  const carriesExtra = ({ oldSummary, title }: Change) => {
-    const table = foldWhitespace(oldSummary);
-    const heading = foldWhitespace(title);
-    return heading !== "" && table.length > heading.length && table.includes(heading);
-  };
   // Only --prefer body loses the table wording; --prefer table copies it into
   // the heading, so there only real progress words are refused (review 11).
-  const progress = changes.filter((change) =>
-    PROGRESS.test(change.oldSummary) || (prefer === "body" && carriesExtra(change)));
-  if (prefer === "body" && progress.length > 0 && !v["move-progress"] && !v["drop-progress"]) {
-    const listed = progress.map(({ id, oldSummary }) => `  #${id}  ${oldSummary}`).join("\n");
+  const progress = changes.filter((change) => prefer === "body" || PROGRESS.test(change.oldSummary));
+  if (prefer === "body" && progress.length > 0 &&
+      (v.prefer !== "body" || (!v["move-progress"] && !v["drop-progress"]))) {
+    const listed = progress.map(({ id, oldSummary, title }) => `  #${id}  摘要: ${oldSummary}；正文标题: ${title}`).join("\n");
     return err(
-      `issuemd sync --titles: ${progress.length} table summary(ies) carry text the body title lacks (progress notes); nothing written\n` +
+      `issuemd sync --titles: ${progress.length} summary(ies) differ from body titles; choosing the body would replace table text, nothing written\n` +
         `${listed}\n` +
-        "re-run with --move-progress (keep it in the body) or --drop-progress (discard it), " +
-        "or use --prefer table if the table wording is the title you want\n",
+        "choose --prefer body --move-progress to preserve the summary in the body, --prefer body --drop-progress to discard it, " +
+        "or --prefer table to keep the summary\n",
       3,
     );
   }
@@ -2120,7 +2256,12 @@ function syncTitles(
   }
 
   const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
-  return skippedNote ? { ...result, stderr: result.stderr + skippedNote } : result;
+  const changesNote = changes.map((change) => prefer === "body"
+    ? `updated #${change.id} summary: ${JSON.stringify(change.oldSummary)} → ${JSON.stringify(change.title)}`
+    : `updated #${change.id} body title: ${JSON.stringify(change.title)} → ${JSON.stringify(change.oldSummary)}`
+  ).join("\n");
+  const note = changesNote ? `${changesNote}\n` : "";
+  return { ...result, stderr: result.stderr + note + skippedNote };
 }
 
 /** Add a separator row after any pipe block that lacks one. */

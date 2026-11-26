@@ -172,22 +172,50 @@ function dataRows(rows: string[][], header: string[] | undefined): { cells: stri
 }
 
 
-function commentedLines(lines: string[], visible: Set<number>): Set<number> {
-  const commented = new Set<number>();
-  let inside = false;
+type CommentScan = { hidden: Set<number>; unclosed: Set<number>; unclosedOpeners: number[] };
+
+/** HTML comments outside fences and pipe-table rows, split by whether they close. */
+function commentSpans(lines: string[], visible: Set<number>): CommentScan {
+  const hidden = new Set<number>();
+  const unclosed = new Set<number>();
+  const unclosedOpeners: number[] = [];
+  let opener: number | undefined;
+  let start = 0;
+
   for (let index = 0; index < lines.length; index++) {
+    const line = index + 1;
     const text = lines[index]!;
-    if (!inside) {
-      if (!visible.has(index + 1)) continue;
-      const opening = text.indexOf("<!--");
-      if (opening < 0) continue;
-      inside = text.indexOf("-->", opening + 4) < 0;
-      continue;
+    let cursor = 0;
+    for (;;) {
+      if (opener !== undefined) {
+        const close = text.indexOf("-->", cursor);
+        if (close < 0) break;
+        for (let hiddenLine = start + 1; hiddenLine <= line; hiddenLine++) hidden.add(hiddenLine);
+        opener = undefined;
+        cursor = close + 3;
+        continue;
+      }
+      // A raw delimiter in a Markdown table cell is data, not a comment that
+      // can hide unrelated appendix citations. Fenced lines are never parsed.
+      if (!visible.has(line) || /^ {0,3}\|/.test(text)) break;
+      const open = text.indexOf("<!--", cursor);
+      if (open < 0) break;
+      const close = text.indexOf("-->", open + 4);
+      if (close >= 0) {
+        cursor = close + 3;
+        continue;
+      }
+      opener = line;
+      start = line;
+      break;
     }
-    commented.add(index + 1);
-    if (text.includes("-->")) inside = false;
   }
-  return commented;
+
+  if (opener !== undefined) {
+    unclosedOpeners.push(opener);
+    for (let line = start + 1; line <= lines.length; line++) unclosed.add(line);
+  }
+  return { hidden, unclosed, unclosedOpeners };
 }
 
 /**
@@ -217,7 +245,10 @@ function strayRows(
   lines: string[],
   visible: Set<number>,
 ) {
-  let comments: Set<number> | undefined;
+  const comments = commentSpans(lines, visible);
+  for (const line of comments.unclosedOpeners) {
+    warnings.push({ code: "W262", line, message: "Unclosed HTML comment; following free-form issue tables remain reserved" });
+  }
   for (const block of blocks) {
     const h2 = h2s.filter((section) => section.line_start < block.line).at(-1);
     if (!h2) continue;
@@ -238,10 +269,11 @@ function strayRows(
         ? header.length === 2 || header.some((cell) => cell === "摘要" || cell === "标题")
         : !!mappingFor(undefined, width);
       if (!warn && (!block.separator || statusAt < 0)) continue;
-      const hidden = warn && !freeform ? undefined : (comments ??= commentedLines(lines, visible));
-      if (hidden?.has(block.line)) continue;
+      const unclosedComment = freeform && comments.unclosed.has(block.line);
+      if (!(warn && !freeform) && comments.hidden.has(block.line)) continue;
+      const commentOpener = comments.unclosedOpeners[0];
       const reason = freeform
-        ? `cited in a free-form table under '## ${h2.title}'`
+        ? `cited in a free-form table under '## ${h2.title}'${unclosedComment ? ` inside an unclosed HTML comment from L${commentOpener}` : ""}`
         : `table under '## ${h2.title}' looks like an issue table but is not tracked (adopt keeps it as text); ` +
           "its ids are reserved, so new will not reuse them; if its rows are issues, move them into 索引/已关闭 by hand; " +
           "if not, rename its '#' column";
@@ -255,7 +287,8 @@ function strayRows(
           warnings.push({ code: "W225", line, message: reason });
           warned = true;
         }
-        const source = warn ? (freeform ? "free-form issue table" : "W225") : "ledger status";
+        const source = `${warn ? (freeform ? "free-form issue table" : "W225") : "ledger status"}` +
+          `${unclosedComment ? `; unclosed HTML comment from L${commentOpener}` : ""}`;
         cited.push({ line, table: "cited", reason: `cited in a table under '## ${h2.title}' (${source})`, ids });
       }
       continue;

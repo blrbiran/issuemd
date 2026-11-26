@@ -308,7 +308,7 @@ Ledger
 | 码 | 规则 |
 |---|---|
 | W201 | 单条正文超 `limits`（默认 20KB / 300 行） |
-| W202 | 出现疑似写死的短哈希（`\b[0-9a-f]{7,40}\b`）。**不报**：已关闭表的「判据」列（判据按 GLOSSARY 就该写 commit，交给 `--verify-commits`）、UUID、7–39 位纯数字（日期、时间戳） |
+| W202 | 出现疑似写死的短哈希（`\b[0-9a-f]{7,40}\b`）。**不报**：已关闭表的「判据」列（判据按 GLOSSARY 就该写 commit，交给 `--verify-commits`）、UUID、7–39 位纯数字（日期、时间戳），以及行内代码 span 中的 hash（按字面证据处理；第十八轮） |
 | W203 | guide 里点名的标题在文档中不存在（**只查存在性**） |
 | W205 | 单元格含未转义 `\|` 或换行 |
 | W206 | 同一条正文内标签重复 |
@@ -325,10 +325,12 @@ Ledger
 | W253 | 同一 issue 的正文在附录里还有另一份（转义的 `\### Issue N:` 副本，或重复归档）；旧版 `adopt` 会把表格小节里的正文存两份 |
 | W260 | 索引摘要含进展词（`已落地/仍缺/仍无/仍逐/仍走`），应移入正文 |
 | W261 | 开放项的正文没有非空的 `**验收判据**` 块（`new` 不带 `--body-file` 写出的空骨架、判据被删掉的正文都算）。`close` 用 `--criteria-from-body` 时本来就会拒绝它，但空壳会一直留在 `list` 里（dogfood #62）。warning 级、`--strict` 失败；已关闭项不判（判据在表格列），正文缺失另有 E102。整块只有 HTML 注释（渲染后什么也没有；注释外的可见文字、fence 里的字面内容都算）不算非空，`close --criteria-from-body` 同样拒绝（第十四轮）。如果正文有近似标签（名字含「判据」），W261 与 `close` 的缺判据错误会指向第一个近似标签及其行号。判据仍须使用 `**验收判据**`（dogfood #78） |
+| W262 | 存在未闭合 HTML 注释（只在非围栏、非管道表格行的正文文本中识别开头）：报告注释起始行。未闭合注释覆盖范围内的自由格式 issue 形表仍进入 `citedRows` 并保留编号；注释行内的示例表不成为正式 issue。`--strict` 因此失败。 |
+| W263 | `--verify-commits` 在非 Git worktree 中跳过：列出首个待验证 hash 的行号与说明。普通 `check` 可成功，`--strict` 失败；有效 Git worktree 中缺少 commit 仍报 W240。 |
 
 ### 6.3 `--verify-commits`（默认关）
 
-扫描短哈希（含判据列里的）→ `git cat-file -e <sha>^{commit}`；缺失报 `W240`。
+扫描可验证的短哈希（含已关闭表判据列里的）→ 先确认台账目录位于 Git worktree，再运行 `git cat-file -e <sha>^{commit}`；Git worktree 中缺失报 `W240`。非 Git 目录报 `W263` 并跳过，普通模式可成功、`--strict` 失败。
 
 ### 6.4 输出契约
 
@@ -346,8 +348,10 @@ error E111 x13
 warning W206 x2
   …
 error 28, warning 2。exit 3。
-`issuemd sync FILE --titles --prefer=body --dry-run` 可预览标题对齐
+`issuemd sync FILE --titles --prefer=body --move-progress --dry-run` 可预览正文优先并保留旧摘要的标题对齐。
 ```
+
+`check` / `counts` 文本摘要会列出开放表实际出现的所有状态，包括未声明状态；有效台账的各状态数之和等于 open 总数。结构错误导致编号重叠时，保留每个状态的原始分桶并由 E103 等诊断指出问题。
 
 `--json` 时 stdout 只有 JSON：
 
@@ -360,6 +364,8 @@ error 28, warning 2。exit 3。
   "ok": false
 }
 ```
+
+`check --json` / `counts --json` 在存在外部引用表时附 `citedRows: [{ line, reason, ids }]`，与 `list --json` 同一口径，无引用时省略。`list` / `counts` / `show` 的 `--json` 始终附 `diagnostics: { errors: [], warnings: [] }`（数组可为空）；两类诊断来自同一次解析，并与 `check --json` 的 `errors` / `warnings` 按 `code`、`line`、`id` 对齐。文本 `check` / `counts` 按开放表逐状态计数，未声明状态也照实列出，W220 提醒词表不匹配；`list --status` 可筛出实际存在的未声明词但会输出 W220 提示。`list --priority P` 的 P 若只在另一张表中出现，会提示切换 `--closed`。
 
 ---
 
@@ -383,7 +389,7 @@ issuemd new FILE --id 77 --title "…"        # 显式给号（撞号报错）
 
 事务：取号（默认 `max+1`，区间端点参与）→ 插入索引行（升序）→ 插入正文骨架 → 内存重跑 check → 落盘。
 
-正文骨架默认 `**现象** / **根因** / **期望** / **验收判据**` 四个加粗标签；`--body-file PATH|-` 替换的是**标题以下**的正文（不要自己写 `### Issue N:`，标题来自 `--title`）。正文文件里的 `#` / `##` 顶层标题会被拒绝（它会提前结束正文块而 `check` 仍通过），未闭合的 fence 也会被拒绝；`###` 与 Setext 标题由写入门禁以 E110 拒绝；以 `### Issue N:` 开头（把 `show --json` 的 `body.text` 原样回写）时 exit 2 并提示删掉那一行；开头的 BOM 与开头的空行会被剥掉（标题下恰好一个空行，`show --json` 的 `body.text` 去掉标题后原样回写不产生改动）；fence 外的 `<!-- issuemd:kept-body:end -->` 行被拒绝（它是归档的结束标记，`close --keep-body` 会在那里截断）。`reopen` 只把归档自己的结束标记与说明行当标记，正文里 fence 中的同样文字原样恢复。
+正文骨架默认 `**现象** / **根因** / **期望** / **验收判据**` 四个加粗标签；`--body-file PATH|-` 替换的是**标题以下**的正文（不要自己写 `### Issue N:`，标题来自 `--title`）。正文文件里的 `#` / `##` 顶层标题会被拒绝（它会提前结束正文块而 `check` 仍通过），未闭合的 fence 也会被拒绝；`###` 与 Setext 标题由写入门禁以 E110 拒绝；以 `### Issue N:` 开头（把 `show --json` 的 `body.text` 原样回写）时 exit 2 并提示删掉那一行；开头的 BOM 与开头的空行会被剥掉（标题下恰好一个空行，`show --json` 的 `body.text` 去掉标题后原样回写不产生改动）；正文文件不得在 fence 外包含归档结束标记 `&lt;!-- issuemd:kept-body:end -->`。`new` / `rename` 的标题拒绝原始 `&lt;!--` 与 `-->`，避免标题写入 Markdown heading 后开启或结束注释；需要讨论这些分隔符时可写 `< !--` 或 `&lt;!--`。`reopen` 只把归档自己的结束标记与说明行当标记，正文里 fence 中的同样文字原样恢复。
 
 `--priority` 只接受 `P0`–`P3` 或空串（默认 `P2`）。默认取号 `max+1` 超出安全整数范围时 exit 2，要求显式 `--id`。不可读的表行（E108/E109）、规范表以外的 issue 表行（E124）与外来表中保留的编号（见 W225，包括仅保留编号的状态行）也参与取号与撞号检查。新摘要与某个**开放**项的摘要规范化后相同时 exit 2、不写，并点名已有编号——重试的调用方据此知道「已经记过」（dogfood #34）；确需另记一条加 `--allow-duplicate-title`。已关闭项同名不拦。
 
@@ -395,7 +401,7 @@ issuemd new FILE --id 77 --title "…"        # 显式给号（撞号报错）
 issuemd close FILE 57 --criteria-from-body   # 或 --criteria "…"
 ```
 
-事务：从索引删行 → 从正文删块（`--keep-body` 时把该块移入 `## 附录` 并 warn W250；归档以 `<!-- issuemd:kept-body:end -->` 收尾，之后追加到附录的文字不属于它；该归档可由 `reopen` 原样恢复）→ 已关闭表按编号插入 → 把正文 `**验收判据**` 块提升为判据列（**判据去重的关键**：开放时在正文，关闭后在表）。
+事务：从索引删行 → 从正文删块（`--keep-body` 时把该块移入 `## 附录` 并 warn W250；归档以 `&lt;!-- issuemd:kept-body:end -->` 收尾，之后追加到附录的文字不属于它；该归档可由 `reopen` 原样恢复）→ 已关闭表按编号插入 → 把正文 `**验收判据**` 块提升为判据列（**判据去重的关键**：开放时在正文，关闭后在表）。
 
 判据从哪来（判据不得静默丢失）：
 
@@ -416,6 +422,8 @@ issuemd close FILE 57 --criteria-from-body   # 或 --criteria "…"
 
 正文晋升的判据若含「反斜杠紧邻竖线」（fence 里的 `echo a \| b` 是常见写法），表格单元格无法原样存储——读回时 `\|` 会被当成字面的 `|`，反斜杠丢失。`close` 因此拒绝写入（exit 2，不落盘），提示改用 `--criteria` 写表格里应显示的文本，或 `--keep-body --no-criteria` 把正文原样留在附录（第十四轮黑盒）。
 
+`close` 不能借删除或归档正文来抹掉已有诊断：除被关闭编号自身的 E102（该 issue 没有正文，关闭后可消除）外，只要候选内容会让任一基线 error 消失，就拒绝写入并点名错误。E106 应先用 `rename` / `sync --titles` 修正；其他错误先按 `check` 修复。适用于 `close` 与 `close --keep-body`，避免把错误藏进附录后令 `reopen` 永久失败（dogfood #86）。
+
 ### 7.3 `status`
 
 只在 open↔open 或 closed↔closed 内改单元格；跨分类必须 `close`/`reopen`：
@@ -431,7 +439,9 @@ error: #56 当前 观察（open），目标 已修（closed）跨分类，请用
 
 ### 7.5 `reopen`
 
-从已关闭表删行 → 索引插入行 → 正文插入骨架（判据回填进 `**验收判据**`）。若 `close --keep-body` 在附录留了 `### #N …（已关闭，正文保留）` 归档（以 `<!-- issuemd:kept-body:end -->` 收尾；没有该标记的旧归档取到该 H3 结束），则原样恢复该正文并删掉归档，`close --keep-body` + `reopen` 逐字节还原；否则原文不可恢复，只保留判据——这是「关闭即删正文」的已知代价，`--keep-body` 是逃生口。
+从已关闭表删行 → 索引插入行 → 正文插入骨架。无归档时，仅 `已修` 行的非空判据进入 `**验收判据**`；`延后`、`决定不改`、`不是缺陷`、`范围外`、`撤回`、`并入`、`未分类` 等其他关闭状态的单元格内容写入 `**关闭理由**`，不冒充验收标准。空判据仍可重开，命令在 stderr 提醒补写；W261 保持可见，`--strict` 可能失败直到补齐判据。
+
+若存在 `close --keep-body` 归档，则原样恢复归档正文并删除归档；归档标题格式为 `### #N <摘要>（已关闭，正文保留）`，以 `&lt;!-- issuemd:kept-body:end -->` 收尾（旧归档没有结束标记时取到该 H3 结束）。归档中的 `**验收判据**` 是当前正文判据。若关闭表格中的判据与归档正文不同，后者仍为当前判据，表格值另存为 `**关闭时判据**` 历史信息。裸 hash 从关闭表格回填正文时会用行内代码标记，W202 将行内代码中的 hash 作为字面证据；哈希值本身不改。两个判据一致时，`close --keep-body` + `reopen` 仍逐字节还原。正文不能恢复的普通关闭项仍只有关闭表格可供回填，这是「关闭即删正文」的已知代价，`--keep-body` 是逃生口。
 
 已是开放项时不再 exit 2：不带 `--status`、或目标状态与本行相同，都是无操作（stdout `(no changes)`、exit 0；`--dry-run` 同样并给 `snapshot`）；只有**显式** `--status` 给出另一个开放状态时，才按 `status` 更新该单元格（不做重复摘要检查——本行已是开放项，不会新增第二个开放行）（第十四轮；复审后明确「不带 --status 不改 `观察`」）。
 
@@ -439,7 +449,7 @@ error: #56 当前 观察（open），目标 已修（closed）跨分类，请用
 
 - `body FILE ID --body-file PATH|-`：替换开放 issue 标题以下的正文；输入规则同 `new --body-file`；已关闭 id exit 2；缺正文块时按编号位置新建。
 - `priority FILE ID P`：只改 `P` 单元格，开放/已关闭都行；`P` 只能是 `P0`–`P3` 或空。
-- `split FILE ID`：把 ID 所在的多号行或区间行拆成每号一行（字段原样复制、升序原位）。**不替任何号补正文**：原本没有正文的号拆分后仍然没有，E102 继续报出（区间行会从「第一个缺失号」变成逐号报出），split 在 stderr 提示用 `issuemd body` 补写。缺失编号超过 3 个时，提示只列总数、首尾编号和省略数，完整清单用 `issuemd check FILE --json` 里的 E102 获取（dogfood #64、#76）。单号行 exit 2；超过 1000 个号 exit 2。只解析一次台账（dogfood #70）。
+- `split FILE ID`：把 ID 所在的多号行或区间行拆成每号一行（字段原样复制、升序原位）。**不替任何号补正文**：原本没有正文的号拆分后仍然没有，E102 继续报出（区间行会从「第一个缺失号」变成逐号报出），split 在 stderr 提示用 `issuemd body` 补写。缺失编号超过 3 个时，提示只列总数、首尾编号和省略数，完整清单用 `issuemd check FILE --json` 里的 E102 获取（dogfood #64、#76）。如果拆分新增 W212，命令 exit 0 并在 stderr 概括受影响编号、建议拆分后用 `rename` 区分；完整诊断见 `check --json`（dogfood #90）。单号行 exit 2；超过 1000 个号 exit 2。只解析一次台账（dogfood #70）。
 - `reopen --status S`：S 必须是开放分类，默认 `未决`。
 - `reopen` 的摘要与某个开放项规范化后相同（例如以 `并入` 关闭的重复项被重开）时 exit 2、不写，点名已有编号并给出 `issuemd rename`；确需重开加 `--allow-duplicate-title`，之后由 W212 持续报出。
 - 所有 per-id 命令（close/reopen/status/rename/body/priority）对多号行、区间行用同一句话拒绝，并给出 `issuemd split FILE <id>`；`close`/`reopen` 先判行形状、再判开关状态。
@@ -458,17 +468,15 @@ issuemd counts FILE [--json]
 
 | 开关 | 行为 |
 |---|---|
-| `--titles` | 对齐正文标题与索引摘要；方向必须显式：`--prefer=body`（默认）把正文标题写回表格，`--prefer=table` 反过来；命中 W260，或表格摘要在正文标题之外还多出文字（`标题甲（进展：已修一半）`、`标题甲 [WIP]`）时，必须配 `--move-progress` 或 `--drop-progress`，或改用 `--prefer table`（否则 exit 3、不写）；`--prefer table` 只拒绝真正的进展词（W260），较长的表格措辞会写进标题、不丢；两者完全不同的措辞照常对齐 |
+| `--titles` | 对齐正文标题与索引摘要。摘要和正文标题相同时是 no-op；不同时必须明确选择：`--prefer table` 保留表格摘要并改正文标题；`--prefer body --move-progress` 把旧摘要完整保存为正文进展后改表格摘要；`--prefer body --drop-progress` 明确丢弃旧摘要并改表格摘要。只给 `--titles` 或只给 `--prefer body` 都 exit 3、不写。W260 护栏保留：正文优先需显式 move/drop，表格优先命中 W260 仍拒绝。所有真实或 dry-run 标题变化都在 stderr 点名旧值、新值。多号行仍跳过并点名，提示先拆行 |
 | `--fix-tables` | 补 `\|---\|`（修 E122），列数按表头补齐或报 E108 |
 | `--guide` | 重写 `## 怎么用` 与 `## 状态口径` 受控块 |
-| `--move-progress` / `--drop-progress` | W260 护栏：搬运进展进正文 / 明确丢弃 |
+| `--move-progress` / `--drop-progress` | 仅与显式 `--prefer body` 配用：保留旧摘要为正文进展 / 明确丢弃旧摘要 |
 | `--dry-run` | 输出 diff；须能验证「只改了 N 行」 |
 
 `sync` 不删正文、不移行、不改状态。这条边界让 agent 敢无人值守跑 `sync --dry-run`。`--titles` 跳过的多号行（摘要与某个正文标题不一致）在 stderr 逐条列出，提示先拆行。
 
-**为什么默认 `--prefer=body`**：正文标题是干净的问题描述；表摘要里可能有进度汇报。默认 body→table 符合 S4。
-
-**护栏**：`sync --titles` 一旦命中 W260，**默认拒绝执行**并 exit 3，要求显式二选一。这样「只改 N 行」的承诺不会被悄悄违反。`--prefer=table` 命中 W260 时同样拒绝（它会把进展词抄进正文标题），两个进展开关只与 `--prefer=body` 搭配；`--prefer` 只能配 `--titles`。无事可做的 `--titles --dry-run` 与其他 dry-run 一样输出 `(no changes)` 并在 stderr 给 `snapshot`。
+**选择护栏**：`--prefer` 只能配 `--titles`。变更摘要时必须显式选一侧；`--prefer body` 还必须配 `--move-progress` 或 `--drop-progress`，保证摘要文本得到保留或由用户明确舍弃。命中 W260 时同样要求 move/drop，`--prefer table` 命中 W260 则拒绝，因为它会把进展写入正文标题。每项变更在 stderr 输出 `updated #N summary/body title: "旧值" → "新值"`，dry-run 与真实运行一致。无事可做的 `--titles --dry-run` 仍输出 `(no changes)` 并在 stderr 给 `snapshot`。
 
 写命令找不到编号时 exit 1，提示写在 stderr（不混进 `--dry-run` 的 stdout diff）；读命令 `show` 仍在 stdout 打 `(no such issue: N)`；`show --json` 时 stdout 为空、提示在 stderr（stdout 只能是 JSON）。
 
@@ -523,9 +531,11 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 
 退出码：0 成功 / 1 没有这条 issue 或结果为空 / 2 用法或 I/O 错误 / **3 check 发现 error** / **4 文件在读取后被改动（E130），重读后重试**。`issuemd FILE` 不是命令简写，exit 2。写命令算出的内容与原文逐字节相同时不落盘，stdout 打 `(no changes)`（与 `--dry-run` 同一措辞）、exit 0——重试的调用方能区分「已经改过」与「刚才改成功」；真正有改动时 stdout 仍为空（`new` 只有编号一行）（dogfood #66）。`adopt` 无改动时同样先打一行 `(no changes)`，再打迁移报告，与该命令的 `--dry-run` 一致（第十四轮）。
 
-每个命令只接受自己的选项（见 `issuemd <command> --help`）；给了别的命令的选项（`list --title`、`new --json`、`check --closed`）一律 exit 2，不静默忽略。`list --status` / `--priority` 的值不在词表、也不在台账里出现时 exit 2；关闭类状态用在开放表上会提示加 `--closed`。读命令遇到不可读的表行时在 stderr 说明结果不完整，`list --json` 附 `unreadableRows`；外来表保留的编号不属于不可读行。`list --json`（开放与 `--closed` 都）附 `citedRows: [{ line, reason, ids }]`（没有时省略），agent 不必跑 `check` 也知道哪些编号不会被分配（第十二轮；W225 表引用的编号若同时是已登记的 issue 也照列）；`show` 查到的编号若还出现在某条不可读行（如 E124 的旧表）里，照常输出并在 stderr 点名那一行；`list --json` 每项带 `ids` 与 `count`，顶层带 `rowCount` / `issueCount`（`issueCount` 与 `counts` 一致）。
+每个命令只接受自己的选项（见 `issuemd <command> --help`）；给了别的命令的选项（`list --title`、`new --json`、`check --closed`）一律 exit 2，不静默忽略。`list --status` / `--priority` 的值既不在词表也不在台账中时 exit 2；实际出现在台账中的未声明状态仍可过滤，但 stderr 提示 W220。关闭类状态用在开放表上会提示加 `--closed`；优先级只在另一张表中出现时也会提示切表。
 
-**读视图与 `check` 的一致性（第十三轮，dogfood #63）**：`check` 有 error 时，`list` / `counts` / `show` 的退出码仍是 0/1（读一份坏台账去修它是正当用法），但会在 stderr 写一行 `note: 'issuemd check' reports N error(s) (first: CODE L… )`；三者的 `--json` 顶层附 `diagnostics: { errors: [...] }`（仅在有 error 时出现，字段与 `check --json` 的 error 相同，含 E106 的 `expected` / `actual`），机器消费者不必再跑一次 `check`。`N` 是 `check` 报告的全部 error 数（包括不可读行）；错误全部落在不可读行上时也照常出现，只是与 `unreadableNote` 的逐行说明并列（第十四轮）。
+读命令遇到不可读的表行时在 stderr 说明结果不完整，`list --json` 附 `unreadableRows`；外来表保留的编号不属于不可读行。`list --json`（开放与 `--closed` 都）附 `citedRows: [{ line, reason, ids }]`（没有时省略），agent 不必跑 `check` 也知道哪些编号不会被分配（第十二轮；W225 表引用的编号若同时是已登记的 issue 也照列）。`check --json` 与 `counts --json` 也在有引用时附同一 `citedRows`。`show` 查到的编号若还出现在某条不可读行（如 E124 的旧表）里，照常输出并在 stderr 点名那一行；`list --json` 每项带 `ids` 与 `count`，顶层带 `rowCount` / `issueCount`（`issueCount` 与 `counts` 一致）。
+
+**读视图与 `check` 的一致性（第十三轮，dogfood #63；第十八轮）**：`check` 有 error 时，`list` / `counts` / `show` 的退出码仍是 0/1（读一份坏台账去修它是正当用法），但会在 stderr 写一行 `note: 'issuemd check' reports N error(s) (first: CODE L… )`。三者的 `--json` 始终附 `diagnostics: { errors: [...], warnings: [...] }`，数组可为空并始终存在；诊断与同快照的 `check --json` 按 `code` / `line` / `id` 对齐，包含 E106 的 `expected` / `actual`。`N` 是 `check` 报告的全部 error 数（包括不可读行）；错误全部落在不可读行上时也照常出现，只是与 `unreadableNote` 的逐行说明并列（第十四轮）。
 
 **正文归属（dogfood #69）**：`show` 先找本号自己的 `### Issue N:` 块；找不到时沿用「同一行只在首号写一段正文」的历史写法，借同一行其他号的正文——逗号行任一 id、区间行任一被覆盖的 id（`5–7` 的正文挂在 `6` 也算）——但某个 id 自己有独立行时（重复编号，E103）不借它的正文，`show` 与 `list --with-body` 同口径（第十四轮复审）；`--json` 的 `body` 带 `id`（正文真正属于哪个号）与 `inherited: true`，`criteria` 另带 `criteriaFrom`，文本模式在 stderr 写 `note: the body shown belongs to #N`、stdout 写明「正文属于 #N」。`check` 仍对没有自己正文的号报 E102。
 
