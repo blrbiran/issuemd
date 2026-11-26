@@ -208,3 +208,27 @@ test("#99 rename reports the previous archive title and suppresses success on re
   expect(result.code).toBe(0);
   expect(result.stderr).toContain('archive title: "侧栏宽度不可调" → "归档的新标题"');
 });
+
+for (const [name, bodies, expected] of [
+  ["missing", "", ["E102:21a", "E102:21b"]],
+  ["different", `### Issue 21a: 第一条\n\n${criterion}\n\n### Issue 21b: 第二条\n\n${criterion}\n\n`, ["E106:21b"]],
+] as const) {
+  test(`#90 split preserves pre-existing errors for ${name} bodies`, async () => {
+    const source = canonical
+      .replace("\n\n## 已关闭\n", "\n| 21a, 21b | 观察 | P3 | 第一条 |\n\n## 已关闭\n")
+      .replace("## 附录\n", `${bodies}## 附录\n`);
+    const ledger = fixture(`split-${name}.md`, source);
+    const check = async () => {
+      const result = await run(["check", ledger, "--strict", "--json"]);
+      expect(result.code).toBe(3);
+      const diagnostics = JSON.parse(result.stdout) as { errors: { code: string; id: string }[] };
+      return diagnostics.errors.map(({ code, id }) => `${code}:${id}`).sort();
+    };
+    expect(await check()).toEqual([...expected]);
+    const split = await run(["split", ledger, "21b"]);
+    expect(split.code).toBe(0);
+    expect(split.stderr).toContain("#21a");
+    expect(split.stderr).toContain("#21b");
+    expect(await check()).toEqual([...expected]);
+  });
+}
