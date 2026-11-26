@@ -248,7 +248,7 @@ function checkAppendix(ledger: Ledger) {
     const [, id, summary] = match;
     warnings.push({ code: "W250", line, id, message: "Issue body kept in 附录 by close --keep-body" });
     const closedRow = single("closed", id);
-    if (closedRow && foldWhitespace(closedRow.summary) !== foldWhitespace(summary)) {
+    if (closedRow && foldWhitespace(closedRow.summary) !== foldWhitespace(unescapeCell(summary))) {
       warnings.push({
         code: "W251", line, id, message: "Archive heading summary differs from the closed table",
         expected: closedRow.summary, actual: summary,

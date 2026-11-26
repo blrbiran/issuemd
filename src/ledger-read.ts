@@ -52,6 +52,125 @@ function mayBorrow(ledger: ReturnType<typeof parseLedger>, rowLine: number, cand
     row.line !== rowLine && row.ids.some((span) => spanText(span) === wanted));
 }
 
+export type WithBodyIndex = {
+  rowsById: Map<string, FoundRow>;
+  exactBodiesById: Map<string, BodyBlock>;
+  bodiesBySuffix: Map<string, BodyBlock[]>;
+  explicitRowsById: Map<string, Set<number>>;
+  fallbackBodiesByRowLine: Map<number, BodyBlock | null>;
+};
+
+/** Build lookups only for IDs the current list view will request. */
+export function indexWithBody(
+  ledger: ReturnType<typeof parseLedger>,
+  issues: ListedIssue[] = [...ledger.rows.open.map((row) => toListedIssue(row, "open")),
+    ...ledger.rows.closed.map((row) => toListedIssue(row, "closed"))],
+  blocks = bodyBlocks(ledger),
+): WithBodyIndex {
+  const requested = new Set(issues.map((issue) => issue.ids[0]).filter((id): id is string => id != null));
+  const requestedNumbers = [...requested]
+    .filter((id) => /^\d+$/.test(id))
+    .map(Number)
+    .sort((a, b) => a - b);
+  const numericIndex = new Map(requestedNumbers.map((id, index) => [String(id), index]));
+  const next = Array.from({ length: requestedNumbers.length + 1 }, (_, index) => index);
+  const findNext = (at: number): number => {
+    let root = at;
+    while (next[root] !== root) root = next[root]!;
+    while (next[at] !== at) {
+      const following = next[at]!;
+      next[at] = root;
+      at = following;
+    }
+    return root;
+  };
+  const rowsById = new Map<string, FoundRow>();
+  const explicitRowsById = new Map<string, Set<number>>();
+  const claimNextNumber = (index: number, found: FoundRow) => {
+    const id = String(requestedNumbers[index]!);
+    if (!rowsById.has(id)) rowsById.set(id, { ...found, id, inRange: found.span.start !== found.span.end });
+    next[index] = findNext(index + 1);
+  };
+  for (const table of ["open", "closed"] as const) {
+    for (const row of ledger.rows[table]) {
+      for (const span of row.ids) {
+        const written = spanText(span);
+        const found: FoundRow = { row, table, span, id: written, inRange: span.start !== span.end };
+        if (requested.has(written) && !rowsById.has(written)) rowsById.set(written, found);
+        if (span.start === span.end) {
+          const lines = explicitRowsById.get(written) ?? new Set<number>();
+          lines.add(row.line);
+          explicitRowsById.set(written, lines);
+          const index = numericIndex.get(written);
+          if (index != null && findNext(index) === index) next[index] = findNext(index + 1);
+        } else if (span.suffix === "") {
+          let low = 0;
+          let high = requestedNumbers.length;
+          while (low < high) {
+            const middle = (low + high) >>> 1;
+            if (requestedNumbers[middle]! < span.start) low = middle + 1;
+            else high = middle;
+          }
+          for (let index = findNext(low); index < requestedNumbers.length && requestedNumbers[index]! <= span.end;) {
+            claimNextNumber(index, found);
+            index = findNext(index);
+          }
+        }
+      }
+    }
+  }
+  const exactBodiesById = new Map<string, BodyBlock>();
+  const bodiesBySuffix = new Map<string, BodyBlock[]>();
+  for (const block of blocks) {
+    const key = `${block.id.start}${block.id.suffix}`;
+    if (!exactBodiesById.has(key)) exactBodiesById.set(key, block);
+    const sameSuffix = bodiesBySuffix.get(block.id.suffix) ?? [];
+    sameSuffix.push(block);
+    bodiesBySuffix.set(block.id.suffix, sameSuffix);
+  }
+  for (const sameSuffix of bodiesBySuffix.values()) {
+    sameSuffix.sort((a, b) => a.id.start - b.id.start || a.line - b.line);
+  }
+  return { rowsById, exactBodiesById, bodiesBySuffix, explicitRowsById, fallbackBodiesByRowLine: new Map() };
+}
+
+function rangeBodies(index: WithBodyIndex, span: IdSpan): BodyBlock[] {
+  const sameSuffix = index.bodiesBySuffix.get(span.suffix) ?? [];
+  let low = 0;
+  let high = sameSuffix.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (sameSuffix[middle]!.id.start < span.start) low = middle + 1;
+    else high = middle;
+  }
+  const found: BodyBlock[] = [];
+  for (let at = low; at < sameSuffix.length && sameSuffix[at]!.id.start <= span.end; at++) found.push(sameSuffix[at]!);
+  return found;
+}
+
+function indexedBody(index: WithBodyIndex, row: FoundRow): BodyBlock | undefined {
+  const key = (span: IdSpan) => `${span.start}${span.suffix}`;
+  const exact = index.exactBodiesById.get(row.id);
+  if (exact) return exact;
+  if (index.fallbackBodiesByRowLine.has(row.row.line)) {
+    return index.fallbackBodiesByRowLine.get(row.row.line) ?? undefined;
+  }
+  let earliest: BodyBlock | undefined;
+  for (const span of row.row.ids) {
+    const candidates = span.start === span.end
+      ? [index.exactBodiesById.get(key(span))].filter((block): block is BodyBlock => block != null)
+      : rangeBodies(index, span);
+    for (const candidate of candidates) {
+      const owner = key(candidate.id);
+      const explicitRows = index.explicitRowsById.get(owner);
+      if (explicitRows && [...explicitRows].some((line) => line !== row.row.line)) continue;
+      if (!earliest || candidate.line < earliest.line) earliest = candidate;
+    }
+  }
+  index.fallbackBodiesByRowLine.set(row.row.line, earliest ?? null);
+  return earliest;
+}
+
 export function filterRows(
   rows: LedgerRow[],
   opts: { status?: string; priority?: string },
@@ -125,19 +244,17 @@ export function toListedIssue(row: LedgerRow, table: TableKind): ListedIssue {
 export function withBody(
   ledger: ReturnType<typeof parseLedger>,
   issue: ListedIssue,
-  blocks = bodyBlocks(ledger),
+  index = indexWithBody(ledger),
 ): ListedIssue {
   if (issue.criteria != null) return { ...issue, criteriaSource: "table" }; // closed rows carry their own column
   const first = issue.ids[0];
   if (!first) return issue;
-  const row = findRow(ledger, first);
+  const row = index.rowsById.get(first);
   if (!row || row.table !== "open") return issue;
-  const key = (span: IdSpan) => `${span.start}${span.suffix}`;
-  const exact = blocks.find((candidate) => key(candidate.id) === row.id);
-  // A range row (`5–7`) may keep its body under an interior id; a comma row
-  // under any of its ids. Either is the row's body (`bodyFrom` says which).
-  const block = exact ?? blocks.find((candidate) =>
-    row.row.ids.some((span) => covers(span, candidate.id)) && mayBorrow(ledger, row.row.line, candidate));
+  // Prefer the first id's exact body, then the earliest body owned by any id
+  // in this row. The index keeps overlap checks constant-time and range lookup
+  // logarithmic instead of scanning all rows and blocks for every issue.
+  const block = indexedBody(index, row);
   if (!block) return issue;
   const bodyLines = ledger.lines.slice(block.line - 1, block.end);
   const labels: Record<string, string> = {};
@@ -145,7 +262,7 @@ export function withBody(
     labels[name] = labelBlock(bodyLines, 1, bodyLines.length, name)?.text ?? "";
   }
   const out: ListedIssue = { ...issue, labels };
-  const owner = key(block.id);
+  const owner = `${block.id.start}${block.id.suffix}`;
   if (owner !== row.id) out.bodyFrom = owner;
   const criteria = extractCriteria(bodyLines);
   if (criteria) {

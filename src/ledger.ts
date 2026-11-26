@@ -178,8 +178,10 @@ function commentedLines(lines: string[], visible: Set<number>): Set<number> {
   for (let index = 0; index < lines.length; index++) {
     const text = lines[index]!;
     if (!inside) {
-      if (!visible.has(index + 1) || !/^ {0,3}<!--/.test(text)) continue;
-      inside = !text.slice(text.indexOf("<!--") + 4).includes("-->");
+      if (!visible.has(index + 1)) continue;
+      const opening = text.indexOf("<!--");
+      if (opening < 0) continue;
+      inside = text.indexOf("-->", opening + 4) < 0;
       continue;
     }
     commented.add(index + 1);
@@ -218,14 +220,17 @@ function strayRows(
   let comments: Set<number> | undefined;
   for (const block of blocks) {
     const h2 = h2s.filter((section) => section.line_start < block.line).at(-1);
-    // Only the section the ledger actually reads is skipped: `## 索引（旧）`,
-    // `## 已关闭（2025）` or a second `## 索引` hide rows otherwise (probe 11).
-    if (!h2 || (OWN_TABLES.has(h2.title) && h2s.find((section) => section.title === h2.title) === h2)) continue;
+    if (!h2) continue;
+    const freeform = h2.title === "正文" || h2.title === "附录";
+    // Canonical issue tables are read elsewhere; guide/status sections are
+    // controlled text. 正文/附录 stay free-form, but visible issue-shaped rows
+    // still reserve IDs so archiving a body cannot make an ID reusable.
+    if (OWN_TABLES.has(h2.title) && !freeform && h2s.find((section) => section.title === h2.title) === h2) continue;
     const header = tableHeader(block.rows);
     const width = (header ?? block.rows[0]).length;
     if (!isTableSection(h2.title)) {
       // Pipe lines without a separator render as a paragraph, not a table.
-      if (!block.header) continue;
+      if (!block.header || (freeform && !block.separator)) continue;
       const statusAt = header?.indexOf("状态") ?? -1;
       const idAt = header ? header.findIndex((cell) => ID_COLUMN.includes(cell)) : 0;
       if (idAt < 0) continue;
@@ -233,22 +238,24 @@ function strayRows(
         ? header.length === 2 || header.some((cell) => cell === "摘要" || cell === "标题")
         : !!mappingFor(undefined, width);
       if (!warn && (!block.separator || statusAt < 0)) continue;
-      const hidden = warn ? undefined : (comments ??= commentedLines(lines, visible));
+      const hidden = warn && !freeform ? undefined : (comments ??= commentedLines(lines, visible));
       if (hidden?.has(block.line)) continue;
-      const reason = `table under '## ${h2.title}' looks like an issue table but is not tracked (adopt keeps it as text); ` +
-        "its ids are reserved, so new will not reuse them; if its rows are issues, move them into 索引/已关闭 by hand; " +
-        "if not, rename its '#' column";
+      const reason = freeform
+        ? `cited in a free-form table under '## ${h2.title}'`
+        : `table under '## ${h2.title}' looks like an issue table but is not tracked (adopt keeps it as text); ` +
+          "its ids are reserved, so new will not reuse them; if its rows are issues, move them into 索引/已关闭 by hand; " +
+          "if not, rename its '#' column";
       let warned = false;
       for (const { cells, index } of dataRows(block.rows, header)) {
         if (!warn && !isStatusWord(cells[statusAt] ?? "")) continue;
         const ids = parseIds(cells[idAt] ?? "");
         if (!ids) continue;
         const line = block.line + index;
-        if (warn && !warned) {
+        if (warn && !freeform && !warned) {
           warnings.push({ code: "W225", line, message: reason });
           warned = true;
         }
-        const source = warn ? "W225" : "ledger status";
+        const source = warn ? (freeform ? "free-form issue table" : "W225") : "ledger status";
         cited.push({ line, table: "cited", reason: `cited in a table under '## ${h2.title}' (${source})`, ids });
       }
       continue;

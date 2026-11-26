@@ -70,6 +70,7 @@ import {
   toListedIssue,
   viewIssue,
   withBody,
+  indexWithBody,
 } from "./ledger-read.js";
 import { unifiedDiff } from "./write.js";
 import { adopt, type Decision } from "./adopt.js";
@@ -459,7 +460,8 @@ function cmdList(rest: string[], v: Values): CliResult {
   }
   if (v["with-body"]) {
     const blocks = bodyBlocks(ledger);
-    issues = issues.map((issue) => withBody(ledger, issue, blocks));
+    const index = indexWithBody(ledger, issues, blocks);
+    issues = issues.map((issue) => withBody(ledger, issue, index));
   }
   if (v.json) {
     const unreadableRows = ledger.unreadable
@@ -1628,17 +1630,13 @@ function cmdRename(rest: string[], v: Values): CliResult {
   if (!found) return missingIssue("rename", idText);
   const refused = perIdRefusal("rename", idText, found);
   if (refused) return refused;
-  // Renaming to the summary the row already shows changes nothing: return
-  // before the duplicate guard or the body-heading rewrite can turn the no-op
-  // into an error or a byte change (round 14 review).
-  if (next === found.row.summary) {
-    return v["dry-run"]
-      ? { code: 0, stdout: "(no changes)\n", stderr: snapshotNote(loaded) }
-      : ok("(no changes)\n");
-  }
+  // The table summary may already match while the body or kept-body archive
+  // has drifted. Only bypass duplicate detection here; let the full candidate
+  // reach commit(), whose byte comparison decides whether this is a no-op.
+  const sameSummary = next === found.row.summary;
   // Renaming is the other way two open rows end up with one summary; refuse
   // it like `new` does (dogfood #34).
-  if (found.table === "open" && !v["allow-duplicate-title"]) {
+  if (!sameSummary && found.table === "open" && !v["allow-duplicate-title"]) {
     const twin = ledger.rows.open.find(
       (row) => row.line !== found.row.line && summaryKey(row.summary) === summaryKey(next),
     );
@@ -1656,14 +1654,21 @@ function cmdRename(rest: string[], v: Values): CliResult {
   const block = bodyBlocks(ledger).find(
     (candidate) => `${candidate.id.start}${candidate.id.suffix}` === idText,
   );
-  if (block) lines[block.line - 1] = `### Issue ${idText}: ${next}`;
+  if (block && unescapeCell(block.title) !== next) lines[block.line - 1] = `### Issue ${idText}: ${next}`;
   // A kept-body archive heading is a third copy of the summary; keep it in
   // step, or it silently disagrees with the table forever (dogfood #40).
-  const fenced = fencedLines(lines);
-  lines.forEach((text, index) => {
-    const match = fenced[index] ? null : ARCHIVE_HEADING.exec(text);
-    if (match && match[1] === idText) lines[index] = archiveHeading(idText, next);
-  });
+  // Only archives inside the section recognized by check/reopen are managed.
+  const appendix = ledger.sections.find((section) => section.level === 2 && section.title === "附录");
+  if (appendix) {
+    const fenced = fencedLines(lines);
+    for (let line = appendix.line_start + 1; line <= appendix.line_end; line++) {
+      const index = line - 1;
+      const match = fenced[index] ? null : ARCHIVE_HEADING.exec(lines[index]!);
+      if (match && match[1] === idText && unescapeCell(match[2]!) !== next) {
+        lines[index] = archiveHeading(idText, next);
+      }
+    }
+  }
   const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
   if (next.includes("|") && result.code === 0) {
     return { ...result, stderr: result.stderr + "W205: the new title contains a pipe; it was escaped in the table cell\n" };
