@@ -17,9 +17,9 @@
 
 `issuemd` P0–P5 早已完成，`0.1.0` 已发布到 npm。外部 dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`）现到 #84，状态由测试者更新。#1–#80 的处理见各轮记录，#81–#84 见第十七轮。
 
-- 第十七轮已在 `fix/round-seventeen-dogfooding` 完成 #81–#84；测试全绿后可按工作流 ff 合入本地 `main`。push 仍由用户手动做。
+- 第十七轮已 fast-forward 合入本地 `main`。用 `git rev-list --count origin/main..main` 查看待 push 的提交数；push 由用户手动做。
 - 第十七轮未发版；用户 2026-11-25 明确暂缓发布，下次建议 `npm version minor`（0.2.0）。
-- `npm test` 构建到 `.dist-test/`。合入本地 `main` 后运行 `npm run build`，更新全局链接所用的 `dist/`。
+- 合并后已运行 `npm run build`；`dist/bin/issuemd.js` 保持可执行（755）。
 - 下一步由测试者复测第十七轮及尚未复测的第十四、十五轮改动；用户决定何时 push / 发版。
 
 ## 工作流约定（用户明确要求）
@@ -34,7 +34,7 @@
 
 ## 等待用户决策 / 动作
 
-1. **push**：第十四轮与复审已由用户 push。
+1. **push**：第十七轮已合入本地 `main`；push 由用户手动做（提交数用 `git rev-list --count origin/main..main` 现查）。
 2. **发版（用户决定时机，2026-11-25 明确「暂不发版」）**：`npm version minor` → `npm publish`（`prepack` 会自动 build `dist/`）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`、`.dist-test`。
 3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。#53 建议把已达标条目与「owner 裁定不做」的判据在台账里标注出来，这同样留给测试者。
 4. `.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。其他 clone 拉到那次提交时，git 会删掉它们工作区里的 `.cafe`，需从上一提交恢复（`git show <移出前的提交>:.cafe > .cafe`）。
