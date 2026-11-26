@@ -1,7 +1,11 @@
-import { scan } from "./scan.js";
+import { fencedLines, inlineCodeRanges, scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
 import { idText, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { STATUS_CLASSES } from "./statuses.js";
+
+export const ARCHIVE_HEADING = /^ {0,3}###\s+#([1-9]\d*[a-z]?)\s+(.*?)（已关闭，正文保留）\s*$/;
+
+export const KEPT_BODY_END = "<!-- issuemd:kept-body:end -->";
 
 const CORE = ["索引", "已关闭", "正文"] as const;
 
@@ -172,49 +176,68 @@ function dataRows(rows: string[][], header: string[] | undefined): { cells: stri
 }
 
 
-type CommentScan = { hidden: Set<number>; unclosed: Set<number>; unclosedOpeners: number[] };
+type CommentScan = { hidden: Set<number>; unclosed: Map<number, number>; unclosedOpeners: number[] };
 
-/** HTML comments outside fences and pipe-table rows, split by whether they close. */
-function commentSpans(lines: string[], visible: Set<number>): CommentScan {
+/** Comments may hide example tables within one structural scope. */
+function commentSpans(lines: string[], visible: Set<number>, boundaries: Map<number, boolean>): CommentScan {
   const hidden = new Set<number>();
-  const unclosed = new Set<number>();
+  const unclosed = new Map<number, number>();
   const unclosedOpeners: number[] = [];
+  const fenced = fencedLines(lines, true);
   let opener: number | undefined;
-  let start = 0;
+  let inArchive = false;
+  const endScope = (line: number) => {
+    if (opener === undefined) return;
+    unclosedOpeners.push(opener);
+    for (let covered = opener + 1; covered < line; covered++) unclosed.set(covered, opener);
+    opener = undefined;
+  };
 
   for (let index = 0; index < lines.length; index++) {
     const line = index + 1;
     const text = lines[index]!;
+    const archiveStart = boundaries.get(line);
+    if (archiveStart !== undefined) {
+      endScope(line);
+      inArchive = archiveStart;
+      continue;
+    }
+    if (fenced[index] || !visible.has(line) || /^ {0,3}\|/.test(text)) continue;
+    if (inArchive && text.trim() === KEPT_BODY_END) {
+      endScope(line);
+      inArchive = false;
+      continue;
+    }
+
     let cursor = 0;
-    for (;;) {
-      if (opener !== undefined) {
-        const close = text.indexOf("-->", cursor);
-        if (close < 0) break;
-        for (let hiddenLine = start + 1; hiddenLine <= line; hiddenLine++) hidden.add(hiddenLine);
-        opener = undefined;
-        cursor = close + 3;
+    if (opener !== undefined) {
+      // A standalone closer can end a multiline comment. Incidental mentions
+      // elsewhere on a line cannot change the visibility of earlier tables.
+      const close = /^[ \t]*-->/.exec(text);
+      if (!close) continue;
+      for (let covered = opener + 1; covered <= line; covered++) hidden.add(covered);
+      opener = undefined;
+      cursor = close[0].length;
+    }
+    if (!text.includes("<!--", cursor)) continue;
+    const code = inlineCodeRanges(text.slice(cursor));
+    const codeOffset = cursor;
+    let range = 0;
+    for (let open = text.indexOf("<!--", cursor); open >= 0; open = text.indexOf("<!--", cursor)) {
+      while (range < code.length && code[range]![1] + codeOffset <= open) range++;
+      if (range < code.length && code[range]![0] + codeOffset <= open) {
+        cursor = code[range]![1] + codeOffset;
         continue;
       }
-      // A raw delimiter in a Markdown table cell is data, not a comment that
-      // can hide unrelated appendix citations. Fenced lines are never parsed.
-      if (!visible.has(line) || /^ {0,3}\|/.test(text)) break;
-      const open = text.indexOf("<!--", cursor);
-      if (open < 0) break;
       const close = text.indexOf("-->", open + 4);
-      if (close >= 0) {
-        cursor = close + 3;
-        continue;
+      if (close < 0) {
+        opener = line;
+        break;
       }
-      opener = line;
-      start = line;
-      break;
+      cursor = close + 3;
     }
   }
-
-  if (opener !== undefined) {
-    unclosedOpeners.push(opener);
-    for (let line = start + 1; line <= lines.length; line++) unclosed.add(line);
-  }
+  endScope(lines.length + 1);
   return { hidden, unclosed, unclosedOpeners };
 }
 
@@ -244,8 +267,9 @@ function strayRows(
   cited: UnreadableRow[],
   lines: string[],
   visible: Set<number>,
+  boundaries: Map<number, boolean>,
 ) {
-  const comments = commentSpans(lines, visible);
+  const comments = commentSpans(lines, visible, boundaries);
   for (const line of comments.unclosedOpeners) {
     warnings.push({ code: "W262", line, message: "Unclosed HTML comment; following free-form issue tables remain reserved" });
   }
@@ -269,11 +293,10 @@ function strayRows(
         ? header.length === 2 || header.some((cell) => cell === "摘要" || cell === "标题")
         : !!mappingFor(undefined, width);
       if (!warn && (!block.separator || statusAt < 0)) continue;
-      const unclosedComment = freeform && comments.unclosed.has(block.line);
+      const commentOpener = comments.unclosed.get(block.line);
       if (!(warn && !freeform) && comments.hidden.has(block.line)) continue;
-      const commentOpener = comments.unclosedOpeners[0];
       const reason = freeform
-        ? `cited in a free-form table under '## ${h2.title}'${unclosedComment ? ` inside an unclosed HTML comment from L${commentOpener}` : ""}`
+        ? `cited in a free-form table under '## ${h2.title}'${commentOpener !== undefined ? ` inside an unclosed HTML comment from L${commentOpener}` : ""}`
         : `table under '## ${h2.title}' looks like an issue table but is not tracked (adopt keeps it as text); ` +
           "its ids are reserved, so new will not reuse them; if its rows are issues, move them into 索引/已关闭 by hand; " +
           "if not, rename its '#' column";
@@ -288,7 +311,7 @@ function strayRows(
           warned = true;
         }
         const source = `${warn ? (freeform ? "free-form issue table" : "W225") : "ledger status"}` +
-          `${unclosedComment ? `; unclosed HTML comment from L${commentOpener}` : ""}`;
+          `${freeform && commentOpener !== undefined ? `; unclosed HTML comment from L${commentOpener}` : ""}`;
         cited.push({ line, table: "cited", reason: `cited in a table under '## ${h2.title}' (${source})`, ids });
       }
       continue;
@@ -497,7 +520,18 @@ export function parseLedger(src: string) {
     if (tables.length !== 1) errors.push({ code: "E112", line: section.line_start, message: `${title} must contain one table` });
     rows[kind] = tables.flatMap((table) => readRows(table, kind, errors, warnings, unreadable));
   }
-  strayRows(blocks, h2s, errors, warnings, unreadable, cited, lines, visible);
+  const commentBoundaries = new Map<number, boolean>();
+  for (const section of sections) {
+    if (section.level <= 2) commentBoundaries.set(section.line_start, false);
+    if (section.level !== 3) continue;
+    if (section.parent?.title === "正文" && ISSUE_HEADING.test(section.title)) {
+      commentBoundaries.set(section.line_start, false);
+    }
+    if (section.parent?.title === "附录" && ARCHIVE_HEADING.test(lines[section.line_start - 1]!)) {
+      commentBoundaries.set(section.line_start, true);
+    }
+  }
+  strayRows(blocks, h2s, errors, warnings, unreadable, cited, lines, visible, commentBoundaries);
   return { lines, visible, sections, rows, unreadable, cited, blocks, errors, warnings };
 }
 

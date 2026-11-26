@@ -174,3 +174,60 @@ function matchHeading(line: string, lineNo: number): Heading | null {
   const title = line.slice(contentStart, end);
   return { level: hashes, title, line: lineNo };
 }
+
+/**
+ * `true` for every 0-based line index that is *inside* or *is* a fence
+ * (delimiters included). Both the criteria extractor and the controlled-block
+ * rewriter must ignore fenced lookalikes: a code block in an issue body or the
+ * appendix can legitimately contain `**验收判据**：…` or a marker pair.
+ *
+ * Body consumers also recognize fences relative to a list item's content margin.
+ * A standalone indented code block does not open a fence.
+ */
+export function fencedLines(lines: string[], inBody = false): boolean[] {
+  const out = new Array<boolean>(lines.length).fill(false);
+  let fence: { char: string; len: number; margin: number } | undefined;
+  let listMargin = 0;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    const leading = /^[ \t]*/.exec(line)![0];
+    let indent = 0;
+    for (const char of leading) indent += char === "\t" ? 4 - (indent % 4) : 1;
+    const text = line.slice(leading.length);
+    if (fence && fence.margin > indent && text) fence = undefined;
+    if (!fence && inBody && text && indent < listMargin) listMargin = 0;
+    const margin = fence?.margin ?? listMargin;
+    const delimiter = indent >= margin && indent - margin <= 3 ? /^(`{3,}|~{3,})(.*)$/.exec(text) : null;
+    if (!fence) {
+      if (delimiter && !(delimiter[1]!.startsWith("`") && delimiter[2]!.includes("`"))) {
+        fence = { char: delimiter[1]![0]!, len: delimiter[1]!.length, margin };
+        out[index] = true;
+      } else if (inBody && indent - listMargin <= 3) {
+        const item = /^(?:[-*+]|\d{1,9}[.)])( {1,4})(?=\S)/.exec(text);
+        if (item) listMargin = indent + item[0].length;
+      }
+      continue;
+    }
+    out[index] = true;
+    if (delimiter && delimiter[1]![0] === fence.char &&
+        delimiter[1]!.length >= fence.len && /^[ \t]*$/.test(delimiter[2]!)) {
+      fence = undefined;
+    }
+  }
+  return out;
+}
+
+/** Same-line Markdown code spans delimited by equal backtick runs. */
+export function inlineCodeRanges(text: string): [number, number][] {
+  const ticks = [...text.matchAll(/`+/g)];
+  const ranges: [number, number][] = [];
+  for (let at = 0; at < ticks.length; at++) {
+    const opening = ticks[at]!;
+    const closingAt = ticks.findIndex((candidate, index) => index > at && candidate[0].length === opening[0].length);
+    if (closingAt < 0) continue;
+    const closing = ticks[closingAt]!;
+    ranges.push([opening.index!, closing.index! + closing[0].length]);
+    at = closingAt;
+  }
+  return ranges;
+}

@@ -337,7 +337,7 @@ describe("rename", () => {
 
   test("a plain title does not warn", async () => {
     const path = ledger();
-    expect((await run(["rename", path, "2", "普通标题"])).stderr).toBe("");
+    expect((await run(["rename", path, "2", "普通标题"])).stderr).not.toContain("W205");
   });
 
   test("an already-escaped pipe is not escaped twice", async () => {

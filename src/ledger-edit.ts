@@ -10,6 +10,8 @@
 
 import type { LedgerRow, TableKind } from "./ledger.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
+import { fencedLines } from "./scan.js";
+export { fencedLines } from "./scan.js";
 
 // ---- cells -------------------------------------------------------------
 
@@ -156,48 +158,6 @@ export function ascendingRows(rows: LedgerRow[]): boolean {
 
 // ---- fences ------------------------------------------------------------
 
-/**
- * `true` for every 0-based line index that is *inside* or *is* a fence
- * (delimiters included). Both the criteria extractor and the controlled-block
- * rewriter must ignore fenced lookalikes: a code block in an issue body or the
- * appendix can legitimately contain `**验收判据**：…` or a marker pair.
- *
- * Body consumers also recognize fences relative to a list item's content margin.
- * A standalone indented code block does not open a fence.
- */
-export function fencedLines(lines: string[], inBody = false): boolean[] {
-  const out = new Array<boolean>(lines.length).fill(false);
-  let fence: { char: string; len: number; margin: number } | undefined;
-  let listMargin = 0;
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index]!;
-    const leading = /^[ \t]*/.exec(line)![0];
-    let indent = 0;
-    for (const char of leading) indent += char === "\t" ? 4 - (indent % 4) : 1;
-    const text = line.slice(leading.length);
-    if (fence && fence.margin > indent && text) fence = undefined;
-    if (!fence && inBody && text && indent < listMargin) listMargin = 0;
-    const margin = fence?.margin ?? listMargin;
-    const delimiter = indent >= margin && indent - margin <= 3 ? /^(`{3,}|~{3,})(.*)$/.exec(text) : null;
-    if (!fence) {
-      if (delimiter && !(delimiter[1]!.startsWith("`") && delimiter[2]!.includes("`"))) {
-        fence = { char: delimiter[1]![0]!, len: delimiter[1]!.length, margin };
-        out[index] = true;
-      } else if (inBody && indent - listMargin <= 3) {
-        const item = /^(?:[-*+]|\d{1,9}[.)])( {1,4})(?=\S)/.exec(text);
-        if (item) listMargin = indent + item[0].length;
-      }
-      continue;
-    }
-    out[index] = true;
-    if (delimiter && delimiter[1]![0] === fence.char &&
-        delimiter[1]!.length >= fence.len && /^[ \t]*$/.test(delimiter[2]!)) {
-      fence = undefined;
-    }
-  }
-  return out;
-}
-
 /** True when the last line leaves a code fence open. */
 export function endsInFence(lines: string[]): boolean {
   let fence: { char: string; len: number } | undefined;
@@ -223,10 +183,8 @@ export function endsInFence(lines: string[]): boolean {
  * `rename`, and reported by `check` (W250/W251/W252). It is deliberately not
  * an `Issue N:` heading: 附录 must not hold issue headings (E123).
  */
-export const KEPT_BODY_END = "<!-- issuemd:kept-body:end -->";
+export { ARCHIVE_HEADING, KEPT_BODY_END } from "./ledger.js";
 export const archiveHeading = (id: string, summary: string) => `### #${id} ${summary}（已关闭，正文保留）`;
-/** `### #<id> <summary>（已关闭，正文保留）` → id and summary. */
-export const ARCHIVE_HEADING = /^ {0,3}###\s+#([1-9]\d*[a-z]?)\s+(.*?)（已关闭，正文保留）\s*$/;
 /** The provenance note under the heading; `reopen` drops it when restoring. */
 export const ARCHIVE_NOTE = /^>\s*(?:关闭时以 --keep-body\s*|adopt 时)保留了原正文/;
 

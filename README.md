@@ -7,7 +7,7 @@ A CLI for **single-file issue ledgers** — the kind of Markdown where a table h
 ```bash
 issuemd check   FILE [--json] [--strict] [--verify-commits]
 issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]
-issuemd show    FILE ID [--json] [--label 验收判据]
+issuemd show    FILE ID [--body-only | [--json] [--label 验收判据]]
 issuemd counts  FILE [--json]
 issuemd read    FILE <H2 heading>
 
@@ -16,7 +16,7 @@ issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | -
 issuemd reopen  FILE ID [--status S] [--allow-duplicate-title]
 issuemd status  FILE ID NEW_STATUS
 issuemd rename  FILE ID "NEW TITLE" [--allow-duplicate-title]
-issuemd body    FILE ID --body-file PATH|-
+issuemd body    FILE ID --body-file PATH|- [--append]
 issuemd priority FILE ID P0|P1|P2|P3|""
 issuemd split   FILE ID
 issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
@@ -25,6 +25,8 @@ issuemd adopt   FILE [--dry-run] [--report PATH]
 ```
 
 Every write verb is atomic, keeps the file's BOM, line endings, trailing newline and mode bits, and validates the result before replacing the file: a change that would introduce a new `check` error is refused with exit `3` and nothing is written. `--dry-run` prints a unified diff instead (one hunk per changed region) and a `snapshot` on stderr; `--if-unchanged SNAPSHOT` then applies the write only if nobody changed the file since. `new` prints the id it filed; a write that would leave the bytes identical prints `(no changes)` and exits `0`. A file that is not valid UTF-8, or that mixes LF and CRLF, is refused with exit `2` rather than being silently re-encoded. `close` never drops criteria silently: it promotes the body's `**验收判据**` by default and refuses when there is nothing to record unless you say `--no-criteria`. `close` also refuses if it would make any existing check error disappear (except the selected issue's own missing-body E102). `sync --titles` requires an explicit preference; choosing the body title also requires `--move-progress` or `--drop-progress` so table wording is preserved or deliberately discarded.
+
+Use `issuemd body FILE ID --append --body-file PATH|-` to add a note without reading and rewriting the existing body. `issuemd show FILE ID --body-only` extracts that issue’s own body for editing and passing back to `--body-file`. Successful `rename` runs and previews report each replaced title on stderr. If a new body’s reference table reserves the ID selected by `new`, the command reports the conflicting row and exits `2` before writing.
 
 Each command accepts only its own options (`issuemd <command> --help`); anything else is exit `2`. The exit code is `0` on success, `1` for an unknown issue or empty result, `2` for usage or I/O errors, `3` for validation failures, and `4` when the file changed between read and write (`E130`; re-read and retry). Add `--strict` to fail on warnings (`W250`, the "body kept in the appendix" hint, is informational and never fails strict) or `--verify-commits` to look up referenced commits in the ledger's Git repository (outside a Git worktree, it warns W263 and skips verification).
 

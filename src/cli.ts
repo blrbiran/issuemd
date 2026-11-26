@@ -28,7 +28,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 
-import { scan } from "./scan.js";
+import { inlineCodeRanges, scan } from "./scan.js";
 import { buildSections, countLines } from "./sections.js";
 import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
 import { parseId, parseIds, compareIds, type IdSpan } from "./issue-id.js";
@@ -89,7 +89,7 @@ const EXIT_CODES =
 const COMMANDS = {
   check: { usage: "issuemd check   FILE [--json] [--strict] [--verify-commits]", options: ["json", "strict", "verify-commits"] },
   list: { usage: "issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]", options: ["status", "priority", "closed", "expand", "json", "with-body"] },
-  show: { usage: "issuemd show    FILE ID [--json] [--label NAME]", options: ["json", "label"] },
+  show: { usage: "issuemd show    FILE ID [--body-only | [--json] [--label NAME]]", options: ["json", "label", "body-only"] },
   counts: { usage: "issuemd counts  FILE [--json]", options: ["json"] },
   read: { usage: "issuemd read    FILE <H2 heading>", options: [] },
   new: { usage: "issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-] [--allow-duplicate-title]", options: ["title", "id", "status", "priority", "body-file", "allow-duplicate-title", "dry-run", "if-unchanged"] },
@@ -97,7 +97,7 @@ const COMMANDS = {
   reopen: { usage: "issuemd reopen  FILE ID [--status S] [--allow-duplicate-title]", options: ["status", "allow-duplicate-title", "dry-run", "if-unchanged"] },
   status: { usage: "issuemd status  FILE ID NEW_STATUS", options: ["dry-run", "if-unchanged"] },
   rename: { usage: "issuemd rename  FILE ID \"NEW TITLE\" [--allow-duplicate-title]", options: ["allow-duplicate-title", "dry-run", "if-unchanged"] },
-  body: { usage: "issuemd body    FILE ID --body-file PATH|-", options: ["body-file", "dry-run", "if-unchanged"] },
+  body: { usage: "issuemd body    FILE ID --body-file PATH|- [--append]", options: ["body-file", "append", "dry-run", "if-unchanged"] },
   priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run", "if-unchanged"] },
   split: { usage: "issuemd split   FILE ID", options: ["dry-run", "if-unchanged"] },
   sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress]]", options: ["guide", "fix-tables", "titles", "prefer", "move-progress", "drop-progress", "dry-run", "if-unchanged"] },
@@ -120,11 +120,13 @@ const OPTION_HELP: Record<string, string> = {
     "--with-body               list --json: add each issue's body labels and 验收判据 from one parse\n" +
     "                            (the `show --json` fields, without 61 separate calls)",
   label: "--label <NAME>            show: print only the **NAME** block",
+  "body-only": "--body-only               show: print only this issue’s body, ready for --body-file",
   title: "--title <T>               new: summary/body title (starts with '-'? write --title=\"-…\")",
   id: "--id <N>                  new: explicit issue id",
   "allow-duplicate-title":
     "--allow-duplicate-title   write it even though another open issue has the same summary",
   "body-file": "--body-file <path|->      new/body: body text under the heading (no `### Issue` line), or '-' for stdin",
+  append: "--append                  body: add text at the end of the existing issue body",
   criteria: "--criteria <TEXT>         close: criteria column text",
   "criteria-from-body":
     "--criteria-from-body      close: lift the **验收判据** block into the column (the default\n" +
@@ -220,6 +222,7 @@ const OPTIONS = {
   closed: { type: "boolean" },
   // show
   label: { type: "string" },
+  "body-only": { type: "boolean" },
   // shared write options
   "dry-run": { type: "boolean" },
   "if-unchanged": { type: "string" },
@@ -228,6 +231,7 @@ const OPTIONS = {
   id: { type: "string" },
   "allow-duplicate-title": { type: "boolean" },
   "body-file": { type: "string" },
+  append: { type: "boolean" },
   // close
   criteria: { type: "string" },
   "criteria-from-body": { type: "boolean" },
@@ -584,6 +588,9 @@ function cmdShow(rest: string[], v: Values): CliResult {
   if (file == null || id == null || rest.length !== 2) {
     return err(`usage: ${COMMANDS.show.usage}\n`, 2);
   }
+  if (v["body-only"] && (v.json || v.label != null)) {
+    return err("issuemd show: cannot combine --body-only with --json or --label\n", 2);
+  }
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
   const ledger = parseLedger(loaded.src);
@@ -602,7 +609,7 @@ function cmdShow(rest: string[], v: Values): CliResult {
     const cited = unreadableHolding(ledger, id, ledger.cited);
     const citedNote = cited ? `issuemd show: #${id} is not tracked, but is cited at L${cited.line} (${cited.reason})\n` : "";
     const missing = badIdText("show", id) ??
-      (v.json ? { code: 1, stdout: "", stderr: `issuemd show: no such issue: ${id}\n` } : noMatch(`(no such issue: ${id})\n`));
+      (v.json || v["body-only"] ? missingIssue("show", id) : noMatch(`(no such issue: ${id})\n`));
     // A miss on a ledger whose check fails is worth a note too (review 13).
     const missNote = structureNote(report.errors, new Set(ledger.unreadable.map((row) => row.line)));
     const result = citedNote && missing.code === 1 ? { ...missing, stderr: citedNote + missing.stderr } : missing;
@@ -623,6 +630,18 @@ function cmdShow(rest: string[], v: Values): CliResult {
   const baseNote = structureNote(report.errors, new Set(ledger.unreadable.map((row) => row.line))) + inheritedNote;
   const withNote = (result: CliResult): CliResult =>
     baseNote === "" && twinNote === "" ? result : { ...result, stderr: baseNote + twinNote + result.stderr };
+
+  if (v["body-only"]) {
+    if (view.table === "closed" || !view.body || view.body.inherited) {
+      return withNote(err(`issuemd show: #${id} has no body of its own\n`));
+    }
+    const end = bodyContentEnd(ledger.lines, view.body.line, view.body.end);
+    const body = trimBlank(ledger.lines.slice(view.body.line, end));
+    if (body.length === 0) return withNote(ok(""));
+    const eol = loaded.src.includes("\r\n") ? "\r\n" : "\n";
+    const ending = end < ledger.lines.length || loaded.src.endsWith("\n") ? eol : "";
+    return withNote(ok(body.join(eol) + ending));
+  }
 
   if (v.label != null) {
     const range = view.body ?? { line: view.line, end: view.line };
@@ -835,21 +854,20 @@ function commit(
   before: Diagnostic[],
   candidate: string[],
   dryRun: boolean,
-  /**
-   * Diagnostics this verb may introduce on purpose. Only `split` uses it: a
-   * range row reports one E102 for its first missing body, and splitting it
-   * reports one per id — the same missing bodies, now named individually
-   * (dogfood #64). Everything else keeps the strict "no new error" gate.
-   */
-  tolerate?: (diagnostic: Diagnostic) => boolean,
-  /** Existing errors a verb is allowed to resolve intentionally. */
-  allowLost?: (diagnostic: Diagnostic) => boolean,
-  /** Optional observer for warnings computed with the candidate snapshot. */
-  observeCheck?: (report: ReturnType<typeof checkLedger>) => void,
+  { tolerate, allowLost, observeCheck, validateCandidate }: {
+    /** Split may name missing bodies individually instead of once per range. */
+    tolerate?: (diagnostic: Diagnostic) => boolean;
+    /** Existing errors a verb is allowed to resolve intentionally. */
+    allowLost?: (diagnostic: Diagnostic) => boolean;
+    /** Optional observer for warnings computed with the candidate snapshot. */
+    observeCheck?: (report: ReturnType<typeof checkLedger>) => void;
+    validateCandidate?: (ledger: ReturnType<typeof parseLedger>) => CliResult | undefined;
+  } = {},
 ): CliResult {
   const newLines = terminate(candidate, loaded.doc, loaded.lines);
   const content = joinDocument(newLines, loaded.doc);
-  const checked = checkLedger(content, file);
+  const parsed = parseLedger(content);
+  const checked = checkParsedLedger(parsed, file);
   const after = checked.errors;
   observeCheck?.(checked);
   // Count, don't set: several codes (E110, E108, E122, …) carry no id, so a
@@ -900,6 +918,8 @@ function commit(
       return err(`issuemd close: refusing to make ${lost.length} existing error(s) disappear:\n${detail}\n`, 3);
     }
   }
+  const candidateRefusal = validateCandidate?.(parsed);
+  if (candidateRefusal) return candidateRefusal;
   if (dryRun) {
     const diff = unifiedDiff(loaded.lines, newLines, file, loaded.doc.finalNewline, loaded.doc.eol, loaded.doc.bom ? "\uFEFF" : "");
     return { code: 0, stdout: diff || "(no changes)\n", stderr: snapshotNote(loaded) };
@@ -1305,7 +1325,18 @@ function cmdNew(rest: string[], v: Values): CliResult {
   if (!shiftedBody) return err("issuemd new: the 正文 section is missing\n", 3);
   lines = insertBlock(lines, bodyInsertAt(afterIndex, span, shiftedBody.line_end), body);
 
-  const committed = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const committed = commit(file, loaded, errors, lines, !!v["dry-run"], {
+    validateCandidate(candidate) {
+      const cited = unreadableHolding(candidate, idText, candidate.cited);
+      if (!cited) return;
+      return err(
+        `issuemd new: id ${idText} is reserved by a table in the proposed ledger ` +
+          `(L${cited.line}, IDs ${(cited.ids ?? []).map(spanText).join(", ")}); ` +
+          "nothing written. Pick another --id or edit the incoming reference table.\n",
+        2,
+      );
+    },
+  });
   // A caller that let `new` pick the id must learn it from this reply:
   // re-listing to guess "the newest row" races with other writers.
   const result = committed.code === 0 && !v["dry-run"] ? { ...committed, stdout: `${idText}\n` } : committed;
@@ -1492,28 +1523,13 @@ function cmdClose(rest: string[], v: Values): CliResult {
     formatRow([idText, status, found.row.priority, found.row.summary, criteria]),
   ]);
 
-  const result = commit(
-    file, loaded, errors, lines, !!v["dry-run"], undefined,
-    (diagnostic) => diagnostic.code === "E102" && diagnostic.id === idText,
-  );
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
+    allowLost: (diagnostic) => diagnostic.code === "E102" && diagnostic.id === idText,
+  });
   if (keepBody && result.code === 0) {
     return { code: 0, stdout: result.stdout, stderr: result.stderr + `W250: kept the body of #${idText} by moving it into 附录\n` };
   }
   return result;
-}
-
-function inlineCodeRanges(text: string): [number, number][] {
-  const ticks = [...text.matchAll(/`+/g)];
-  const ranges: [number, number][] = [];
-  for (let at = 0; at < ticks.length; at++) {
-    const opening = ticks[at]!;
-    const closingAt = ticks.findIndex((candidate, index) => index > at && candidate[0].length === opening[0].length);
-    if (closingAt < 0) continue;
-    const closing = ticks[closingAt]!;
-    ranges.push([opening.index!, closing.index! + closing[0].length]);
-    at = closingAt;
-  }
-  return ranges;
 }
 
 function inlineCodeCommitHashes(text: string): string {
@@ -1767,11 +1783,20 @@ function cmdRename(rest: string[], v: Values): CliResult {
   }
 
   const lines = [...loaded.lines];
-  lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 3, next);
+  const changes: string[] = [];
+  const reportTitle = (copy: string, old: string) =>
+    changes.push(`updated #${idText} ${copy}: ${JSON.stringify(old)} → ${JSON.stringify(next)}\n`);
+  if (!sameSummary) {
+    lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 3, next);
+    reportTitle("table summary", found.row.summary);
+  }
   const block = bodyBlocks(ledger).find(
     (candidate) => `${candidate.id.start}${candidate.id.suffix}` === idText,
   );
-  if (block && unescapeCell(block.title) !== next) lines[block.line - 1] = `### Issue ${idText}: ${next}`;
+  if (block && unescapeCell(block.title) !== next) {
+    lines[block.line - 1] = `### Issue ${idText}: ${next}`;
+    reportTitle("body title", unescapeCell(block.title));
+  }
   // A kept-body archive heading is a third copy of the summary; keep it in
   // step, or it silently disagrees with the table forever (dogfood #40).
   // Only archives inside the section recognized by check/reopen are managed.
@@ -1783,21 +1808,25 @@ function cmdRename(rest: string[], v: Values): CliResult {
       const match = fenced[index] ? null : ARCHIVE_HEADING.exec(lines[index]!);
       if (match && match[1] === idText && unescapeCell(match[2]!) !== next) {
         lines[index] = archiveHeading(idText, next);
+        reportTitle("archive title", unescapeCell(match[2]!));
       }
     }
   }
   const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
-  if (next.includes("|") && result.code === 0) {
-    return { ...result, stderr: result.stderr + "W205: the new title contains a pipe; it was escaped in the table cell\n" };
+  if (result.code !== 0) return result;
+  if (next.includes("|")) {
+    changes.push("W205: the new title contains a pipe; it was escaped in the table cell\n");
   }
-  return result;
+  return { ...result, stderr: result.stderr + changes.join("") };
 }
 
-/**
- * Replace the text under an open issue's heading. The heading stays (it is
- * the summary); input rules are `new --body-file`'s. Without this verb every
- * body edit was a hand edit that skipped the write gate (dogfood #16/#24).
- */
+/** Last nonblank body line, or the heading line for an empty body. */
+function bodyContentEnd(lines: string[], heading: number, end: number): number {
+  while (end > heading && lines[end - 1]!.trim() === "") end--;
+  return end;
+}
+
+/** Replace or append text under an open issue's heading (dogfood #16/#24/#97). */
 function cmdBody(rest: string[], v: Values): CliResult {
   const file = rest[0];
   const idText = rest[1];
@@ -1818,10 +1847,24 @@ function cmdBody(rest: string[], v: Values): CliResult {
   }
   const block = bodyBlocks(ledger).find((candidate) => `${candidate.id.start}${candidate.id.suffix}` === idText);
   let lines = loaded.lines;
+  const incoming = trimBlank(read.lines);
+  if (v.append && incoming.length === 0) {
+    return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  }
   if (block) {
-    const heading = lines[block.line - 1]!;
-    lines = removeLines(lines, block.line, block.end - block.line + 1);
-    lines = insertBlock(lines, block.line, [heading, "", ...read.lines]);
+    if (v.append) {
+      const end = bodyContentEnd(lines, block.line, block.end);
+      lines = insertBlock(lines, end + 1, incoming);
+    } else {
+      const current = trimBlank(lines.slice(block.line, block.end));
+      // A body-only round trip should preserve the ledger's original spacing.
+      if (current.length === incoming.length && current.every((line, index) => line === incoming[index])) {
+        return commit(file, loaded, errors, lines, !!v["dry-run"]);
+      }
+      const heading = lines[block.line - 1]!;
+      lines = removeLines(lines, block.line, block.end - block.line + 1);
+      lines = insertBlock(lines, block.line, [heading, "", ...incoming]);
+    }
   } else {
     const section = ledger.sections.find((candidate) => candidate.level === 2 && candidate.title === "正文");
     if (!section) return err("issuemd body: the 正文 section is missing\n", 3);
@@ -1901,10 +1944,9 @@ function cmdSplit(rest: string[], v: Values): CliResult {
   const addedW212: Diagnostic[] = [];
   // The ids this row covers are the only E102s split may multiply: they were
   // already reported (once, for the first missing one) before the split.
-  const result = commit(file, loaded, errors, lines, !!v["dry-run"], (diagnostic) =>
-    diagnostic.code === "E102" && diagnostic.id != null && rowIds.has(diagnostic.id),
-    undefined,
-    (report) => {
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
+    tolerate: (diagnostic) => diagnostic.code === "E102" && diagnostic.id != null && rowIds.has(diagnostic.id),
+    observeCheck: (report) => {
       const remaining = new Map(priorCounts);
       for (const diagnostic of report.warnings.filter(({ code }) => code === "W212")) {
         const key = diagnosticKey(diagnostic);
@@ -1912,7 +1954,8 @@ function cmdSplit(rest: string[], v: Values): CliResult {
         if (count > 0) remaining.set(key, count - 1);
         else addedW212.push(diagnostic);
       }
-    });
+    },
+  });
   if (result.code !== 0) return result;
   const duplicateIds = [...new Set(addedW212.flatMap(({ id, message }) => [
     ...(id == null ? [] : [id]),

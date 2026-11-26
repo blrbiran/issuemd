@@ -1,3 +1,4 @@
+import { inlineCodeRanges } from "./scan.js";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
@@ -325,16 +326,7 @@ function checkHashes(ledger: Ledger, file: string, verify: boolean) {
   };
   const hashes = new Map<string, { line: number; pinned: boolean }>();
   const collect = (text: string, line: number, pinned: boolean) => {
-    const ticks = [...text.matchAll(/`+/g)];
-    const codeRanges: [number, number][] = [];
-    for (let at = 0; at < ticks.length; at++) {
-      const opening = ticks[at]!;
-      const closingAt = ticks.findIndex((candidate, index) => index > at && candidate[0].length === opening[0].length);
-      if (closingAt < 0) continue;
-      const closing = ticks[closingAt]!;
-      codeRanges.push([opening.index!, closing.index! + closing[0].length]);
-      at = closingAt;
-    }
+    const codeRanges = inlineCodeRanges(text);
     for (const match of text.replace(UUID, (uuid) => " ".repeat(uuid.length)).matchAll(/\b[0-9a-f]{7,40}\b/g)) {
       // Dates, millisecond timestamps and other plain numbers are not pinned
       // hashes. An all-digit run is only treated as a commit at full SHA-1

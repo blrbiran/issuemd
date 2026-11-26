@@ -325,7 +325,7 @@ Ledger
 | W253 | 同一 issue 的正文在附录里还有另一份（转义的 `\### Issue N:` 副本，或重复归档）；旧版 `adopt` 会把表格小节里的正文存两份 |
 | W260 | 索引摘要含进展词（`已落地/仍缺/仍无/仍逐/仍走`），应移入正文 |
 | W261 | 开放项的正文没有非空的 `**验收判据**` 块（`new` 不带 `--body-file` 写出的空骨架、判据被删掉的正文都算）。`close` 用 `--criteria-from-body` 时本来就会拒绝它，但空壳会一直留在 `list` 里（dogfood #62）。warning 级、`--strict` 失败；已关闭项不判（判据在表格列），正文缺失另有 E102。整块只有 HTML 注释（渲染后什么也没有；注释外的可见文字、fence 里的字面内容都算）不算非空，`close --criteria-from-body` 同样拒绝（第十四轮）。如果正文有近似标签（名字含「判据」），W261 与 `close` 的缺判据错误会指向第一个近似标签及其行号。判据仍须使用 `**验收判据**`（dogfood #78） |
-| W262 | 存在未闭合 HTML 注释（只在非围栏、非管道表格行的正文文本中识别开头）：报告注释起始行。未闭合注释覆盖范围内的自由格式 issue 形表仍进入 `citedRows` 并保留编号；注释行内的示例表不成为正式 issue。`--strict` 因此失败。 |
+| W262 | 报告未闭合 HTML 注释的起始行。围栏、管道表格行和同一行配对反引号中的字面分隔符不参与扫描。多行注释以 `-->` 开头的可见文本行收尾。H1/H2、受管理的 issue 或归档标题以及归档结束标记构成注释边界。正确闭合的注释隐藏其示例表，未闭合范围内的自由格式 issue 形表仍进入 `citedRows` 并保留编号。`--strict` 因 W262 失败。 |
 | W263 | `--verify-commits` 在非 Git worktree 中跳过：列出首个待验证 hash 的行号与说明。普通 `check` 可成功，`--strict` 失败；有效 Git worktree 中缺少 commit 仍报 W240。 |
 
 ### 6.3 `--verify-commits`（默认关）
@@ -393,6 +393,8 @@ issuemd new FILE --id 77 --title "…"        # 显式给号（撞号报错）
 
 `--priority` 只接受 `P0`–`P3` 或空串（默认 `P2`）。默认取号 `max+1` 超出安全整数范围时 exit 2，要求显式 `--id`。不可读的表行（E108/E109）、规范表以外的 issue 表行（E124）与外来表中保留的编号（见 W225，包括仅保留编号的状态行）也参与取号与撞号检查。新摘要与某个**开放**项的摘要规范化后相同时 exit 2、不写，并点名已有编号——重试的调用方据此知道「已经记过」（dogfood #34）；确需另记一条加 `--allow-duplicate-title`。已关闭项同名不拦。
 
+写入和 dry-run 都用完整候选台账复核所选编号。若本次带入的引用表保留了这个号，`new` 返回 exit 2 并指出候选行号和编号范围。保留现有的默认取号逻辑，其他已登记 issue 仍可被合法引用（dogfood #98）。
+
 成功写入后 stdout 只有一行：分配到的编号（如 `16`、`393b`），调用方不必再 `list` 猜「最新一行」（多个写者时会猜错）。`--dry-run` 的 stdout 仍只有 diff。
 
 ### 7.2 `close`
@@ -435,7 +437,7 @@ error: #56 当前 观察（open），目标 已修（closed）跨分类，请用
 
 ### 7.4 `rename`
 
-同时改索引摘要、正文 H3，以及附录里同号的 `--keep-body` 归档标题，一次事务、要么都不改。新标题含 `|` 时自动转义并 warn W205。开放 issue 改成另一条**开放** issue 的摘要（与 `new` 同一规范化）时 exit 2、不写，并点名那条；确需如此加 `--allow-duplicate-title`。已关闭 issue 的改名、改成已关闭项的摘要都不拦。参数按标题规则规范化后与表格摘要相同，仍会跳过重复摘要拒绝；只有正文标题与目标相同、且若存在同号 `--keep-body` 归档标题也相同，才是无操作（`(no changes)`、exit 0），并保留已经一致的标题原文/转义字节。若相关副本漂移，同摘要 `rename` 会修复漂移副本（第十七轮 #81）。
+同时改索引摘要、正文 H3，以及附录里同号的 `--keep-body` 归档标题，一次事务、要么都不改。新标题含 `|` 时自动转义并 warn W205。开放 issue 改成另一条**开放** issue 的摘要（与 `new` 同一规范化）时 exit 2、不写，并点名那条；确需如此加 `--allow-duplicate-title`。已关闭 issue 的改名、改成已关闭项的摘要都不拦。参数按标题规则规范化后与表格摘要相同，仍会跳过重复摘要拒绝；只有正文标题与目标相同、且若存在同号 `--keep-body` 归档标题也相同，才是无操作（`(no changes)`、exit 0），并保留已经一致的标题原文/转义字节。若相关副本漂移，同摘要 `rename` 会修复漂移副本（第十七轮 #81）。成功预览或写入在 stderr 逐项列出被替换的表格摘要、正文标题和归档标题的旧值与新值（#99）。
 
 ### 7.5 `reopen`
 
@@ -447,7 +449,7 @@ error: #56 当前 观察（open），目标 已修（closed）跨分类，请用
 
 ### 7.5a `body` / `priority` / `split`（2026-11-24 补齐，设计见 `docs/superpowers/specs/2026-11-24-ledger-verbs-design.md`）
 
-- `body FILE ID --body-file PATH|-`：替换开放 issue 标题以下的正文；输入规则同 `new --body-file`；已关闭 id exit 2；缺正文块时按编号位置新建。
+- `body FILE ID --body-file PATH|- [--append]` 默认替换开放 issue 标题以下的正文。`--append` 在原文末尾新增一段，保留原有正文行和文档格式。空白追加是无操作。两种模式的输入规则同 `new --body-file`，已关闭 id exit 2，开放项缺正文块时可按编号位置新建。
 - `priority FILE ID P`：只改 `P` 单元格，开放/已关闭都行；`P` 只能是 `P0`–`P3` 或空。
 - `split FILE ID`：把 ID 所在的多号行或区间行拆成每号一行（字段原样复制、升序原位）。**不替任何号补正文**：原本没有正文的号拆分后仍然没有，E102 继续报出（区间行会从「第一个缺失号」变成逐号报出），split 在 stderr 提示用 `issuemd body` 补写。缺失编号超过 3 个时，提示只列总数、首尾编号和省略数，完整清单用 `issuemd check FILE --json` 里的 E102 获取（dogfood #64、#76）。如果拆分新增 W212，命令 exit 0 并在 stderr 概括受影响编号、建议拆分后用 `rename` 区分；完整诊断见 `check --json`（dogfood #90）。单号行 exit 2；超过 1000 个号 exit 2。只解析一次台账（dogfood #70）。
 - `reopen --status S`：S 必须是开放分类，默认 `未决`。
@@ -478,7 +480,7 @@ issuemd counts FILE [--json]
 
 **选择护栏**：`--prefer` 只能配 `--titles`。变更摘要时必须显式选一侧；`--prefer body` 还必须配 `--move-progress` 或 `--drop-progress`，保证摘要文本得到保留或由用户明确舍弃。命中 W260 时同样要求 move/drop，`--prefer table` 命中 W260 则拒绝，因为它会把进展写入正文标题。每项变更在 stderr 输出 `updated #N summary/body title: "旧值" → "新值"`，dry-run 与真实运行一致。无事可做的 `--titles --dry-run` 仍输出 `(no changes)` 并在 stderr 给 `snapshot`。
 
-写命令找不到编号时 exit 1，提示写在 stderr（不混进 `--dry-run` 的 stdout diff）；读命令 `show` 仍在 stdout 打 `(no such issue: N)`；`show --json` 时 stdout 为空、提示在 stderr（stdout 只能是 JSON）。
+写命令找不到编号时 exit 1，提示写在 stderr（不混进 `--dry-run` 的 stdout diff）；读命令 `show` 仍在 stdout 打 `(no such issue: N)`；`show --json` 或 `show --body-only` 时 stdout 为空，提示在 stderr。
 
 ---
 
@@ -509,7 +511,7 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 台账读
   issuemd check   FILE [--json] [--strict] [--verify-commits]
   issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]
-  issuemd show    FILE ID [--json] [--label NAME]
+  issuemd show    FILE ID [--body-only | [--json] [--label NAME]]
   issuemd counts  FILE [--json]
   issuemd read    FILE <H2 标题>          # 精确匹配顶层标题，无选择器/正则
 
@@ -519,7 +521,7 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
   issuemd reopen  FILE ID [--status S] [--allow-duplicate-title]
   issuemd status  FILE ID NEW_STATUS
   issuemd rename  FILE ID "NEW TITLE" [--allow-duplicate-title]
-  issuemd body    FILE ID --body-file PATH|-
+  issuemd body    FILE ID --body-file PATH|- [--append]
   issuemd priority FILE ID P0|P1|P2|P3|""
   issuemd split   FILE ID
   issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
@@ -536,6 +538,8 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 读命令遇到不可读的表行时在 stderr 说明结果不完整，`list --json` 附 `unreadableRows`；外来表保留的编号不属于不可读行。`list --json`（开放与 `--closed` 都）附 `citedRows: [{ line, reason, ids }]`（没有时省略），agent 不必跑 `check` 也知道哪些编号不会被分配（第十二轮；W225 表引用的编号若同时是已登记的 issue 也照列）。`check --json` 与 `counts --json` 也在有引用时附同一 `citedRows`。`show` 查到的编号若还出现在某条不可读行（如 E124 的旧表）里，照常输出并在 stderr 点名那一行；`list --json` 每项带 `ids` 与 `count`，顶层带 `rowCount` / `issueCount`（`issueCount` 与 `counts` 一致）。
 
 **读视图与 `check` 的一致性（第十三轮，dogfood #63；第十八轮）**：`check` 有 error 时，`list` / `counts` / `show` 的退出码仍是 0/1（读一份坏台账去修它是正当用法），但会在 stderr 写一行 `note: 'issuemd check' reports N error(s) (first: CODE L… )`。三者的 `--json` 始终附 `diagnostics: { errors: [...], warnings: [...] }`，数组可为空并始终存在；诊断与同快照的 `check --json` 按 `code` / `line` / `id` 对齐，包含 E106 的 `expected` / `actual`。`N` 是 `check` 报告的全部 error 数（包括不可读行）；错误全部落在不可读行上时也照常出现，只是与 `unreadableNote` 的逐行说明并列（第十四轮）。
+
+**纯正文（dogfood #97）**：`show FILE ID --body-only` 输出该开放项自己标题以下的正文内容，去除首尾分隔空行，保留内容空白、原行尾及末行是否有换行。可以直接送给 `body FILE ID --body-file -`，原文未编辑时写入是字节不变的无操作。关闭项、缺正文或只能借用其他项的正文时 exit 1，stdout 为空。`--body-only` 与 `--json`、`--label` 互斥。
 
 **正文归属（dogfood #69）**：`show` 先找本号自己的 `### Issue N:` 块；找不到时沿用「同一行只在首号写一段正文」的历史写法，借同一行其他号的正文——逗号行任一 id、区间行任一被覆盖的 id（`5–7` 的正文挂在 `6` 也算）——但某个 id 自己有独立行时（重复编号，E103）不借它的正文，`show` 与 `list --with-body` 同口径（第十四轮复审）；`--json` 的 `body` 带 `id`（正文真正属于哪个号）与 `inherited: true`，`criteria` 另带 `criteriaFrom`，文本模式在 stderr 写 `note: the body shown belongs to #N`、stdout 写明「正文属于 #N」。`check` 仍对没有自己正文的号报 E102。
 

@@ -51,12 +51,15 @@ An unknown `--status` word is exit `2` (with the vocabulary listed); a closed st
 ### 2. Read one issue
 
 ```bash
-issuemd show FILE 65                 # the body block, plus its table row
+issuemd show FILE 65                 # read with table row, line range and heading
+issuemd show FILE 65 --body-only     # extract editable body text
 issuemd show FILE 65 --label 验收判据  # just that labelled block
 issuemd show FILE 65 --json          # {id,table,status,priority,summary,criteria,criteriaSource,line,end,body{line,end,text},labels}
 ```
 
 A labelled block runs from `**标签**` to the next label or heading — a blank line followed by a list belongs to it. `--label` on a label with nothing under it is exit `1` with "exists but is empty". `--json` gives every label as one line in `labels`, and `criteria` with `criteriaSource` (`table` for closed issues, `body` for open ones).
+
+Use `--body-only` when you need text ready for `--body-file`. It emits this issue’s own body without its heading or separator blank lines. A missing, closed or borrowed body gives exit `1` with empty stdout. This mode cannot be combined with `--json` or `--label`.
 
 A multi-id row may keep one body under any of its ids (a comma row under any listed id, a range row under any id it covers). `show` still finds it for the other ids, but says so: `body.id` is the issue the text belongs to, `body.inherited: true` marks a borrowed body, `criteriaFrom` names the owner, and text mode prints `note: the body shown belongs to #N`. `check` still reports E102 for an id with no body of its own.
 
@@ -72,6 +75,7 @@ issuemd status FILE 56 部分解决                            # open→open or 
 issuemd reopen FILE 57 --status 观察                       # default 未决
 issuemd rename FILE 16 "new summary"                       # table + body title + archive heading
 issuemd body   FILE 16 --body-file new-body.md             # replace an open issue's body text
+issuemd body   FILE 16 --append --body-file retest.md      # append a paragraph atomically
 issuemd priority FILE 16 P1                                # P0–P3 or ""
 issuemd split  FILE 24                                     # `20, 24, 29` → three rows (no bodies invented)
 ```
@@ -81,11 +85,13 @@ Every one of these is atomic and supports `--dry-run` (a unified diff, one hunk 
 - **`close` never drops criteria silently.** With no flag it promotes the body's `**验收判据**`; if there is none it refuses (exit `2`) — pass `--criteria TEXT`, `--keep-body`, or `--no-criteria` to close without criteria on purpose. `--criteria-from-body` refuses when the block is missing or empty. A fence *under* the label is part of the criteria (its content is promoted); a `**验收判据**` line *inside* a fence is just text and never starts a block of its own. Lists — and repeated `**验收判据**` blocks — are joined with `；` in the cell. An empty `--criteria ""` is refused (an unset variable, usually); say `--no-criteria` if you mean it. `--criteria` follows the title convention: `\|` spells a literal pipe. A criteria lifted from the body that a table cell cannot store — a backslash directly before `|`, as in a shell `echo a \| b` inside a fence — is refused (exit `2`) instead of being silently rewritten; close with `--keep-body --no-criteria` to keep the body verbatim in 附录. Close also refuses if it would make any pre-existing error disappear, except the selected issue's own E102; repair E106 or other errors before closing.
 - **`status` refuses to cross the open/closed boundary** — that is a `close`/`reopen`, because crossing changes three places, not one. It also repairs a typo'd status word (`W220`) inside the same table.
 - **`reopen`** puts the issue back as `未决` (or `--status 观察` / `部分解决`); the old open status is not recorded. With no kept-body archive, only `已修` restores the closed-table cell as `**验收判据**`; other closed statuses restore it as `**关闭理由**`. If the cell is empty, reopen succeeds but stderr says to add acceptance criteria; W261 remains, so `--strict` fails until you add them. If the body was kept with `--keep-body`, its archived `**验收判据**` stays current; a different closed-table value is preserved as `**关闭时判据**`. Reopen of an already-open issue is a no-op unless explicit `--status` names a different open status.
-- **`--body-file`** (for `new` and `body`) is the text that goes *under* `### Issue N: <title>` — never include the heading yourself (a file that starts with `### Issue N:` is refused, exit `2`). Minimal file: `printf '**现象**：…\n\n**验收判据**：…\n' > body.md`. To change one paragraph: take `show FILE ID --json` → `body.text`, drop the heading line, edit, pipe it back with `issuemd body FILE ID --body-file -`.
+- **`--body-file`** (for `new` and `body`) is the text that goes *under* `### Issue N: <title>` — never include the heading yourself (a file that starts with `### Issue N:` is refused, exit `2`). Minimal file: `printf '**现象**：…\n\n**验收判据**：…\n' > body.md`. To edit a paragraph, use `show FILE ID --body-only`, edit the text, then pass it to `issuemd body FILE ID --body-file -`. To add a retest note, pass just the new paragraph to `body --append --body-file PATH|-`.
 - **A title starting with `-`** must be attached with `=`: `--title="--body-file 的语义"`; otherwise you get `Option '--title' argument is ambiguous`.
 - **Priorities are `P0`–`P3` or empty.** `new` refuses anything else; `check` warns `W221` about existing ones.
 - **`split` never invents a body.** Use `issuemd body FILE ID --body-file -` to add missing bodies. For more than three missing bodies, stderr shows the count, first and last id, and how many ids were omitted. Get the complete E102 list from `issuemd check FILE --json`. If splitting creates W212 duplicate-summary warnings, split succeeds but stderr names the affected IDs and recommends renaming one after splitting.
 - **A no-op write says so.** If the verb would leave the bytes identical, stdout is one line `(no changes)` and the exit code is 0 — the same words `--dry-run` uses. A real change keeps stdout empty (`new` prints only the id). An `adopt` that changes nothing prints `(no changes)` and then its report; a real conversion prints the report starting with `adopt: FILE`.
+- **`new` checks its own incoming references.** If the proposed body reserves the ID `new` would assign, both preview and write return exit `2` with the cited row and its IDs. A table can still refer to a different issue.
+- **`rename` reports changed title copies on stderr.** Both preview and a successful write show the old and new values for each affected summary or title.
 - **`new` prints the id it filed** — one line on stdout (`ID=$(issuemd new FILE --title "…")`). Use that; don't re-`list` to guess the newest row while others may be writing.
 - `new` refuses (exit `2`) a summary that an **open** issue already has (compared after NFKC/case/space folding) and names that issue — after a timed-out retry, that usually means your first call landed. `rename` and `reopen` refuse the same way when another open issue already has that summary. Add `--allow-duplicate-title` only when it really is a second issue; `check` then keeps reporting the pair as `W212`.
 
@@ -103,7 +109,7 @@ Exit code **3** means structural errors. Fix them before reporting anything as d
 
 - `W202` — a short hash pinned in prose (it rots). Commits in the closed table's 判据 column are expected and are not W202; `--verify-commits` checks them and reports `W240` for a commit the repo does not have. Hashes in inline code spans are treated as literal evidence and do not trigger W202.
 - `W212` duplicate summary · `W220` undeclared status · `W221` undeclared priority · `W225` issue-shaped table outside the ledger tables (kept as text) · `W261` an open issue whose body has no non-empty `**验收判据**` (a bare `new` skeleton, or criteria deleted — it cannot be closed until one is written). A block holding only HTML comments (outside a fence) does not count; text beside a comment, and fenced content, do. If the body has a similarly named label such as `**验收判据（复测用）**`, W261 and `close` point to its line. Use `**验收判据**` for criteria that `close` should promote.
-- `W262` — unclosed HTML comment outside a fence or pipe-table row. Following free-form issue-shaped rows remain reserved and visible in `citedRows` even while Markdown hides them; close the comment to restore normal visibility.
+- `W262` — an HTML comment remains open at the next ledger section, managed issue heading, archive boundary, or EOF. Same-line code spans, fences, and pipe-table rows treat comment delimiters as literal text. Finish a multiline comment with a line starting with `-->` in the same section or issue. Issue-shaped tables in an unclosed comment remain reserved and visible in `citedRows`.
 - `W263` — `--verify-commits` was skipped because the ledger is outside a Git worktree. Normal `check` may succeed with this warning; `--strict` fails. In a Git worktree, a missing commit remains W240.
 - `W250` — an appendix archive left by `close --keep-body` (or `adopt`): a `### #N <summary>（已关闭，正文保留）` heading ending at `<!-- issuemd:kept-body:end -->`. Intentional, informational, never fails `--strict`. Leave the marker alone: `reopen` restores exactly the text above it. The archive is a frozen snapshot, not a second copy of the criteria. `W251`/`W252` mean someone hand-edited it out of step. `W253` means a second copy of the same body sits in 附录 (an escaped `\### Issue N:` left by an older `adopt`, or a repeated archive): keep one, delete the other by hand, then `check`.
 
