@@ -1,7 +1,7 @@
 # Dogfooding issue clusters: unified behavior contracts
 
 Date: 2026-11-26
-Status: Implemented on feature branch; final review pending
+Status: Implemented, independently reviewed, and merged to local `main`
 
 ## Intent
 
@@ -22,10 +22,10 @@ Out of scope: changing the dogfooding ledger, revisiting #81/#82 implementation,
 
 ## Evidence checked
 
-- Current checkout is clean `main`, with zero commits ahead of `origin/main`; this differs from the previous handoff snapshot.
-- Current code confirms #93/#91 in `src/ledger.ts:175–190`, #86 in `cmdClose` plus the count-only `commit` gate, #87 in `cmdReopen`, #88/#94 in JSON construction and list filters, #95 in `summaryLine`, #89 in `checkHashes`, #90 in `cmdSplit`, and #96 in `cmdSync`.
-- The tester's #90 correction is accepted: the distinct-body-title example already has E106 before split. The confirmed split regression is newly introduced W212 and a clean `--strict` result becoming failing.
-- #81 and #82 are implemented. #84 is implemented for visible free-form tables but is bypassed by the malformed/embedded-comment cases in #91/#93.
+- At session start the checkout was clean `main`, aligned with `origin/main`; this differs from the previous handoff snapshot.
+- Pre-implementation inspection confirmed #93/#91 in `src/ledger.ts`, #86 in `cmdClose` plus the count-only `commit` gate, #87 in `cmdReopen`, #88/#94 in JSON construction and list filters, #95 in `summaryLine`, #89 in `checkHashes`, #90 in `cmdSplit`, and #96 in `cmdSync`. These paths now implement the contracts below.
+- The tester's #90 correction is accepted: the distinct-body-title example already had E106 before split. The confirmed split regression was newly introduced W212 and a clean `--strict` result becoming failing.
+- #81 and #82 were already implemented. #84 was implemented for visible free-form tables but was bypassed by the malformed/embedded-comment cases in #91/#93.
 
 ## Approaches considered
 

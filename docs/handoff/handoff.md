@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-26（第十七轮：测试台账 #81–#84）。写给下一位接手者。
+更新于 2026-11-26（第十八轮：dogfooding #86–#96）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -15,12 +15,12 @@
 
 ## 一句话现状
 
-`issuemd` P0–P5 早已完成，`0.1.0` 已发布到 npm。外部 dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`）现到 #84，状态由测试者更新。#1–#80 的处理见各轮记录，#81–#84 见第十七轮。
+`issuemd` P0–P5 已完成，`0.1.0` 已发布到 npm。外部 dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`）已更新到 #96，状态仍由测试者维护；本轮修复 #86–#96 的可复现行为，未修改该台账。
 
-- 第十七轮已 fast-forward 合入本地 `main`。用 `git rev-list --count origin/main..main` 查看待 push 的提交数；push 由用户手动做。
-- 第十七轮未发版；用户 2026-11-25 明确暂缓发布，下次建议 `npm version minor`（0.2.0）。
-- 合并后已运行 `npm run build`；`dist/bin/issuemd.js` 保持可执行（755）。
-- 下一步由测试者复测第十七轮及尚未复测的第十四、十五轮改动；用户决定何时 push / 发版。
+- 第十八轮已 fast-forward 合入本地 `main`；`git rev-list --count origin/main..main` 可现查待 push 提交数。push 仍由用户手动完成。
+- `npm run typecheck && npm test`：621/621；合入后 `npm run build` 成功，`dist/bin/issuemd.js` 为 755。
+- 合入后只读复测：canonical/TEMPLATE 为 0 error / 0 warning；cafe-shaped 仍 1 个旧格式 error，orca-shaped 仍 13 个旧格式 error。dogfood 当前 0/6、cafe 当前 0/6、orca archive 当前 0/39（error/warning）；三份 `adopt --dry-run` 都是 `(no changes)`。这些真实文件的 warning 数与上一版 handoff 记录不一致，应以当次只读实测为准；未修改任何测试台账。
+- 下一步由测试者复测第十八轮，并按原安排复测尚未复测的第十四、十五轮改动；发版时间由用户决定。
 
 ## 工作流约定（用户明确要求）
 
@@ -34,7 +34,7 @@
 
 ## 等待用户决策 / 动作
 
-1. **push**：第十七轮已合入本地 `main`；push 由用户手动做（提交数用 `git rev-list --count origin/main..main` 现查）。
+1. **push**：第十八轮已合入本地 `main`；提交数用 `git rev-list --count origin/main..main` 现查，push 由用户手动做。
 2. **发版（用户决定时机，2026-11-25 明确「暂不发版」）**：`npm version minor` → `npm publish`（`prepack` 会自动 build `dist/`）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`、`.dist-test`。
 3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。#53 建议把已达标条目与「owner 裁定不做」的判据在台账里标注出来，这同样留给测试者。
 4. `.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。其他 clone 拉到那次提交时，git 会删掉它们工作区里的 `.cafe`，需从上一提交恢复（`git show <移出前的提交>:.cafe > .cafe`）。
@@ -59,6 +59,21 @@
    - **接受不改的 4 项**见「第十四轮」小节（`--expand` 行序、snapshot 原始字节、`--with-body` 省键、close 选项互斥）。若想让 `list --expand` 按编号排序，或让 snapshot 跨编码相等，说一声即可——都只影响输出顺序/口径，改动很小。
 
 9. **第十一轮报审（备查）**：Q1 W225 编号占用（已执行，第十二轮维持）；Q2 更多「台账表小节」词（未做，推荐暂不做：改成 E124 会把 `## 已完成` 的行当开放项）；Q3 年份标题（第十二轮已做）；Q4 `list --json` 暴露被占用编号（第十二轮已做，`citedRows`）；Q5 台账复测留给测试者。
+
+## 第十八轮（2026-11-26）
+
+输入：外部 dogfooding 台账更新至 #96。只读分析确认 #86–#96 的现存行为；#81/#82 仍已修，#84 的可见表格占号规则会被未闭合 HTML 注释绕过。台账由测试者维护，本轮没有写入它。
+
+- **编号与注释（#91/#93）**：非围栏、非管道表格行的 HTML 注释由共享 parser 扫描；表格单元格/issue 标题里的 raw 注释分隔符不再打开编号过滤。未闭合注释报 W262；其范围内的正文/附录 issue 形表仍进 `citedRows`、保留编号，跨 H2 也不释放。`new` / `rename` 拒绝 raw `<!--` 与 `-->` 标题，避免它们影响生成的 Markdown heading。
+- **写入守恒（#86/#90/#96）**：`close` 若会让任何既有 error 消失就拒绝，唯一例外是该编号自己的 E102；`sync --titles` 摘要不一致时必须选择保留哪边，body 优先另需 `--move-progress` 或 `--drop-progress`，dry-run/写入都在 stderr 报告更新；`split` 若新增 W212 则成功并用短提示列出编号、建议 `rename`，不把大范围诊断全部倾倒到 stderr。
+- **重开语义（#87）**：无归档时只有 `已修` 的表格判据回填到 `**验收判据**`，其他关闭状态写为 `**关闭理由**`；空判据可以重开，但 stderr 提醒补判据且 W261 保留。存在 keep-body 归档时原正文判据优先，冲突的表格值另存为 `**关闭时判据**`。导入的 commit hash 会保留其字符，并在必要时用行内代码保护；W202 不再警告行内代码 hash，`--verify-commits` 仍会验证。
+- **读视图（#88/#94/#95）**：`list` / `counts` / `show --json` 固定带 `diagnostics.errors` 与 `diagnostics.warnings` 数组；`check` / `counts --json` 也暴露与 `list` 同口径的可选 `citedRows`。跨表 priority 给切表提示；过滤已出现的未声明状态会提示 W220；check/counts 文本汇总列出所有开放表状态。
+- **Git 验证（#89 后半）**：非 Git worktree 的 `check --verify-commits` 报 W263 并跳过；普通模式可成功，`--strict` 失败。Git worktree 内的缺失 commit 仍报 W240。
+- 独立复审提出两项遗漏：归档正文普通文字含判据子串时仍要保留表格判据；同步被门禁拒绝时不应打印成功更新行。两项都补了失败用例并修复；复审未留重要或低优先级未解决项。
+
+验证：`npm run typecheck && npm test` 通过，621 项；`npm run build` 在合入本地 main 后成功，`dist/bin/issuemd.js` 权限 755。canonical/TEMPLATE 0 error / 0 warning；cafe-shaped 1 error、orca-shaped 13 errors（既有旧格式 fixture）。当前只读真实台账结果：dogfood 0/6（W261 5 + W262 1），cafe 0/6，orca archive 0/39；三份 `adopt --dry-run` 均 `(no changes)`。旧 handoff 的 warning 数已过期，见上方说明。外部台账未被修改。
+
+推送、发版和测试者在 dogfooding 台账中的状态更新均留给用户/测试者；npm 发布仍建议由用户择时从 0.1.0 升至 0.2.0。
 
 ## 第十七轮（2026-11-26）
 
