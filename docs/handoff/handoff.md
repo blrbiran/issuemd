@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-26（第十八轮：dogfooding #86–#96）。写给下一位接手者。
+更新于 2026-11-26（第十九轮：dogfooding #97–#101）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -15,12 +15,12 @@
 
 ## 一句话现状
 
-`issuemd` P0–P5 已完成，`0.1.0` 已发布到 npm。外部 dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`）已更新到 #96，状态仍由测试者维护；本轮修复 #86–#96 的可复现行为，未修改该台账。
+`issuemd` P0–P5 已完成。已发布版本为 `0.1.0`。外部 dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`）当前到 #101，状态由测试者维护。
 
-- 第十八轮已 fast-forward 合入本地 `main`；`git rev-list --count origin/main..main` 可现查待 push 提交数。push 仍由用户手动完成。
-- `npm run typecheck && npm test`：621/621；合入后 `npm run build` 成功，`dist/bin/issuemd.js` 为 755。
-- 合入后只读复测：canonical/TEMPLATE 为 0 error / 0 warning；cafe-shaped 仍 1 个旧格式 error，orca-shaped 仍 13 个旧格式 error。dogfood 当前 0/6、cafe 当前 0/6、orca archive 当前 0/39（error/warning）；三份 `adopt --dry-run` 都是 `(no changes)`。这些真实文件的 warning 数与上一版 handoff 记录不一致，应以当次只读实测为准；未修改任何测试台账。
-- 下一步由测试者复测第十八轮，并按原安排复测尚未复测的第十四、十五轮改动；发版时间由用户决定。
+- 第十九轮修复 #97–#100，并补齐 #101 点出的 `split` 自动化覆盖缺口。已快进合入本地 `main`。待推送提交数用 `git rev-list --count origin/main..main` 现查。
+- `npm run typecheck && npm test` 通过，646 项。合入后的 `npm run build` 成功，`dist/bin/issuemd.js` 权限为 755。当前源码打成 `0.1.0` tarball 后离线安装冒烟通过。
+- 本轮只读检查结果（错误/警告）为 dogfood 0/6、cafe 0/6、orca archive 0/39。dogfood 的 6 条均为 W261，W262 为 0。三份 `adopt --dry-run` 均为 `(no changes)`。
+- 复测记录 #83、#85 和 #101 已覆盖第十四、十五、十八轮的主要路径。下一步请测试者复测第十九轮的 #97–#100，包括随 #98 修复的 #91 残项和随 #99 处理的 #86 改名提示。
 
 ## 工作流约定（用户明确要求）
 
@@ -34,7 +34,7 @@
 
 ## 等待用户决策 / 动作
 
-1. **push**：第十八轮已合入本地 `main`；提交数用 `git rev-list --count origin/main..main` 现查，push 由用户手动做。
+1. **push 由用户手动执行**。待推送提交数用 `git rev-list --count origin/main..main` 现查。
 2. **发版（用户决定时机，2026-11-25 明确「暂不发版」）**：`npm version minor` → `npm publish`（`prepack` 会自动 build `dist/`）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`、`.dist-test`。
 3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。#53 建议把已达标条目与「owner 裁定不做」的判据在台账里标注出来，这同样留给测试者。
 4. `.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。其他 clone 拉到那次提交时，git 会删掉它们工作区里的 `.cafe`，需从上一提交恢复（`git show <移出前的提交>:.cafe > .cafe`）。
@@ -59,6 +59,19 @@
    - **接受不改的 4 项**见「第十四轮」小节（`--expand` 行序、snapshot 原始字节、`--with-body` 省键、close 选项互斥）。若想让 `list --expand` 按编号排序，或让 snapshot 跨编码相等，说一声即可——都只影响输出顺序/口径，改动很小。
 
 9. **第十一轮报审（备查）**：Q1 W225 编号占用（已执行，第十二轮维持）；Q2 更多「台账表小节」词（未做，推荐暂不做：改成 E124 会把 `## 已完成` 的行当开放项）；Q3 年份标题（第十二轮已做）；Q4 `list --json` 暴露被占用编号（第十二轮已做，`citedRows`）；Q5 台账复测留给测试者。
+
+## 第十九轮（2026-11-26）
+
+输入为测试者新增 #97–#100 与复测记录 #101。在上一轮构建上重现了新建撞号、注释结束符释放编号、缺少追加和纯正文选项，以及 `rename` 静默覆盖旧标题。外部台账只读使用。
+
+- **#98 / #91 残项**。`new` 落盘前用候选台账复核所选编号。正文引用表保留该编号时，默认取号和显式 `--id` 均返回 exit 2，stderr 点名候选行号与编号范围。预览和真实写入均遵守此规则。已登记的 issue 可以出现在引用表中，因此 `check` 仍接受已有 issue 与引用表重叠的文件。
+- **#100**。围栏、管道行、同一行的配对反引号里使用字面分隔符不影响占号。多行注释以 `-->` 开头的可见文本行收尾。H1/H2、受管理的 issue 标题和归档起止限制注释范围，结构标题中的原始分隔符不会开启注释。范围内正确闭合的注释仍隐藏示例表。未闭合的注释保留引用编号并报 W262。真实 dogfood 台账上的 W262 已消失。
+- **#97**。`body FILE ID --append --body-file PATH|-` 在原文末尾追加，沿用原子写、校验与快照机制。`show FILE ID --body-only` 只输出本号正文内容。长正文、LF、BOM/CRLF、无尾换行和分隔空行的往返已有用例。按标签编辑留待出现具体需求时再讨论。
+- **#99 / #86 的改名对照**。改名成功或预览时在 stderr 逐处报告表格摘要、正文标题和归档标题的旧值与新值。被拒绝的写入无成功报告，原有 stdout 约定保留。
+- **#101**。#89 的稀疏展开性能回归由 `src/round17.test.ts` 覆盖，本轮完整测试中 12,800 项约 114 ms。#90 的同摘要场景由 `src/round18.test.ts` 覆盖。本轮在 `src/round19.test.ts` 补上缺正文和不同正文标题两种场景，断言拆分前后 E102 或 E106 保持。
+- **#22 的裁定建议维持现状**。实测裸 `close` 会自动提升已有判据。缺判据时拒绝裸 `close`，显式 `--no-criteria` 仍可成功，关闭归档中的判据作为历史快照。以 `docs/spec.md` §7.2 为准。
+
+验证通过 646 项。模板和 canonical fixture 为 0/0，两份旧格式 fixture 保留 1 和 13 个既有错误。真实台账检查与 `adopt --dry-run` 的结果见开头。本地 tarball 已验证 manifest、755 执行位、离线安装、正文追加与回灌、库入口和严格校验。用户择时发布，建议下次发布 `0.2.0`。
 
 ## 第十八轮（2026-11-26）
 
@@ -392,7 +405,7 @@
 ```text
 issuemd check    FILE [--json] [--strict] [--verify-commits]
 issuemd list     FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]
-issuemd show     FILE ID [--json] [--label NAME]
+issuemd show     FILE ID [--body-only | [--json] [--label NAME]]
 issuemd counts   FILE [--json]
 issuemd read     FILE <H2 标题>
 
@@ -401,7 +414,7 @@ issuemd close    FILE ID [--status S] [--criteria TEXT | --criteria-from-body | 
 issuemd reopen   FILE ID [--status S] [--allow-duplicate-title]
 issuemd status   FILE ID NEW_STATUS
 issuemd rename   FILE ID "NEW TITLE" [--allow-duplicate-title]
-issuemd body     FILE ID --body-file PATH|-
+issuemd body     FILE ID --body-file PATH|- [--append]
 issuemd priority FILE ID P0|P1|P2|P3|""
 issuemd split    FILE ID
 issuemd sync     FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress]]
@@ -418,7 +431,7 @@ issuemd <command> --help
 - **`src/io.ts`** —— **不要改**。原子写、快照复核、BOM/行尾/尾换行/权限位。符号链接在 CLI 层（`loadWritable`）解析成真实路径再交给 io；硬链接数也在 CLI 层 `lstat`。**写锁也在 CLI 层**：`commit()` 与 adopt 都经 `lockedWrite(loaded.path, …)` 调 `writeAtomically`，新写路径不要直接调 `writeAtomically`。
 - **`src/cli.ts`**：
   - `COMMANDS` 表是命令与选项的唯一来源：`run()` 用它拒绝越界选项、生成全局与 `<cmd> --help`。新增命令/选项要同时进 `COMMANDS`、`OPTION_HELP`、`OPTIONS`。`OPTION_HELP` 文案里别写别的命令专属的选项名（`close --help` 有用例断言不出现 `--json`）。
-  - 写命令共享 `commit()`：`terminate()` → `joinDocument` → `checkLedger` → **按 multiset 只拒新 error** → `--dry-run` 出 diff（stderr 带 snapshot）/ `writeAtomically(loaded.path, …)`（E130 → exit 4）。成功后若有其他硬链接，stderr 追加提示。**`commit()` 第 6 个参数 `tolerate` 只给 `split` 用**：容忍「原行覆盖的 id 的 E102」——区间行原本只报第一个缺失号，拆开后逐号报，是同一些缺失正文，不是新问题。别用别的命令开这个口子。
+  - 写命令共享 `commit()`。候选内容经 `terminate`、`joinDocument`、`parseLedger`、`checkParsedLedger` 后，按 multiset 拒绝新增 error。`new` 在同一候选解析结果上通过 `validateCandidate` 查占号。`tolerate` 专用于 `split` 按原行覆盖编号放行细分的 E102。校验完成后，dry-run 打印 diff 与 snapshot，真实写入通过 `lockedWrite` 原子替换。E130 返回 exit 4，有硬链接时提示原路径和其他链接可能看到不同内容。
   - `cmdSplit` **不补正文骨架**（第十三轮，dogfood #64/#70）：拆行后按原来的 body 集合算 `missing`，不插入任何骨架；缺正文的号继续 E102，stderr 点名并提示 `issuemd body`。整段循环没有 `parseLedger`，性能与 `check` 同量级。
   - `Loaded = { doc, lines, path, links, snapshot }`。**`--if-unchanged` 在 `loadWritable(file, expected)` 里、刚读完文件时比对**，所以任何命令逻辑（「已关闭」之类）之前就 exit 4。所有写命令经 `openLedger(file, v["if-unchanged"])` 或（adopt）直接 `loadWritable(file, v["if-unchanged"])` 读文件；新写命令必须照做。
   - `snapshotOf(text)` = sha256 前 16 位十六进制。写路径对 `joinDocument(lines, doc)`、读路径对 `readFileSync(file, "utf8")` 求值；两者对合法 UTF-8 文件逐字节相同（BOM、CRLF、无尾换行都保留）。`run()` 校验格式（16 位小写十六进制），不对就 exit 2。
