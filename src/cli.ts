@@ -33,10 +33,11 @@ import { buildSections, countLines } from "./sections.js";
 import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
 import { parseId, parseIds, compareIds, type IdSpan } from "./issue-id.js";
 import { bodyBlocks, countSuffix, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
-import { checkLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
+import { checkLedger, checkParsedLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
 import {
   bodySkeleton,
   escapeCell,
+  criteriaLabelHint,
   extractCriteria,
   unescapeCell,
   formatRow,
@@ -427,7 +428,7 @@ function cmdList(rest: string[], v: Values): CliResult {
   if (v["with-body"] && !v.json) {
     return err("issuemd list: --with-body applies to --json output; add --json\n", 2);
   }
-  const report = checkLedger(loaded.src, file);
+  const report = checkParsedLedger(ledger, file);
 
   const table = v.closed ? "closed" : "open";
   // A typo'd filter used to look exactly like an empty result (dogfood #33).
@@ -464,7 +465,7 @@ function cmdList(rest: string[], v: Values): CliResult {
     const unreadableRows = ledger.unreadable
       .filter((row) => row.table === table || row.table === "stray")
       .map(({ line, reason, ids }) => ({ line, reason, ...(ids ? { ids: ids.map(spanText) } : {}) }));
-    // Ids reserved by W225 tables: not issues, but `new` will not hand them out.
+    // IDs reserved by external tables are exposed separately from unreadable rows.
     const citedRows = ledger.cited.map(({ line, reason, ids }) => ({ line, reason, ids: (ids ?? []).map(spanText) }));
     const body = JSON.stringify(
       {
@@ -539,8 +540,8 @@ function cmdCounts(rest: string[], v: Values): CliResult {
   if (file == null || rest.length !== 1) return err(`usage: ${COMMANDS.counts.usage}\n`, 2);
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
-  const report = checkLedger(loaded.src, file);
   const ledger = parseLedger(loaded.src);
+  const report = checkParsedLedger(ledger, file);
   const unusable = unusableLedger(ledger);
   if (unusable) return unusable;
   const stderr = structureNote(report.errors, new Set(ledger.unreadable.map((row) => row.line))) +
@@ -560,7 +561,7 @@ function cmdShow(rest: string[], v: Values): CliResult {
   const ledger = parseLedger(loaded.src);
   const unusable = unusableLedger(ledger);
   if (unusable) return unusable;
-  const report = checkLedger(loaded.src, file);
+  const report = checkParsedLedger(ledger, file);
   const view = viewIssue(ledger, id);
   if (!view) {
     const bad = unreadableHolding(ledger, id);
@@ -1294,6 +1295,8 @@ function cmdClose(rest: string[], v: Values): CliResult {
   // Criteria are stored once and must not vanish silently (spec §7.2): the
   // body is deleted by close, so whatever it says has to land somewhere.
   const fromBody = extractCriteria(bodyText);
+  const labelHint = fromBody == null ? criteriaLabelHint(bodyText, (block?.line ?? 1) - 1) : undefined;
+  const hintText = labelHint ? `${labelHint.message}; ` : "";
   let criteria: string;
   if (v.criteria != null) {
     // Input convention, as for titles: `\|` is how a caller spells a literal
@@ -1306,7 +1309,8 @@ function cmdClose(rest: string[], v: Values): CliResult {
   } else if (v["criteria-from-body"]) {
     if (fromBody == null) {
       return err(
-        `issuemd close: #${idText} has no non-empty **验收判据** in its body (a label line inside a code fence is an example and does not count); ` +
+        `issuemd close: #${idText} has no non-empty **验收判据** in its body; ` +
+          (hintText || "a label line inside a code fence is an example and does not count; ") +
           "pass --criteria TEXT or --no-criteria\n",
         2,
       );
@@ -1324,7 +1328,8 @@ function cmdClose(rest: string[], v: Values): CliResult {
     );
   } else {
     return err(
-      `issuemd close: #${idText} has no criteria to record (no --criteria and no **验收判据** in the body). ` +
+      `issuemd close: #${idText} has no criteria to record (no --criteria and no non-empty **验收判据** in the body). ` +
+        (labelHint ? `${labelHint.message}. ` : "") +
         "Pass --criteria TEXT, --keep-body, or --no-criteria to close it without criteria on purpose\n",
       2,
     );
@@ -1770,7 +1775,10 @@ function cmdSplit(rest: string[], v: Values): CliResult {
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], (diagnostic) =>
     diagnostic.code === "E102" && diagnostic.id != null && rowIds.has(diagnostic.id));
   if (result.code !== 0 || missing.length === 0) return result;
-  const note = `issuemd split: no body block for ${missing.map((id) => `#${id}`).join(", ")}; ` +
+  const ids = missing.length <= 3
+    ? missing.map((id) => `#${id}`).join(", ")
+    : `${missing.length} ids (#${missing[0]}, … (${missing.length - 2} more), #${missing.at(-1)})`;
+  const note = `issuemd split: no body block for ${ids}; ` +
     "nothing was invented — write one with 'issuemd body FILE ID --body-file -'\n";
   return { ...result, stderr: result.stderr + note };
 }

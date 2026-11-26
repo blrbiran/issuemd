@@ -8,7 +8,7 @@
 
 import type { IdSpan } from "./issue-id.js";
 import { bodyBlocks, parseLedger, type BodyBlock, type LedgerRow, type TableKind } from "./ledger.js";
-import { fencedLines, labelBlock, labelName, type LabelBlock, extractCriteria } from "./ledger-edit.js";
+import { bodyLabels, labelBlock, type LabelBlock, extractCriteria } from "./ledger-edit.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
 
 export type ListedIssue = {
@@ -222,13 +222,8 @@ export function findLabel(
 /** Every distinct `**label**` in a line range, in document order. */
 export function labelsIn(lines: string[], start: number, end: number): string[] {
   const out: string[] = [];
-  // A fence nested in a list item may be indented past three columns; its
-  // lines are still examples, not labels.
-  const fenced = fencedLines(lines, Infinity);
-  for (let line = start; line <= end && line <= lines.length; line++) {
-    if (fenced[line - 1]) continue;
-    const match = /^ {0,3}\*\*([^*]+)\*\*/.exec(lines[line - 1]!);
-    if (match && !out.includes(labelName(match[1]!))) out.push(labelName(match[1]!));
+  for (const { label } of bodyLabels(lines, start, end)) {
+    if (!out.includes(label)) out.push(label);
   }
   return out;
 }

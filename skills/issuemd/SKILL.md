@@ -84,7 +84,7 @@ Every one of these is atomic and supports `--dry-run` (a unified diff, one hunk 
 - **`--body-file`** (for `new` and `body`) is the text that goes *under* `### Issue N: <title>` — never include the heading yourself (a file that starts with `### Issue N:` is refused, exit `2`). Minimal file: `printf '**现象**：…\n\n**验收判据**：…\n' > body.md`. To change one paragraph: take `show FILE ID --json` → `body.text`, drop the heading line, edit, pipe it back with `issuemd body FILE ID --body-file -`.
 - **A title starting with `-`** must be attached with `=`: `--title="--body-file 的语义"`; otherwise you get `Option '--title' argument is ambiguous`.
 - **Priorities are `P0`–`P3` or empty.** `new` refuses anything else; `check` warns `W221` about existing ones.
-- **`split` never invents a body.** An id that had no body keeps none after the split: `check` still reports E102 and stderr names the ids, so write one with `issuemd body FILE ID --body-file -`. (An empty skeleton would turn a real error into a warning.)
+- **`split` never invents a body.** Use `issuemd body FILE ID --body-file -` to add missing bodies. For more than three missing bodies, stderr shows the count, first and last id, and how many ids were omitted. Get the complete list from the E102 diagnostics in `issuemd check FILE --json`.
 - **A no-op write says so.** If the verb would leave the bytes identical, stdout is one line `(no changes)` and the exit code is 0 — the same words `--dry-run` uses. A real change keeps stdout empty (`new` prints only the id). An `adopt` that changes nothing prints `(no changes)` and then its report; a real conversion prints the report starting with `adopt: FILE`.
 - **`new` prints the id it filed** — one line on stdout (`ID=$(issuemd new FILE --title "…")`). Use that; don't re-`list` to guess the newest row while others may be writing.
 - `new` refuses (exit `2`) a summary that an **open** issue already has (compared after NFKC/case/space folding) and names that issue — after a timed-out retry, that usually means your first call landed. `rename` and `reopen` refuse the same way when another open issue already has that summary. Add `--allow-duplicate-title` only when it really is a second issue; `check` then keeps reporting the pair as `W212`.
@@ -102,7 +102,7 @@ Exit code **3** means structural errors. Fix them before reporting anything as d
 `check` warnings worth knowing:
 
 - `W202` — a short hash pinned in prose (it rots). Commits in the closed table's 判据 column are expected and are not W202; `--verify-commits` checks them and reports `W240` for a commit the repo does not have.
-- `W212` duplicate summary · `W220` undeclared status · `W221` undeclared priority · `W225` issue-shaped table outside the ledger tables (kept as text) · `W261` an open issue whose body has no non-empty `**验收判据**` (a bare `new` skeleton, or criteria deleted — it cannot be closed until one is written). A block holding only HTML comments (outside a fence) does not count; text beside a comment, and fenced content, do.
+- `W212` duplicate summary · `W220` undeclared status · `W221` undeclared priority · `W225` issue-shaped table outside the ledger tables (kept as text) · `W261` an open issue whose body has no non-empty `**验收判据**` (a bare `new` skeleton, or criteria deleted — it cannot be closed until one is written). A block holding only HTML comments (outside a fence) does not count; text beside a comment, and fenced content, do. If the body has a similarly named label such as `**验收判据（复测用）**`, W261 and `close` point to its line. Use `**验收判据**` for criteria that `close` should promote.
 - `W250` — an appendix archive left by `close --keep-body` (or `adopt`): a `### #N <summary>（已关闭，正文保留）` heading ending at `<!-- issuemd:kept-body:end -->`. Intentional, informational, never fails `--strict`. Leave the marker alone: `reopen` restores exactly the text above it. The archive is a frozen snapshot, not a second copy of the criteria. `W251`/`W252` mean someone hand-edited it out of step. `W253` means a second copy of the same body sits in 附录 (an escaped `\### Issue N:` left by an older `adopt`, or a repeated archive): keep one, delete the other by hand, then `check`.
 
 ### 5. Fix drift mechanically
@@ -133,6 +133,7 @@ A successful write (exit `0`) is never lost to a parallel writer: the final chec
 
 - **A ledger needs `## 索引`, `## 已关闭` and `## 正文`** (plus `## 怎么用` / `## 状态口径`). Missing any of the three core sections is `E120` — "not a ledger"; start from `TEMPLATE.md`.
 - **Issue rows live only in `## 索引` and `## 已关闭`.** An issue table under an old ledger-table heading (`## 待处理`, `## 总览`) is not read: `check` reports `E124` per row, its ids are reserved, and `show` exits `3`. Run `issuemd adopt FILE` to move the rows in. Under any other heading (`## 复核记录`), a table whose header names an id column plus `摘要`/`标题` — or only an id column and one other (`| # | 说明 |`) — is treated as text: `check` warns `W225` once per table, adopt leaves it alone and says so (`cited-table`), and its ids are reserved (default numbering steps over them when it gets there; `new --id N` on one exits `2`; `list --json` lists them under `citedRows`). Move real issues into the tables by hand, or rename the `#` column if they are not issues. A row above the separator counts as a data row, not a header, only when it is plainly an issue row: an id, then a status word (`| 7 | 未决 | 甲 |`), or nothing below the separator.
+- **Foreign tables with an ID and `状态` column can reserve IDs without W225.** In a table with a matching separator and no title column, a row with a ledger status such as `未决` or `已修` reserves its ID. Roadmap-specific values such as `进行中` leave the ID available. See `list --json` → `citedRows`.
 - **Every table needs a `|---|` separator row.** A block of `|`-lines without it is not a table — it renders as one paragraph of literal pipes (`E122`).
 - **Count issues by id, not by row.** One cell may hold several ids (`| 20, 24, 29 |` is three) or a retired range (`| 1–199 |`).
 - **No headings inside an issue body.** Use `**bold labels**`; `####` inside a body is `E110`. Read one labelled block with `show --label`.
@@ -153,7 +154,7 @@ A successful write (exit `0`) is never lost to a parallel writer: the final chec
   issuemd reopen: #20 shares a row with other ids (20, 24, 29); split the row first: issuemd split FILE 20
   ```
 
-  `issuemd split FILE 20` gives every id its own row (fields copied). Bodies are not invented: an id that had none keeps its E102 and is named on stderr — write it with `issuemd body`. Ranges over 1000 ids are refused.
+  `issuemd split FILE 20` gives every id its own row (fields copied). Missing bodies keep their E102 diagnostics. See stderr for the summary and use `issuemd body` to add them. Ranges over 1000 ids are refused.
 
 ## Writing issues an owner can act on
 

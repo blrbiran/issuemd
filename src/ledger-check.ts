@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
 import { countSuffix, parseLedger, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
-import { ARCHIVE_HEADING, extractCriteria, labelName, unescapeCell } from "./ledger-edit.js";
+import { ARCHIVE_HEADING, criteriaLabelHint, extractCriteria, fencedLines, labelName, unescapeCell } from "./ledger-edit.js";
 
 import { STATUS_CLASSES } from "./statuses.js";
 export { STATUS_CLASSES };
@@ -122,9 +122,11 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
     if (row && foldWhitespace(row.summary) !== foldWhitespace(unescapeCell(title))) {
       errors.push({ code: "E106", line, id, message: "Body title and index summary differ", expected: row.summary, actual: title });
     }
+    const bodyLines = lines.slice(line - 1, end);
+    const fenced = fencedLines(bodyLines, true);
     const labels = new Set<string>();
     for (let current = line + 1; current <= end; current++) {
-      if (!visible.has(current)) continue;
+      if (!visible.has(current) || fenced[current - line]) continue;
       // `**X：**` followed by text is too often inline Q/A emphasis to count;
       // alone on its line it is the colon-inside form of a label.
       const label = /^ {0,3}\*\*([^*]+)\*\*(?:\s*[:：]|\s*$)/.exec(lines[current - 1]);
@@ -141,10 +143,12 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
     // deleted criteria block leaves an open item that is not verifiable at
     // all (dogfood #62). Closed rows keep criteria in their table column and
     // are deliberately not judged here.
-    if (ids.open.has(span) && !extractCriteria(lines.slice(line - 1, end))) {
+    if (ids.open.has(span) && !extractCriteria(bodyLines, fenced)) {
+      const hint = criteriaLabelHint(bodyLines, line - 1, fenced);
       warnings.push({
-        code: "W261", line, id,
-        message: "Open issue has no non-empty **验收判据**; `close --criteria-from-body` will refuse it",
+        code: "W261", line: hint?.line ?? line, id,
+        message: "Open issue has no non-empty **验收判据**; `close --criteria-from-body` will refuse it" +
+          (hint ? `. ${hint.message}` : ""),
       });
     }
   }
@@ -363,7 +367,16 @@ function checkHashes(ledger: Ledger, file: string, verify: boolean) {
 }
 
 export function checkLedger(src: string, file: string, options: Options = {}) {
-  const ledger = parseLedger(src);
+  return checkParsedLedger(parseLedger(src), file, options);
+}
+
+/** Validate the same parsed snapshot a read command uses for its view. */
+export function checkParsedLedger(parsed: Ledger, file: string, options: Options = {}) {
+  const ledger = {
+    ...parsed,
+    errors: parsed.errors.map((diagnostic) => ({ ...diagnostic })),
+    warnings: parsed.warnings.map((diagnostic) => ({ ...diagnostic })),
+  };
   const { rows, errors, warnings } = ledger;
   const open = flatten(rows.open);
   const closed = flatten(rows.closed);

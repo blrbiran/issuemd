@@ -172,6 +172,22 @@ function dataRows(rows: string[][], header: string[] | undefined): { cells: stri
 }
 
 
+function commentedLines(lines: string[], visible: Set<number>): Set<number> {
+  const commented = new Set<number>();
+  let inside = false;
+  for (let index = 0; index < lines.length; index++) {
+    const text = lines[index]!;
+    if (!inside) {
+      if (!visible.has(index + 1) || !/^ {0,3}<!--/.test(text)) continue;
+      inside = !text.slice(text.indexOf("<!--") + 4).includes("-->");
+      continue;
+    }
+    commented.add(index + 1);
+    if (text.includes("-->")) inside = false;
+  }
+  return commented;
+}
+
 /**
  * Issue rows sitting under an H2 the ledger does not read (dogfood #52). They
  * are invisible to every view, so they become E124 + unreadable rows: their
@@ -186,7 +202,8 @@ function dataRows(rows: string[][], header: string[] | undefined): { cells: stri
  *
  * Outside ledger headings a table counts when its header names an id column
  * and either a 摘要/标题 column or nothing else (`| # | 说明 |`), or when an id
- * row sits where the header goes. `| ID | 状态 | 说明 |` (a roadmap) does not.
+ * row sits where the header goes. In other tables with an ID and a 状态
+ * column, only rows using ledger status words reserve IDs, without W225.
  */
 function strayRows(
   blocks: PipeBlock[],
@@ -195,7 +212,10 @@ function strayRows(
   warnings: Diagnostic[],
   unreadable: UnreadableRow[],
   cited: UnreadableRow[],
+  lines: string[],
+  visible: Set<number>,
 ) {
+  let comments: Set<number> | undefined;
   for (const block of blocks) {
     const h2 = h2s.filter((section) => section.line_start < block.line).at(-1);
     // Only the section the ledger actually reads is skipped: `## 索引（旧）`,
@@ -206,25 +226,30 @@ function strayRows(
     if (!isTableSection(h2.title)) {
       // Pipe lines without a separator render as a paragraph, not a table.
       if (!block.header) continue;
-      let idAt = -1;
-      if (header) {
-        const at = header.findIndex((cell) => ID_COLUMN.includes(cell));
-        if (at >= 0 && (header.length === 2 || header.some((cell) => cell === "摘要" || cell === "标题"))) idAt = at;
-      } else if (mappingFor(undefined, width)) {
-        idAt = 0; // an id row in the header slot renders as a table
-      }
+      const statusAt = header?.indexOf("状态") ?? -1;
+      const idAt = header ? header.findIndex((cell) => ID_COLUMN.includes(cell)) : 0;
       if (idAt < 0) continue;
+      const warn = header
+        ? header.length === 2 || header.some((cell) => cell === "摘要" || cell === "标题")
+        : !!mappingFor(undefined, width);
+      if (!warn && (!block.separator || statusAt < 0)) continue;
+      const hidden = warn ? undefined : (comments ??= commentedLines(lines, visible));
+      if (hidden?.has(block.line)) continue;
       const reason = `table under '## ${h2.title}' looks like an issue table but is not tracked (adopt keeps it as text); ` +
         "its ids are reserved, so new will not reuse them; if its rows are issues, move them into 索引/已关闭 by hand; " +
         "if not, rename its '#' column";
       let warned = false;
       for (const { cells, index } of dataRows(block.rows, header)) {
+        if (!warn && !isStatusWord(cells[statusAt] ?? "")) continue;
         const ids = parseIds(cells[idAt] ?? "");
         if (!ids) continue;
         const line = block.line + index;
-        if (!warned) warnings.push({ code: "W225", line, message: reason });
-        warned = true;
-        cited.push({ line, table: "cited", reason: `cited in a table under '## ${h2.title}' (W225)`, ids });
+        if (warn && !warned) {
+          warnings.push({ code: "W225", line, message: reason });
+          warned = true;
+        }
+        const source = warn ? "W225" : "ledger status";
+        cited.push({ line, table: "cited", reason: `cited in a table under '## ${h2.title}' (${source})`, ids });
       }
       continue;
     }
@@ -363,7 +388,7 @@ export function parseLedger(src: string) {
   const warnings: Diagnostic[] = [];
   const rows: Record<TableKind, LedgerRow[]> = { open: [], closed: [] };
   const unreadable: UnreadableRow[] = [];
-  /** Ids cited by W225 tables: not issues the ledger tracks, but reserved. */
+  /** IDs cited by external tables and reserved for allocation. */
   const cited: UnreadableRow[] = [];
   const missing = CORE.filter((title) => !h2s.some((section) => section.title === title));
   if (missing.length > 0) {
@@ -432,7 +457,7 @@ export function parseLedger(src: string) {
     if (tables.length !== 1) errors.push({ code: "E112", line: section.line_start, message: `${title} must contain one table` });
     rows[kind] = tables.flatMap((table) => readRows(table, kind, errors, warnings, unreadable));
   }
-  strayRows(blocks, h2s, errors, warnings, unreadable, cited);
+  strayRows(blocks, h2s, errors, warnings, unreadable, cited, lines, visible);
   return { lines, visible, sections, rows, unreadable, cited, blocks, errors, warnings };
 }
 

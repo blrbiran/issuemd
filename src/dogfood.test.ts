@@ -1696,14 +1696,14 @@ describe("#56/#57 every issue-table shape: check, adopt and new agree", () => {
   });
 
   test("tables kept silent on purpose: 路线图 ID|状态|说明 and 变更记录 #|状态|说明", async () => {
-    for (const [title, table] of [
-      ["路线图", "| ID | 状态 | 说明 |\n|---|---|---|\n| 7 | 进行中 | 某事 |\n"],
-      ["变更记录", LEDGER_ONLY["# | 状态 | 说明"]!],
+    for (const [title, table, code] of [
+      ["路线图", "| ID | 状态 | 说明 |\n|---|---|---|\n| 7 | 进行中 | 某事 |\n", 0],
+      ["变更记录", LEDGER_ONLY["# | 状态 | 说明"]!, 2],
     ] as const) {
       const path = withSection(title, table);
       const { errors, warnings } = await diags(path);
       expect([...errors, ...warnings].map((d) => d.code)).toEqual([]);
-      expect((await run(["new", path, "--title", "撞号", "--id", "7"])).code).toBe(0);
+      expect((await run(["new", path, "--title", "撞号", "--id", "7"])).code).toBe(code);
     }
   });
 

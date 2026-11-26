@@ -162,26 +162,36 @@ export function ascendingRows(rows: LedgerRow[]): boolean {
  * rewriter must ignore fenced lookalikes: a code block in an issue body or the
  * appendix can legitimately contain `**验收判据**：…` or a marker pair.
  *
- * `maxIndent` defaults to CommonMark's 3 columns. A body block nested in a
- * list item may indent its fence further; callers that only need "is this line
- * an example" pass `Infinity` (scan keeps its own 0–3 rule for headings).
+ * Body consumers also recognize fences relative to a list item's content margin.
+ * A standalone indented code block does not open a fence.
  */
-export function fencedLines(lines: string[], maxIndent = 3): boolean[] {
+export function fencedLines(lines: string[], inBody = false): boolean[] {
   const out = new Array<boolean>(lines.length).fill(false);
-  let fence: { char: string; len: number } | undefined;
+  let fence: { char: string; len: number; margin: number } | undefined;
+  let listMargin = 0;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!;
-    const match = /^([ \t]*)(`{3,}|~{3,})(.*)$/.exec(line);
+    const leading = /^[ \t]*/.exec(line)![0];
+    let indent = 0;
+    for (const char of leading) indent += char === "\t" ? 4 - (indent % 4) : 1;
+    const text = line.slice(leading.length);
+    if (fence && fence.margin > indent && text) fence = undefined;
+    if (!fence && inBody && text && indent < listMargin) listMargin = 0;
+    const margin = fence?.margin ?? listMargin;
+    const delimiter = indent >= margin && indent - margin <= 3 ? /^(`{3,}|~{3,})(.*)$/.exec(text) : null;
     if (!fence) {
-      if (match && match[1]!.length <= maxIndent && !(match[2]!.startsWith("`") && match[3]!.includes("`"))) {
-        fence = { char: match[2]![0]!, len: match[2]!.length };
+      if (delimiter && !(delimiter[1]!.startsWith("`") && delimiter[2]!.includes("`"))) {
+        fence = { char: delimiter[1]![0]!, len: delimiter[1]!.length, margin };
         out[index] = true;
+      } else if (inBody && indent - listMargin <= 3) {
+        const item = /^(?:[-*+]|\d{1,9}[.)])( {1,4})(?=\S)/.exec(text);
+        if (item) listMargin = indent + item[0].length;
       }
       continue;
     }
     out[index] = true;
-    if (match && match[1]!.length <= maxIndent && match[2]![0] === fence.char &&
-        match[2]!.length >= fence.len && /^[ \t]*$/.test(match[3]!)) {
+    if (delimiter && delimiter[1]![0] === fence.char &&
+        delimiter[1]!.length >= fence.len && /^[ \t]*$/.test(delimiter[2]!)) {
       fence = undefined;
     }
   }
@@ -239,6 +249,23 @@ export function bodySkeleton(id: string, title: string, criteria = ""): string[]
 const LABEL_LINE = /^ {0,3}\*\*([^*]+)\*\*\s*[:：]?\s*(.*)$/;
 /** `**验收判据：**` and `**验收判据**：` name the same label. */
 export const labelName = (raw: string) => raw.trim().replace(/[:：]\s*$/, "").trim();
+export function* bodyLabels(lines: string[], start: number, end: number, fenced = fencedLines(lines, true)) {
+  for (let line = start; line <= end && line <= lines.length; line++) {
+    if (fenced[line - 1]) continue;
+    const match = LABEL_LINE.exec(lines[line - 1]!);
+    if (match) yield { label: labelName(match[1]!), line };
+  }
+}
+
+/** Suggest a correction without treating a loosely named block as criteria. */
+export function criteriaLabelHint(lines: string[], offset = 0, fenced?: boolean[]) {
+  for (const { label, line } of bodyLabels(lines, 1, lines.length, fenced)) {
+    if (label !== "验收判据" && label.includes("判据")) {
+      return { line: line + offset, message: `L${line + offset}: rename **${label}** to **验收判据** if this block contains acceptance criteria` };
+    }
+  }
+}
+
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const UNORDERED_MARKER = /^\s*[-*+]\s+/;
 
@@ -267,8 +294,8 @@ export function labelBlock(
   start: number,
   end: number,
   label: string,
+  fenced = fencedLines(lines, true),
 ): LabelBlock | undefined {
-  const fenced = fencedLines(lines);
   const last = Math.min(end, lines.length);
   for (let line = start; line <= last; line++) {
     if (fenced[line - 1]) continue;
@@ -294,7 +321,7 @@ export function labelBlock(
     if (first) current.push(first);
     // Inside the block, fences may be indented by a list item; they are still
     // examples when extended.
-    const ownFenced = fencedLines(own, Infinity);
+    const ownFenced = fencedLines(own, true);
     for (let index = 1; index < own.length; index++) {
       const raw = own[index]!;
       if (raw.trim() === "") {
@@ -343,7 +370,7 @@ export function joinClauses(parts: string[]): string {
  * swallowed `<!-- x --> 正文 <!-- y -->` — round 14 review.)
  */
 function blockHasVisibleContent(own: string[]): boolean {
-  const fenced = fencedLines(own, Infinity);
+  const fenced = fencedLines(own, true);
   const first = LABEL_LINE.exec(own[0] ?? "")?.[2] ?? "";
   const plain: string[] = [first];
   let fencedContent = false;
@@ -359,13 +386,13 @@ function blockHasVisibleContent(own: string[]): boolean {
   return plain.join("\n").replace(/<!--[\s\S]*?-->/g, "").trim() !== "";
 }
 
-export function extractCriteria(bodyLines: string[]): string | undefined {
+export function extractCriteria(bodyLines: string[], fenced = fencedLines(bodyLines, true)): string | undefined {
   // A body may repeat the label (W206); every distinct non-empty block counts,
   // or close would drop the second one without a word.
   const texts: string[] = [];
   let from = 1;
   for (;;) {
-    const found = labelBlock(bodyLines, from, bodyLines.length, "验收判据");
+    const found = labelBlock(bodyLines, from, bodyLines.length, "验收判据", fenced);
     if (!found) break;
     if (blockHasVisibleContent(found.lines) && found.text !== "" && !texts.includes(found.text)) texts.push(found.text);
     from = found.line + found.lines.length;
