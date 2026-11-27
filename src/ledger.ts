@@ -8,6 +8,7 @@ export const ARCHIVE_HEADING = /^ {0,3}###[ \t]+#([1-9]\d*[a-z]?)[ \t]+([\s\S]*?
 export const KEPT_BODY_VERSION = "<!-- issuemd:kept-body:v2 -->";
 export const KEPT_BODY_START = "<!-- issuemd:kept-body:start -->";
 export const KEPT_BODY_END = "<!-- issuemd:kept-body:end -->";
+export const HIGH_WATER_MARKER = "<!-- issuemd:high-water:";
 
 const CORE = ["索引", "已关闭", "正文"] as const;
 
@@ -444,6 +445,7 @@ function readRows(
 
 /** Parse the canonical layout into source-referenced sections and table rows. */
 export function parseLedger(src: string) {
+  const finalNewline = src.endsWith("\n");
   const lines = src.replace(/^﻿/, "").split(/\r?\n/);
   if (lines.at(-1) === "") lines.pop();
   const visible = new Set<number>();
@@ -458,7 +460,7 @@ export function parseLedger(src: string) {
   const missing = CORE.filter((title) => !h2s.some((section) => section.title === title));
   if (missing.length > 0) {
     errors.push({ code: "E120", line: 1, message: `Canonical ledger sections missing: ${missing.join(", ")}` });
-    return { lines, visible, sections, rows, unreadable, cited, blocks: [] as PipeBlock[], errors, warnings };
+    return { lines, finalNewline, visible, sections, rows, unreadable, cited, blocks: [] as PipeBlock[], errors, warnings };
   }
 
   const roots = sections.filter((section) => section.level === 1);
@@ -534,7 +536,24 @@ export function parseLedger(src: string) {
     }
   }
   strayRows(blocks, h2s, errors, warnings, unreadable, cited, lines, visible, commentBoundaries);
-  return { lines, visible, sections, rows, unreadable, cited, blocks, errors, warnings };
+  return { lines, finalNewline, visible, sections, rows, unreadable, cited, blocks, errors, warnings };
+}
+
+export type HighWaterRecord = { line: number; value?: number };
+
+/** Read the optional allocation high-water mark from the document preamble. */
+export function highWaterRecords(ledger: { lines: string[]; sections: Section[] }): HighWaterRecord[] {
+  const firstH2 = ledger.sections.find((section) => section.level === 2)?.line_start ?? ledger.lines.length + 1;
+  const fenced = fencedLines(ledger.lines, true);
+  const records: HighWaterRecord[] = [];
+  for (let index = 0; index < firstH2 - 1; index++) {
+    const line = ledger.lines[index]!;
+    if (fenced[index] || !/^ {0,3}<!-- issuemd:high-water:/.test(line)) continue;
+    const match = /^ {0,3}<!-- issuemd:high-water: ([1-9]\d*) -->[ \t]*$/.exec(line);
+    const value = match ? Number(match[1]) : undefined;
+    records.push({ line: index + 1, ...(value != null && Number.isSafeInteger(value) ? { value } : {}) });
+  }
+  return records;
 }
 
 /** Well-formed `### Issue N: title` bodies strictly inside `## 正文`. */

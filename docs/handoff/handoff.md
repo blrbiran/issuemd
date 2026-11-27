@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-27（第二十轮：dogfooding #23 追加复测缺口）。写给下一位接手者。
+更新于 2026-11-27（第二十一轮：dogfooding #103–#127 的当前行为复核与安全修复）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -15,12 +15,12 @@
 
 ## 一句话现状
 
-`issuemd` P0–P5 已完成。已发布版本为 `0.1.0`。外部 dogfooding 台账 `../issuemd_dogfooding/issue-20261124.md` 目前到 #101，由测试者维护状态；第二十轮复核发现并处理了 #23 的重复附录归档缺口。
+`issuemd` P0–P5 已完成。已发布版本仍为 `0.1.0`。外部 dogfooding 台账 `../issuemd_dogfooding/issue-20261124.md` 当前由测试者维护，已更新至 #127；第二十一轮只读复核并修复了其中多项仍能在当前代码复现的使用问题，没有改台账。
 
-- 第十九轮修复 #97–#100 并补齐 #101 的 `split` 覆盖；第二十轮修复 #23 补充复测发现的重复附录归档遗漏。两轮均已快进合入本地 `main`。待推送提交数用 `git rev-list --count origin/main..main` 现查。
-- `npm run typecheck && npm test` 通过，690 项；`npm run build` 成功，`dist/bin/issuemd.js` 权限为 755。第十七轮大台账性能检查现在测 CPU 时间，12,800 条为 259 ms。
-- 最新源码只读检查：dogfood 0 errors / 6 warnings（W261 6，W262 0；snapshot `67bc4035…` 与本轮开始相同）；cafe 0 errors / 6 warnings（W201 1、W202 2、W221 1、W260 2）；orca archive 0 errors / 40 warnings —— 该外部文件在本轮进行中被其他进程大幅改写（其仓库 `git diff` 约 +9100/−3675），所以别拿之前的 67 当基线，检查本身仍是 0 error。我们未写入这三份文件。
-- 下一步由测试者复测第十九轮 #97–#100；第二十轮 #23 重复附录场景已由回归测试覆盖。push 与发版由用户手动处理，建议版本仍为 `0.2.0`。
+- 第十九轮 #97–#100 与第二十轮 #23 的回归场景已在第二十一轮再次复测通过；测试者仍自行维护外部 issue 状态。push / 发版由用户决定，建议下一版 `0.2.0`。
+- 第二十一轮 `npm run typecheck && npm test` 通过，724 项；合入 main 后仍需按工作流重跑 `npm run build`，确认 `dist/bin/issuemd.js` 权限 755。
+- 最新源码只读检查：dogfood 0 errors / 0 warnings（snapshot `8c804812408296c8`）；`../orca_archived_files/issue-20261023.md` 0 errors。orca archive 在不同轮次会被其他进程改写，warning 数不可比较；两份外部文件均未修改。
+- 当前完成的源码与文档改动位于 `fix/dogfooding-p1-integrity`；本地 main/远端基线和待推送数不写死，需现查 `git log --oneline -5`、`git rev-list --count origin/main..main`。
 
 ## 工作流约定（用户明确要求）
 
@@ -59,6 +59,19 @@
    - **接受不改的 4 项**见「第十四轮」小节（`--expand` 行序、snapshot 原始字节、`--with-body` 省键、close 选项互斥）。若想让 `list --expand` 按编号排序，或让 snapshot 跨编码相等，说一声即可——都只影响输出顺序/口径，改动很小。
 
 9. **第十一轮报审（备查）**：Q1 W225 编号占用（已执行，第十二轮维持）；Q2 更多「台账表小节」词（未做，推荐暂不做：改成 E124 会把 `## 已完成` 的行当开放项）；Q3 年份标题（第十二轮已做）；Q4 `list --json` 暴露被占用编号（第十二轮已做，`citedRows`）；Q5 台账复测留给测试者。
+
+## 第二十一轮（2026-11-27）
+
+输入：dogfooding 台账当前更新至 #127。按当前代码逐项复核，不写外部台账，也不改测试者维护的状态。第二十一轮开 `fix/dogfooding-p1-integrity` 分支，按 TDD 先复现后修复。
+
+- **#103 / #124 判据边界**：行首粗体散文不再自动成为标签；正式判据已有列表后，空行后的普通段落结束判据块，但按列表 marker 的内容列缩进的续行仍属于列表项，fence 内列表样式文字不会更新续行状态。`body --append` 若无显式标签且落在最后的 `**验收判据**` 块后，会加到 `**复测记录**` 下；空判据骨架的 W261 不会因此消失。
+- **#104 / #117 防止判据丢失**：`sync --criteria-labels` 仅自动改一个非空且无正式判据时的安全近似标签（`判据`、`验收判据…`、`追加判据…`、`修复判据…`、`…的判据`）；`关闭时判据` 等历史标签不会被改写。正式判据之后另有安全判据别名时报告 W264，普通复核文字只提到「判据」不触发；close 会拒绝移除未计入的块，除非显式提供已审阅的完整 `--criteria`、保留正文或先合并标签。正式判据之前的描述性块仍允许存在（见 round15 回归）。
+- **#112 / #110 写入安全**：空文件或空白内容替换正文是 `(no changes)`；对已关闭项执行 `close FILE ID --criteria TEXT` 只更新判据格，表格紧凑行中以反斜杠结尾的值也可正确读回。
+- **#121 编号历史**：`new` 原子更新前言 `<!-- issuemd:high-water: N -->`；取号以表格编号和持久化高水位最大者为准。W265 提示标记异常或高水位高于现存表格编号。首次写入标记前已删除的历史无法回溯；手工删除标记本身也不可能由当前文件发现。
+- **#127 / #108 / #125 只读视图**：唯一 keep-body 归档可通过 `show`、`show --body-only`、closed `list --json --with-body` 读取。v2 严格要求版本标记与固定 start/end；legacy 保留标题后全部 payload、provenance note、字面 end marker 和 EOF 换行状态，不猜 note 边界；H1 标题或前言中的 H3 示例不会被当作归档，重复归档不选赢家。open JSON 新增 `body.content`（可回灌）、`labelBlocks` / `paragraphLines` 保留 Markdown 行；旧的扁平字段兼容保留。CLI 对 `--body-only` 逐字写出，不再强制补换行。
+- **#107 / #109 CLI**：`issuemd --version` 显示安装包版本；未知命令带 `--help` 仍 exit 2。
+- **验证与审查**：`npm run typecheck && npm test` 为 724 项、0 fail；`bun test src/round19.test.ts src/round20.test.ts src/adopt.test.ts` 为 100 pass；`bun test src/round20.test.ts src/adopt.test.ts` 为 75 pass。独立复审提出的问题均复现并修复，最后一次复审无 Critical / High blocker。dogfood 当前 0/0、snapshot `8c804812408296c8`；orca archive 0 errors。外部文件始终只读。
+- **尚未处理、供下一轮按优先级评估**：#105 errno 诊断；#106/#118/#119 W201 出口、可配置阈值与归档体积治理；#111 W205 的 `--criteria` 输入提示（无法表示奇数反斜杠紧邻管道符仍是格式限制）；#113 W202 修复动词（自动加反引号会把证据格式化掉，需谨慎）；#114 archive prune；#115 W202 格式化规避；#116 reopen 后空 `## 附录`（不能猜它是否由 close 创建，需有来源标记）；#120 criteria 数组/分段 API；#122 成功写入回执；#123 判据列表重复编号检测；#126 与当前“多个附录作为一个归档区”契约冲突，暂维持允许，`read FILE 附录` 的重名歧义可另作设计；#127 的全文 `find` 动词仍未实现，当前只补齐按 id 读取归档。
 
 ## 第二十轮（2026-11-27）
 

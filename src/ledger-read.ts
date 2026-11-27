@@ -7,7 +7,8 @@
  */
 
 import type { IdSpan } from "./issue-id.js";
-import { bodyBlocks, parseLedger, type BodyBlock, type LedgerRow, type TableKind } from "./ledger.js";
+import { bodyBlocks, parseLedger, type BodyBlock, type LedgerRow, type TableKind, ARCHIVE_HEADING, KEPT_BODY_END, KEPT_BODY_START, KEPT_BODY_VERSION } from "./ledger.js";
+import { fencedLines } from "./scan.js";
 import { bodyLabels, labelBlock, type LabelBlock, extractCriteria } from "./ledger-edit.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
 
@@ -28,6 +29,10 @@ export type ListedIssue = {
   bodyFrom?: string;
   /** `--with-body`: every body label, one-line form (same as `show --json`). */
   labels?: Record<string, string>;
+  /** `--with-body`: original lines for each label block, including markup. */
+  labelBlocks?: Record<string, string[]>;
+  /** `--with-body`: an editable body payload, without its issue heading. */
+  body?: { archived?: true; line: number; end: number; text: string; content: string; id: string };
 };
 
 /** Render a span the way the table spells it: `7`, `393b`, or `7–20`. */
@@ -58,7 +63,94 @@ export type WithBodyIndex = {
   bodiesBySuffix: Map<string, BodyBlock[]>;
   explicitRowsById: Map<string, Set<number>>;
   fallbackBodiesByRowLine: Map<number, BodyBlock | null>;
+  archiveBodiesById: Map<string, ArchivedBody | null>;
 };
+
+function bodyContent(lines: string[], headingLine: number, endLine: number): string {
+  const content = lines.slice(headingLine, endLine);
+  while (content[0]?.trim() === "") content.shift();
+  while (content.at(-1)?.trim() === "") content.pop();
+  return content.join("\n");
+}
+
+type ArchivedBody = NonNullable<ListedIssue["body"]>;
+
+function archivePayload(
+  ledger: ReturnType<typeof parseLedger>,
+  section: ReturnType<typeof parseLedger>["sections"][number],
+  id: string,
+  fenced: boolean[],
+): ArchivedBody | undefined {
+  const lines = ledger.lines;
+  const versionLine = section.line_start + 1;
+  const versioned = lines[versionLine - 1]?.trim() === KEPT_BODY_VERSION;
+  let payloadStart: number;
+  let payloadEndExclusive: number;
+  let appendFinalNewline = false;
+  if (versioned) {
+    const startMarkerLine = versionLine + 1;
+    if (fenced[startMarkerLine - 1] || lines[startMarkerLine - 1]?.trim() !== KEPT_BODY_START) return undefined;
+    let endMarkerLine: number | undefined;
+    for (let line = startMarkerLine + 1; line <= section.line_end; line++) {
+      if (!fenced[line - 1] && lines[line - 1]?.trim() === KEPT_BODY_END) {
+        endMarkerLine = line;
+        break;
+      }
+    }
+    if (endMarkerLine == null) return undefined;
+    payloadStart = startMarkerLine + 1;
+    payloadEndExclusive = endMarkerLine;
+    appendFinalNewline = true;
+  } else {
+    let endMarkerLine: number | undefined;
+    for (let line = section.line_start + 1; line <= section.line_end; line++) {
+      if (!fenced[line - 1] && lines[line - 1]?.trim() === KEPT_BODY_END) endMarkerLine = line;
+    }
+    payloadStart = section.line_start + 1;
+    payloadEndExclusive = endMarkerLine ?? section.line_end + 1;
+    appendFinalNewline = endMarkerLine != null || section.line_end < lines.length || ledger.finalNewline;
+  }
+  const payloadLines = lines.slice(payloadStart - 1, payloadEndExclusive - 1);
+  const text = payloadLines.length ? payloadLines.join("\n") + (appendFinalNewline ? "\n" : "") : "";
+  return {
+    archived: true,
+    id,
+    line: payloadStart,
+    end: payloadEndExclusive - 1,
+    text,
+    content: text,
+  };
+}
+
+function archiveBodies(
+  ledger: ReturnType<typeof parseLedger>,
+  requestedIds: Set<string>,
+): Map<string, ArchivedBody | null> {
+  const result = new Map<string, ArchivedBody | null>();
+  if (requestedIds.size === 0) return result;
+  const candidates = ledger.sections.filter((section) => {
+    if (section.level !== 3 || section.parent?.level !== 2 || section.parent.title !== "附录" || !ledger.visible.has(section.line_start)) return false;
+    const id = ARCHIVE_HEADING.exec(ledger.lines[section.line_start - 1] ?? "")?.[1];
+    return id != null && requestedIds.has(id);
+  });
+  const fenced = fencedLines(ledger.lines, true);
+  for (const section of candidates) {
+    const id = ARCHIVE_HEADING.exec(ledger.lines[section.line_start - 1] ?? "")![1]!;
+    if (result.has(id)) {
+      result.set(id, null);
+      continue;
+    }
+    result.set(id, archivePayload(ledger, section, id, fenced) ?? null);
+  }
+  return result;
+}
+
+function archivedBody(
+  ledger: ReturnType<typeof parseLedger>,
+  id: string,
+): ArchivedBody | undefined {
+  return archiveBodies(ledger, new Set([id])).get(id) ?? undefined;
+}
 
 /** Build lookups only for IDs the current list view will request. */
 export function indexWithBody(
@@ -131,7 +223,17 @@ export function indexWithBody(
   for (const sameSuffix of bodiesBySuffix.values()) {
     sameSuffix.sort((a, b) => a.id.start - b.id.start || a.line - b.line);
   }
-  return { rowsById, exactBodiesById, bodiesBySuffix, explicitRowsById, fallbackBodiesByRowLine: new Map() };
+  const archivedIds = new Set(issues.filter((issue) => issue.criteria != null)
+    .map((issue) => issue.ids[0] ?? issue.id));
+  const archiveBodiesById = archiveBodies(ledger, archivedIds);
+  return {
+    rowsById,
+    exactBodiesById,
+    bodiesBySuffix,
+    explicitRowsById,
+    fallbackBodiesByRowLine: new Map(),
+    archiveBodiesById,
+  };
 }
 
 function rangeBodies(index: WithBodyIndex, span: IdSpan): BodyBlock[] {
@@ -246,7 +348,10 @@ export function withBody(
   issue: ListedIssue,
   index = indexWithBody(ledger),
 ): ListedIssue {
-  if (issue.criteria != null) return { ...issue, criteriaSource: "table" }; // closed rows carry their own column
+  if (issue.criteria != null) {
+    const archived = index.archiveBodiesById.get(issue.ids[0] ?? issue.id) ?? undefined;
+    return { ...issue, criteriaSource: "table", ...(archived ? { body: archived } : {}) };
+  }
   const first = issue.ids[0];
   if (!first) return issue;
   const row = index.rowsById.get(first);
@@ -258,11 +363,25 @@ export function withBody(
   if (!block) return issue;
   const bodyLines = ledger.lines.slice(block.line - 1, block.end);
   const labels: Record<string, string> = {};
+  const labelBlocks: Record<string, string[]> = {};
   for (const name of labelsIn(bodyLines, 1, bodyLines.length)) {
-    labels[name] = labelBlock(bodyLines, 1, bodyLines.length, name)?.text ?? "";
+    const found = labelBlock(bodyLines, 1, bodyLines.length, name);
+    labels[name] = found?.text ?? "";
+    labelBlocks[name] = found?.lines ?? [];
   }
-  const out: ListedIssue = { ...issue, labels };
   const owner = `${block.id.start}${block.id.suffix}`;
+  const out: ListedIssue = {
+    ...issue,
+    labels,
+    labelBlocks,
+    body: {
+      line: block.line,
+      end: block.end,
+      text: ledger.lines.slice(block.line - 1, block.end).join("\n").replace(/\n+$/, ""),
+      content: bodyContent(ledger.lines, block.line, block.end),
+      id: owner,
+    },
+  };
   if (owner !== row.id) out.bodyFrom = owner;
   const criteria = extractCriteria(bodyLines);
   if (criteria) {
@@ -374,14 +493,14 @@ export type IssueView = {
   line: number;
   end: number;
   /**
-   * The body block shown for this id. `id` is the issue the block's heading
-   * names; when a multi-id row keeps one body under its first id, `show 24`
-   * still finds it, but `inherited` says the text is not #24's own (dogfood
-   * #69) — `check` reports E102 for the ids without one.
+   * The body block shown for this id. `id` names the issue the block belongs
+   * to; `archived` marks a payload read from a unique kept-body archive.
    */
-  body?: { line: number; end: number; text: string; id: string; inherited?: true };
+  body?: { line: number; end: number; text: string; content: string; id: string; inherited?: true; archived?: true };
   /** Every `**label**` block in the body, one-line form (as `--label` and `close` read them). */
   labels?: Record<string, string>;
+  /** Original lines for each label block, including Markdown fences and blank lines. */
+  labelBlocks?: Record<string, string[]>;
 };
 
 /** The full view `show` renders: table row plus the body block when one exists. */
@@ -405,6 +524,7 @@ export function viewIssue(
   const block = exact ?? blocks.find((candidate) =>
     found.row.ids.some((span) => covers(span, candidate.id)) && mayBorrow(ledger, found.row.line, candidate));
   const owner = block ? key(block.id) : undefined;
+  const archived = found.table === "closed" && !block ? archivedBody(ledger, found.id) : undefined;
   const view: IssueView = {
     id: found.id,
     table: found.table,
@@ -418,22 +538,31 @@ export function viewIssue(
     view.criteria = found.row.criteria;
     view.criteriaSource = "table";
   }
-  if (block) {
+  const displayedBody = block ?? archived;
+  if (displayedBody) {
     view.body = {
-      line: block.line,
-      end: block.end,
-      text: ledger.lines.slice(block.line - 1, block.end).join("\n").replace(/\n+$/, ""),
-      id: owner!,
+      line: displayedBody.line,
+      end: displayedBody.end,
+      text: block
+        ? ledger.lines.slice(block.line - 1, block.end).join("\n").replace(/\n+$/, "")
+        : archived!.text,
+      content: block ? bodyContent(ledger.lines, block.line, block.end) : archived!.content,
+      id: block ? owner! : archived!.id,
+      ...(archived ? { archived: true as const } : {}),
     };
-    if (owner !== found.id) view.body.inherited = true;
-    // Work on the block's own slice: `fencedLines` and the label scan then
-    // cost O(body), not O(file) per label (review 13 performance finding).
-    const bodyLines = ledger.lines.slice(block.line - 1, block.end);
+    if (owner && owner !== found.id) view.body!.inherited = true;
+    // Work on the body's own slice: `fencedLines` and the label scan then cost
+    // O(body), not O(file) per label (review 13 performance finding).
+    const bodyLines = ledger.lines.slice(displayedBody.line - 1, displayedBody.end);
     const labels: Record<string, string> = {};
+    const labelBlocks: Record<string, string[]> = {};
     for (const name of labelsIn(bodyLines, 1, bodyLines.length)) {
-      labels[name] = labelBlock(bodyLines, 1, bodyLines.length, name)?.text ?? "";
+      const found = labelBlock(bodyLines, 1, bodyLines.length, name);
+      labels[name] = found?.text ?? "";
+      labelBlocks[name] = found?.lines ?? [];
     }
     view.labels = labels;
+    view.labelBlocks = labelBlocks;
     // Open issues keep their criteria in the body; expose them the same way
     // a closed issue exposes its column, so consumers need not parse Markdown.
     // Same text `close` would promote (every non-empty 验收判据 block).

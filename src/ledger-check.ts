@@ -2,8 +2,8 @@ import { inlineCodeRanges } from "./scan.js";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
-import { countSuffix, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
-import { ARCHIVE_HEADING, criteriaLabelHint, extractCriteria, fencedLines, labelName, unescapeCell } from "./ledger-edit.js";
+import { countSuffix, highWaterRecords, maxIssueId, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
+import { ARCHIVE_HEADING, bodyLabels, criteriaLabelHint, criteriaSupplementHint, extractCriteria, fencedLines, unescapeCell } from "./ledger-edit.js";
 
 import { STATUS_CLASSES } from "./statuses.js";
 export { STATUS_CLASSES };
@@ -126,14 +126,11 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
     const bodyLines = lines.slice(line - 1, end);
     const fenced = fencedLines(bodyLines, true);
     const labels = new Set<string>();
-    for (let current = line + 1; current <= end; current++) {
-      if (!visible.has(current) || fenced[current - line]) continue;
-      // `**X：**` followed by text is too often inline Q/A emphasis to count;
-      // alone on its line it is the colon-inside form of a label.
-      const label = /^ {0,3}\*\*([^*]+)\*\*(?:\s*[:：]|\s*$)/.exec(lines[current - 1]);
-      if (!label) continue;
-      const name = labelName(label[1]);
-      if (labels.has(name)) warnings.push({ code: "W206", line: current, id, message: `Duplicate body label: ${name}` });
+    for (const { label: name, line: current } of bodyLabels(bodyLines, 2, bodyLines.length, fenced)) {
+      // Bold Q/A dialogue is readable through show --label but is not a field
+      // schema; repeated turns are not duplicate ledger labels.
+      if (name === "Q" || name === "A") continue;
+      if (labels.has(name)) warnings.push({ code: "W206", line: line + current - 1, id, message: `Duplicate body label: ${name}` });
       labels.add(name);
     }
     if (end - line > 300 || Buffer.byteLength(lines.slice(line, end).join("\n")) > 20 * 1024) {
@@ -144,13 +141,22 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
     // deleted criteria block leaves an open item that is not verifiable at
     // all (dogfood #62). Closed rows keep criteria in their table column and
     // are deliberately not judged here.
-    if (ids.open.has(span) && !extractCriteria(bodyLines, fenced)) {
+    const criteria = extractCriteria(bodyLines, fenced);
+    if (ids.open.has(span) && !criteria) {
       const hint = criteriaLabelHint(bodyLines, line - 1, fenced);
       warnings.push({
         code: "W261", line: hint?.line ?? line, id,
         message: "Open issue has no non-empty **验收判据**; `close --criteria-from-body` will refuse it" +
           (hint ? `. ${hint.message}` : ""),
       });
+    } else if (ids.open.has(span)) {
+      const hint = criteriaSupplementHint(bodyLines, line - 1, fenced);
+      if (hint) {
+        warnings.push({
+          code: "W264", line: hint.line, id,
+          message: `Possible additional criteria block is not included in the canonical criteria: ${hint.message}`,
+        });
+      }
     }
   }
   for (let line = body.line_start + 1; line <= body.line_end; line++) {
@@ -456,6 +462,22 @@ export function checkParsedLedger(parsed: Ledger, file: string, options: Options
     checkDuplicateSummaries(ledger);
     checkAppendix(ledger);
     checkGuide(ledger);
+    const highWater = highWaterRecords(ledger);
+    if (highWater.length > 1 || highWater.some((record) => record.value == null)) {
+      warnings.push({
+        code: "W265",
+        line: highWater[0]?.line ?? 1,
+        message: "Allocation high-water metadata is malformed or duplicated; repair the preamble marker",
+      });
+    } else if (highWater[0] && highWater[0].value! > maxIssueId(ledger.rows, ledger.unreadable)) {
+      const maximum = maxIssueId(ledger.rows, ledger.unreadable);
+      warnings.push({
+        code: "W265",
+        line: highWater[0].line,
+        id: String(highWater[0].value),
+        message: `Allocation high-water mark ${highWater[0].value} exceeds the current highest issue id ${maximum}; a historical row may have been removed`,
+      });
+    }
     checkHashes(ledger, file, options.verifyCommits ?? false);
   }
   const compare = (a: Diagnostic, b: Diagnostic) => a.line - b.line || a.code.localeCompare(b.code);

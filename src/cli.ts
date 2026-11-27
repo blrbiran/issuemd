@@ -27,18 +27,23 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
+import { fileURLToPath } from "node:url";
 
 import { inlineCodeRanges, scan } from "./scan.js";
 import { buildSections, countLines } from "./sections.js";
 import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
 import { parseId, parseIds, compareIds, type IdSpan } from "./issue-id.js";
-import { bodyBlocks, countSuffix, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
+import { bodyBlocks, countSuffix, highWaterRecords, HIGH_WATER_MARKER, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
 import { checkLedger, checkParsedLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
 import {
   bodySkeleton,
   escapeCell,
   criteriaLabelHint,
+  criteriaSupplementHint,
   extractCriteria,
+  bodyLabels,
+  labelBlock,
+  isCriteriaAlias,
   unescapeCell,
   formatRow,
   guideBlockLines,
@@ -101,7 +106,7 @@ const COMMANDS = {
   body: { usage: "issuemd body    FILE ID --body-file PATH|- [--append]", options: ["body-file", "append", "dry-run", "if-unchanged"] },
   priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run", "if-unchanged"] },
   split: { usage: "issuemd split   FILE ID", options: ["dry-run", "if-unchanged"] },
-  sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress]]", options: ["guide", "fix-tables", "titles", "prefer", "move-progress", "drop-progress", "dry-run", "if-unchanged"] },
+  sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress] | --criteria-labels]", options: ["guide", "fix-tables", "titles", "criteria-labels", "prefer", "move-progress", "drop-progress", "dry-run", "if-unchanged"] },
   adopt: { usage: "issuemd adopt   FILE [--dry-run] [--report PATH]", options: ["dry-run", "report", "if-unchanged"] },
 } as const satisfies Record<string, { usage: string; options: readonly string[] }>;
 type Command = keyof typeof COMMANDS;
@@ -109,6 +114,7 @@ type Command = keyof typeof COMMANDS;
 /** Option help, one entry per flag; continuation lines start with spaces. */
 const OPTION_HELP: Record<string, string> = {
   json: "--json                    machine-readable JSON output (read commands)",
+  version: "--version                 print the installed package version",
   strict: "--strict                  check: fail on warnings (W250 is informational and never fails)",
   "verify-commits": "--verify-commits          check: verify commit references in the ledger directory (W240)",
   status:
@@ -128,7 +134,7 @@ const OPTION_HELP: Record<string, string> = {
     "--allow-duplicate-title   write it even though another open issue has the same summary",
   "body-file": "--body-file <path|->      new/body: body text under the heading (no `### Issue` line), or '-' for stdin",
   append: "--append                  body: add text at the end of the existing issue body",
-  criteria: "--criteria <TEXT>         close: criteria column text",
+  criteria: "--criteria <TEXT>         close: criteria column text; on a closed id, correct that cell only",
   "criteria-from-body":
     "--criteria-from-body      close: lift the **验收判据** block into the column (the default\n" +
     "                            when the body has one); refuses if it is missing or empty",
@@ -137,6 +143,7 @@ const OPTION_HELP: Record<string, string> = {
   guide: "--guide                   sync: rewrite the controlled guide and status blocks",
   "fix-tables": "--fix-tables              sync: add missing table separator rows",
   titles: "--titles                  sync: align body headings with index summaries",
+  "criteria-labels": "--criteria-labels         sync: rename one unambiguous nearby criteria label per issue",
   prefer: "--prefer <body|table>     sync --titles: which side wins (default body)",
   "move-progress": "--move-progress           sync --titles: move progress text into the body",
   "drop-progress": "--drop-progress           sync --titles: discard progress text",
@@ -148,11 +155,24 @@ const OPTION_HELP: Record<string, string> = {
 };
 
 const READ_COMMANDS: Command[] = ["check", "list", "show", "counts", "read"];
+const VERSION = (() => {
+  const directory = dirname(fileURLToPath(import.meta.url));
+  for (const path of [resolve(directory, "../package.json"), resolve(directory, "../../package.json")]) {
+    try {
+      const pkg = JSON.parse(readFileSync(path, "utf8")) as { name?: string; version?: string };
+      if (pkg.name === "@blrbiran/issuemd" && pkg.version) return pkg.version;
+    } catch {
+      // Try the package root relative to the other supported runtime layout.
+    }
+  }
+  return "unknown";
+})();
 const HELP = [
   "issuemd — read and maintain a single-file Markdown issue ledger",
   "",
   "Usage:",
   ...READ_COMMANDS.map((name) => `  ${COMMANDS[name].usage}`),
+  "  issuemd --version",
   "",
   "  [write — atomic, keeps BOM/line endings/mode; --dry-run prints a diff]:",
   ...(Object.keys(COMMANDS) as Command[]).filter((name) => !READ_COMMANDS.includes(name))
@@ -175,7 +195,7 @@ function commandHelp(name: Command): string {
   return lines.join("\n");
 }
 
-export type CliResult = { code: number; stdout: string; stderr: string };
+export type CliResult = { code: number; stdout: string; stderr: string; rawStdout?: true };
 
 function ok(s: string): CliResult {
   return { code: 0, stdout: s, stderr: "" };
@@ -214,7 +234,8 @@ function err(s: string, code = 1): CliResult {
 
 const OPTIONS = {
   json: { type: "boolean" },
-  help: { type: "boolean", short: "h" },
+  "help": { type: "boolean", short: "h" },
+  version: { type: "boolean" },
   strict: { type: "boolean" },
   "verify-commits": { type: "boolean" },
   // list
@@ -242,6 +263,7 @@ const OPTIONS = {
   guide: { type: "boolean" },
   "fix-tables": { type: "boolean" },
   titles: { type: "boolean" },
+  "criteria-labels": { type: "boolean" },
   prefer: { type: "string" },
   "move-progress": { type: "boolean" },
   "drop-progress": { type: "boolean" },
@@ -272,6 +294,7 @@ export async function run(argv: string[]): Promise<CliResult> {
   const { values, positionals } = parsed;
   const head = positionals[0];
   if (head == null) {
+    if (values.version) return ok(`${VERSION}\n`);
     return values.help ? ok(HELP) : err("issuemd: missing command. Try 'issuemd list FILE' or 'issuemd --help'\n", 2);
   }
   if (Object.hasOwn(COMMANDS, head)) {
@@ -286,8 +309,6 @@ export async function run(argv: string[]): Promise<CliResult> {
         2,
       );
     }
-  } else if (values.help) {
-    return ok(HELP);
   }
   // Hex is case-insensitive; snapshots are printed (and compared) in lower case.
   if (typeof values["if-unchanged"] === "string") values["if-unchanged"] = values["if-unchanged"].toLowerCase();
@@ -633,15 +654,18 @@ function cmdShow(rest: string[], v: Values): CliResult {
     baseNote === "" && twinNote === "" ? result : { ...result, stderr: baseNote + twinNote + result.stderr };
 
   if (v["body-only"]) {
-    if (view.table === "closed" || !view.body || view.body.inherited) {
+    if (!view.body || view.body.inherited || (view.table === "closed" && !view.body.archived)) {
       return withNote(err(`issuemd show: #${id} has no body of its own\n`));
+    }
+    const eol = loaded.src.includes("\r\n") ? "\r\n" : "\n";
+    if (view.body.archived) {
+      return withNote({ ...ok(view.body.text.replace(/\n/g, eol)), rawStdout: true });
     }
     const end = bodyContentEnd(ledger.lines, view.body.line, view.body.end);
     const body = trimBlank(ledger.lines.slice(view.body.line, end));
     if (body.length === 0) return withNote(ok(""));
-    const eol = loaded.src.includes("\r\n") ? "\r\n" : "\n";
     const ending = end < ledger.lines.length || loaded.src.endsWith("\n") ? eol : "";
-    return withNote(ok(body.join(eol) + ending));
+    return withNote({ ...ok(body.join(eol) + ending), rawStdout: true });
   }
 
   if (v.label != null) {
@@ -664,7 +688,7 @@ function cmdShow(rest: string[], v: Values): CliResult {
         ? { code: 1, stdout: "", stderr: `(empty label: ${v.label})\n${why}` }
         : { code: 1, stdout: `(empty label: ${v.label})\n`, stderr: why });
     }
-    if (v.json) return withNote(ok(JSON.stringify({ ...view, paragraph: found.text, snapshot: snapshotOf(loaded.src), ...diagnosticsField(report.errors, report.warnings) }, null, 2)));
+    if (v.json) return withNote(ok(JSON.stringify({ ...view, paragraph: found.text, paragraphLines: found.lines, snapshot: snapshotOf(loaded.src), ...diagnosticsField(report.errors, report.warnings) }, null, 2)));
     return withNote(ok(found.lines.join("\n")));
   }
 
@@ -1221,6 +1245,20 @@ function readBodyFile(spec: string, verb = "new"): { lines: string[] } | CliResu
   }
 }
 
+function writeHighWaterMark(lines: string[], ledger: ReturnType<typeof parseLedger>, value: number): string[] {
+  const marker = `${HIGH_WATER_MARKER} ${value} -->`;
+  const records = highWaterRecords(ledger);
+  if (records.length > 0) {
+    let updated = [...lines];
+    updated[records[0]!.line - 1] = marker;
+    for (const record of records.slice(1).reverse()) updated = removeLines(updated, record.line, 1);
+    return updated;
+  }
+  const firstH2 = ledger.sections.find((section) => section.level === 2)?.line_start ?? lines.length + 1;
+  const at = firstH2 > 1 && lines[firstH2 - 2]?.trim() === "" ? firstH2 - 1 : firstH2;
+  return insertLines(lines, at, [marker]);
+}
+
 function cmdNew(rest: string[], v: Values): CliResult {
   const file = rest[0];
   if (file == null || rest.length !== 1) {
@@ -1262,7 +1300,12 @@ function cmdNew(rest: string[], v: Values): CliResult {
     );
   }
 
-  const max = maxIssueId(ledger.rows, ledger.unreadable);
+  const records = highWaterRecords(ledger);
+  if (records.some((record) => record.value == null)) {
+    return err("issuemd new: the allocation high-water mark is malformed; repair its preamble marker before allocating another id\n", 3);
+  }
+  const historicMax = records.reduce((highest, record) => Math.max(highest, record.value ?? 0), 0);
+  const max = Math.max(maxIssueId(ledger.rows, ledger.unreadable), historicMax);
   // Ids cited by W225 tables are reserved but not issues: skip them one by
   // one instead of jumping past the largest (an error-code table citing 500
   // must not move the next issue to 501).
@@ -1335,6 +1378,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   const shiftedBody = afterIndex.sections.find((section) => section.level === 2 && section.title === "正文");
   if (!shiftedBody) return err("issuemd new: the 正文 section is missing\n", 3);
   lines = insertBlock(lines, bodyInsertAt(afterIndex, span, shiftedBody.line_end), body);
+  lines = writeHighWaterMark(lines, ledger, Math.max(max, span.start));
 
   const committed = commit(file, loaded, errors, lines, !!v["dry-run"], {
     validateCandidate(candidate) {
@@ -1386,7 +1430,23 @@ function cmdClose(rest: string[], v: Values): CliResult {
   // before "already closed", or a multi-id closed row reads as a state error.
   const refused = perIdRefusal("close", idText, found);
   if (refused) return refused;
-  if (found.table === "closed") return err(`issuemd close: #${idText} is already closed\n`, 2);
+  if (found.table === "closed") {
+    if (v.criteria == null) return err(`issuemd close: #${idText} is already closed\n`, 2);
+    if (v.status != null || v["keep-body"] || v["criteria-from-body"] || v["no-criteria"]) {
+      return err("issuemd close: on an already closed issue, only --criteria may update the recorded criteria\n", 2);
+    }
+    const criteria = unescapeCell(v.criteria).replace(/[\r\n]+/g, " ");
+    if (unescapeCell(escapeCell(criteria)) !== criteria) {
+      return err("issuemd close: the criteria contain '\\|' (a backslash directly before a pipe), which a table cell cannot store without changing it\n", 2);
+    }
+    if (criteria === found.row.criteria) return commit(file, loaded, errors, loaded.lines, !!v["dry-run"]);
+    const lines = [...loaded.lines];
+    lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 4, criteria);
+    const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+    return result.code === 0
+      ? { ...result, stderr: result.stderr + `updated #${idText} criteria: ${JSON.stringify(found.row.criteria)} → ${JSON.stringify(criteria)}\n` }
+      : result;
+  }
   const status = v.status ?? "已修";
   if (statusCategory(status) !== "closed") {
     return err(`issuemd close: '${status}' is not a closed status\n`, 2);
@@ -1423,8 +1483,16 @@ function cmdClose(rest: string[], v: Values): CliResult {
   // Criteria are stored once and must not vanish silently (spec §7.2): the
   // body is deleted by close, so whatever it says has to land somewhere.
   const fromBody = extractCriteria(bodyText);
-  const labelHint = fromBody == null ? criteriaLabelHint(bodyText, (block?.line ?? 1) - 1) : undefined;
+  const labelHint = block ? criteriaLabelHint(bodyText, block.line - 1) : undefined;
+  const supplementHint = block ? criteriaSupplementHint(bodyText, block.line - 1) : undefined;
   const hintText = labelHint ? `${labelHint.message}; ` : "";
+  if (fromBody != null && supplementHint && !keepBody && v.criteria == null && !v["no-criteria"]) {
+    return err(
+      `issuemd close: #${idText} has another possible criteria block. ${supplementHint.message}; ` +
+        "it would be discarded when the body is removed. Rename or merge it, pass --criteria TEXT after reviewing both blocks, or use --keep-body\n",
+      2,
+    );
+  }
   let criteria: string;
   if (v.criteria != null) {
     // Input convention, as for titles: `\|` is how a caller spells a literal
@@ -1943,13 +2011,19 @@ function cmdBody(rest: string[], v: Values): CliResult {
   const block = bodyBlocks(ledger).find((candidate) => `${candidate.id.start}${candidate.id.suffix}` === idText);
   let lines = loaded.lines;
   const incoming = trimBlank(read.lines);
-  if (v.append && incoming.length === 0) {
+  if (incoming.length === 0) {
     return commit(file, loaded, errors, lines, !!v["dry-run"]);
   }
   if (block) {
     if (v.append) {
       const end = bodyContentEnd(lines, block.line, block.end);
-      lines = insertBlock(lines, end + 1, incoming);
+      const currentBody = lines.slice(block.line - 1, block.end);
+      const lastLabel = [...bodyLabels(currentBody, 1, currentBody.length)].at(-1)?.label;
+      const startsWithLabel = bodyLabels(incoming, 1, incoming.length).next().value?.line === 1;
+      const addition = lastLabel === "验收判据" && !startsWithLabel
+        ? ["**复测记录**", "", ...incoming]
+        : incoming;
+      lines = insertBlock(lines, end + 1, addition);
     } else {
       const current = trimBlank(lines.slice(block.line, block.end));
       // A body-only round trip should preserve the ledger's original spacing.
@@ -2240,8 +2314,8 @@ function cmdSync(rest: string[], v: Values): CliResult {
   if (file == null || rest.length !== 1) {
     return err(`usage: ${COMMANDS.sync.usage}\n`, 2);
   }
-  const modes = [!!v.guide, !!v["fix-tables"], !!v.titles].filter(Boolean).length;
-  if (modes === 0) return err("issuemd sync: choose --guide, --fix-tables or --titles\n", 2);
+  const modes = [!!v.guide, !!v["fix-tables"], !!v.titles, !!v["criteria-labels"]].filter(Boolean).length;
+  if (modes === 0) return err("issuemd sync: choose --guide, --fix-tables, --titles or --criteria-labels\n", 2);
   if (modes > 1) return err("issuemd sync: run one mode at a time\n", 2);
   if ((v["move-progress"] || v["drop-progress"]) && !v.titles) {
     return err("issuemd sync: --move-progress/--drop-progress require --titles\n", 2);
@@ -2295,7 +2369,60 @@ function cmdSync(rest: string[], v: Values): CliResult {
     return commit(file, loaded, errors, lines, !!v["dry-run"]);
   }
 
+  if (v["criteria-labels"]) return syncCriteriaLabels(file, loaded, ledger, errors, v);
   return syncTitles(file, loaded, ledger, errors, prefer, v);
+}
+
+function syncCriteriaLabels(
+  file: string,
+  loaded: Loaded,
+  ledger: ReturnType<typeof parseLedger>,
+  errors: Diagnostic[],
+  v: Values,
+): CliResult {
+  const bodies = new Map(bodyBlocks(ledger).map((block) => [`${block.id.start}${block.id.suffix}`, block]));
+  const changes: { id: string; line: number; oldLabel: string; newLine: string }[] = [];
+  const skipped: string[] = [];
+  for (const row of ledger.rows.open) {
+    if (row.ids.length !== 1 || row.ids[0]!.start !== row.ids[0]!.end) continue;
+    const id = spanText(row.ids[0]!);
+    const body = bodies.get(id);
+    if (!body) continue;
+    const bodyLines = loaded.lines.slice(body.line - 1, body.end);
+    const labels = [...bodyLabels(bodyLines, 1, bodyLines.length)];
+    if (labels.some(({ label }) => label === "验收判据")) continue;
+    const candidates = labels.filter(({ label }) => label !== "验收判据" && isCriteriaAlias(label));
+    if (candidates.length === 0) continue;
+    if (candidates.length !== 1) {
+      skipped.push(`#${id}: multiple nearby criteria labels`);
+      continue;
+    }
+    const candidate = candidates[0]!;
+    const block = labelBlock(bodyLines, 1, bodyLines.length, candidate.label);
+    if (!block?.text.trim()) {
+      skipped.push(`#${id}: nearby criteria label is empty`);
+      continue;
+    }
+    const line = body.line + candidate.line - 1;
+    const source = loaded.lines[line - 1]!;
+    const parsed = /^([ \t]{0,3})\*\*([^*]+)\*\*(.*)$/.exec(source);
+    if (!parsed) continue;
+    const colonInside = /[:：]\s*$/.test(parsed[2]!);
+    const newLine = `${parsed[1]}**验收判据${colonInside ? "：" : ""}**${parsed[3]}`;
+    changes.push({ id, line, oldLabel: candidate.label, newLine });
+  }
+  const skippedNote = skipped.length ? `issuemd sync --criteria-labels: skipped ${skipped.join("; ")}\n` : "";
+  if (changes.length === 0) {
+    const result = commit(file, loaded, errors, loaded.lines, !!v["dry-run"]);
+    return skippedNote ? { ...result, stderr: result.stderr + skippedNote } : result;
+  }
+  let lines = [...loaded.lines];
+  for (const change of changes.sort((a, b) => b.line - a.line)) lines[change.line - 1] = change.newLine;
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  if (result.code !== 0) return result;
+  const receipt = changes.map(({ id, oldLabel }) =>
+    `updated #${id} criteria label: ${JSON.stringify(oldLabel)} → "验收判据"`).join("\n");
+  return { ...result, stderr: `${result.stderr}${receipt}\n${skippedNote}` };
 }
 
 function syncTitles(

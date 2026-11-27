@@ -8,7 +8,7 @@ if (result.stdout) {
     if (error.code !== "EPIPE") throw error;
   });
   process.stdout.write(
-    result.stdout.endsWith("\n") ? result.stdout : result.stdout + "\n",
+    result.rawStdout || result.stdout.endsWith("\n") ? result.stdout : result.stdout + "\n",
   );
 }
 if (result.stderr) process.stderr.write(result.stderr);

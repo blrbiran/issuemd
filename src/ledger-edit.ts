@@ -93,7 +93,10 @@ export function replaceCell(line: string, index: number, value: string): string 
   const original = line.slice(start + 1, end);
   const lead = /^\s*/.exec(original)![0];
   const trail = /\s*$/.exec(original)![0];
-  return `${line.slice(0, start + 1)}${lead}${escapeCell(value)}${trail}${line.slice(end)}`;
+  const escaped = escapeCell(value);
+  const trailingSlashes = /\\+$/.exec(escaped)?.[0].length ?? 0;
+  const safeTrail = trail || (pipes[index + 1] != null && trailingSlashes % 2 === 1 ? " " : "");
+  return `${line.slice(0, start + 1)}${lead}${escaped}${safeTrail}${line.slice(end)}`;
 }
 
 export function formatRow(cells: string[]): string {
@@ -212,15 +215,23 @@ export function bodySkeleton(id: string, title: string, criteria = ""): string[]
   ];
 }
 
-/** `**label**：rest` at the start of a line (up to three spaces of indent). */
-const LABEL_LINE = /^ {0,3}\*\*([^*]+)\*\*\s*[:：]?\s*(.*)$/;
+/** A bold label is standalone, colon-separated, or has its colon inside bold. */
+const LABEL_LINE = /^ {0,3}\*\*(?:([^*]+[:：])\*\*(?:\s*(.*))|([^*]+)\*\*(?:\s*[:：]\s*(.*)|[ \t]*))$/;
+function parseLabelLine(line: string): { label: string; rest: string } | undefined {
+  const match = LABEL_LINE.exec(line);
+  if (!match) return undefined;
+  return match[1] != null
+    ? { label: match[1], rest: match[2] ?? "" }
+    : { label: match[3]!, rest: match[4] ?? "" };
+}
+
 /** `**验收判据：**` and `**验收判据**：` name the same label. */
 export const labelName = (raw: string) => raw.trim().replace(/[:：]\s*$/, "").trim();
 export function* bodyLabels(lines: string[], start: number, end: number, fenced = fencedLines(lines, true)) {
   for (let line = start; line <= end && line <= lines.length; line++) {
     if (fenced[line - 1]) continue;
-    const match = LABEL_LINE.exec(lines[line - 1]!);
-    if (match) yield { label: labelName(match[1]!), line };
+    const match = parseLabelLine(lines[line - 1]!);
+    if (match) yield { label: labelName(match.label), line };
   }
 }
 
@@ -233,7 +244,42 @@ export function criteriaLabelHint(lines: string[], offset = 0, fenced?: boolean[
   }
 }
 
+export function isCriteriaAlias(label: string): boolean {
+  return label === "判据" || label.endsWith("的判据") || ["验收判据", "追加判据", "修复判据", "判据（"].some((prefix) => label.startsWith(prefix));
+}
+
+/** A second acceptance-named label after the canonical block may hold criteria not promoted. */
+export function criteriaSupplementHint(lines: string[], offset = 0, fenced?: boolean[]) {
+  const labels = [...bodyLabels(lines, 1, lines.length, fenced)];
+  const canonical = labels.find(({ label }) => label === "验收判据");
+  if (!canonical) return undefined;
+  for (const { label, line } of labels) {
+    if (line > canonical.line && label !== "验收判据" && isCriteriaAlias(label)) {
+      return { line: line + offset, label, message: `L${line + offset}: review **${label}**; it is not included in the canonical criteria` };
+    }
+  }
+}
+
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
+type ListMargins = { startColumn: number; contentColumn: number };
+function advanceColumns(text: string, start = 0): number {
+  let column = start;
+  for (const char of text) column = char === "\t" ? column + 4 - column % 4 : column + 1;
+  return column;
+}
+function listItemMargins(line: string): ListMargins | undefined {
+  const match = /^([ \t]*)([-*+]|\d+[.)])([ \t]+)/.exec(line);
+  if (!match) return undefined;
+  const startColumn = advanceColumns(match[1]!);
+  const afterMarker = advanceColumns(match[2]!, startColumn);
+  return { startColumn, contentColumn: advanceColumns(match[3]!, afterMarker) };
+}
+function isListContinuation(line: string, margins: ListMargins[]): boolean {
+  const indent = /^[ \t]+/.exec(line)?.[0];
+  if (!indent) return false;
+  const column = advanceColumns(indent);
+  return margins.some((margin) => column >= margin.contentColumn);
+}
 const UNORDERED_MARKER = /^\s*[-*+]\s+/;
 
 export type LabelBlock = {
@@ -266,12 +312,40 @@ export function labelBlock(
   const last = Math.min(end, lines.length);
   for (let line = start; line <= last; line++) {
     if (fenced[line - 1]) continue;
-    const match = LABEL_LINE.exec(lines[line - 1]!);
-    if (!match || labelName(match[1]!) !== label) continue;
+    const match = parseLabelLine(lines[line - 1]!);
+    if (!match || labelName(match.label) !== label) continue;
     let stop = line + 1;
+    const listMargins: ListMargins[] = [];
     while (stop <= last) {
       const text = lines[stop - 1]!;
-      if (!fenced[stop - 1] && (/^ {0,3}\*\*[^*]+\*\*/.test(text) || /^ {0,3}#{1,6}(?:\s|$)/.test(text))) break;
+      if (!fenced[stop - 1] && (parseLabelLine(text) != null || /^ {0,3}#{1,6}(?:\s|$)/.test(text))) break;
+      if (label === "验收判据" && listMargins.length > 0 && text.trim() === "") {
+        let look = stop + 1;
+        while (look <= last && lines[look - 1]!.trim() === "") look++;
+        if (look <= last && !fenced[look - 1] && !LIST_ITEM.test(lines[look - 1]!) && !isListContinuation(lines[look - 1]!, listMargins)) {
+          let laterList = false;
+          for (; look <= last; look++) {
+            const candidate = lines[look - 1]!;
+            if (!fenced[look - 1] && (parseLabelLine(candidate) != null || /^ {0,3}#{1,6}(?:\s|$)/.test(candidate))) break;
+            if (LIST_ITEM.test(candidate) || isListContinuation(candidate, listMargins) || fenced[look - 1] || /^[ \t]*(?:`{3,}|~{3,})/.test(candidate)) {
+              laterList = true;
+              break;
+            }
+          }
+          if (!laterList) break;
+        }
+      }
+      if (!fenced[stop - 1]) {
+        const item = listItemMargins(text);
+        if (item) {
+          while (listMargins.length > 0) {
+            const parent = listMargins.at(-1)!;
+            if (item.startColumn > parent.startColumn && item.startColumn >= parent.contentColumn) break;
+            listMargins.pop();
+          }
+          listMargins.push(item);
+        }
+      }
       stop++;
     }
     const own = lines.slice(line - 1, stop - 1);
@@ -284,7 +358,7 @@ export function labelBlock(
       if (current.length) segments.push(current.join(" "));
       current = [];
     };
-    const first = match[2]!.trim();
+    const first = match.rest.trim();
     if (first) current.push(first);
     // Inside the block, fences may be indented by a list item; they are still
     // examples when extended.
@@ -338,7 +412,7 @@ export function joinClauses(parts: string[]): string {
  */
 function blockHasVisibleContent(own: string[]): boolean {
   const fenced = fencedLines(own, true);
-  const first = LABEL_LINE.exec(own[0] ?? "")?.[2] ?? "";
+  const first = parseLabelLine(own[0] ?? "")?.rest ?? "";
   const plain: string[] = [first];
   let fencedContent = false;
   for (let index = 1; index < own.length; index++) {
