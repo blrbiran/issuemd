@@ -369,3 +369,37 @@ test("archive W201 includes the last LF of the payload", async () => {
   const report = JSON.parse((await run(["check", path, "--json"])).stdout);
   expect(report.warnings).toContainEqual(expect.objectContaining({ code: "W201", id: "1", message: expect.stringContaining("4 UTF-8 bytes") }));
 });
+
+
+test("limits ignores marker-shaped text in raw HTML and multiline comments", async () => {
+  for (const [open, close] of [["<textarea>", "</textarea>"], ["<!-- example", "-->"]]) {
+    const path = ledgerFrom(fixture, `${open}\n<!-- issuemd:limits: body-lines=600 -->\n${close}\n`);
+    const before = text(path);
+    const checked = JSON.parse((await run(["check", path, "--json"])).stdout);
+    expect(checked.limits.bodyLines).toBe(300);
+    expect((await run(["limits", path, "--clear"])).code).toBe(0);
+    expect(text(path)).toBe(before);
+    expect((await run(["limits", path, "--body-lines", "450"])).code).toBe(0);
+    expect(text(path)).toContain(`${open}\n<!-- issuemd:limits: body-lines=600 -->\n${close}`);
+    expect(JSON.parse((await run(["check", path, "--json"])).stdout).limits.bodyLines).toBe(450);
+  }
+});
+
+test("adopt keeps an active limits marker originally above the H1", async () => {
+  const path = ledgerFrom(fixture);
+  writeFileSync(path, "<!-- issuemd:limits: body-lines=600 -->\n\n" + text(path).replace("## 索引", "## 待处理"));
+  expect((await run(["adopt", path])).code).toBe(0);
+  const checked = JSON.parse((await run(["check", path, "--json"])).stdout);
+  expect(checked.limits).toEqual({ bodyBytes: 20480, bodyLines: 600, source: "ledger" });
+});
+
+test("adopt still identifies the committed snapshot if writing its report fails", async () => {
+  const path = ledgerFrom(fixture);
+  writeFileSync(path, text(path).replace("## 索引", "## 待处理"));
+  const result = await run(["adopt", path, "--report", join(dir, "missing-dir", "report.txt")]);
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("cannot write --report");
+  const checked = JSON.parse((await run(["check", path, "--json"])).stdout);
+  expect(checked.errors).toEqual([]);
+  expect(result.stderr).toContain(`wrote ${path} adopted ledger (snapshot ${checked.snapshot})`);
+});

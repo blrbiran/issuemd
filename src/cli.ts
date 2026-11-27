@@ -2397,14 +2397,15 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
   }
   // Written after the ledger so a failed conversion never leaves a report
   // that describes a write that did not happen.
+  const receipt = unchanged ? "" : writeReceipt(file, "adopted ledger", target) + hardLinkNote(file, loaded);
   const failed = writeReport();
-  if (failed) return failed;
+  if (failed) return { ...failed, stderr: receipt + failed.stderr };
   // Same words as every other no-op write, and as this command's --dry-run:
   // a retrying caller can tell "already converted" from "just converted".
   return {
     code: 0,
     stdout: (unchanged ? "(no changes)\n\n" : "") + report,
-    stderr: unchanged ? "" : writeReceipt(file, "adopted ledger", target) + hardLinkNote(file, loaded),
+    stderr: receipt,
   };
 }
 

@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-27（第二十一轮：dogfooding #103–#127 的当前行为复核与安全修复）。写给下一位接手者。
+更新于 2026-11-27（第二十二轮，台账内 W201 阈值、写入回执和附录维护）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -15,12 +15,10 @@
 
 ## 一句话现状
 
-`issuemd` P0–P5 已完成。已发布版本仍为 `0.1.0`。外部 dogfooding 台账 `../issuemd_dogfooding/issue-20261124.md` 当前由测试者维护，已更新至 #127；第二十一轮只读复核并修复了其中多项仍能在当前代码复现的使用问题，没有改台账。
+`issuemd` P0–P5 已完成。包版本仍为 `0.1.0`。外部 dogfooding 台账由测试者维护，目前反馈至 #127。
 
-- 第十九轮 #97–#100 与第二十轮 #23 的回归场景已在第二十一轮再次复测通过；测试者仍自行维护外部 issue 状态。push / 发版由用户决定，建议下一版 `0.2.0`。
-- 第二十一轮 `npm run typecheck && npm test` 通过，724 项；合入 main 后 `npm run build` 通过，`dist/bin/issuemd.js` 权限为 755。
-- 最新构建只读检查：dogfood 0 errors / 0 warnings（snapshot `8c804812408296c8`）；`../orca_archived_files/issue-20261023.md` 0 errors。orca archive 在不同轮次会被其他进程改写，warning 数不可比较；两份外部文件均未修改。
-- 第二十一轮改动已快进合入本地 `main`，临时分支已删除；`main` 当前比 `origin/main` 的提交数须用 `git rev-list --count origin/main..main` 现查，不写死 commit hash。
+- 第二十二轮新增台账内 `limits`、W201 实测数据与归档正文检查、写后快照回执、错误分类，以及附录写入守卫和自动回收。
+- `npm run typecheck && npm test` 通过 765 项。三份外部台账只读复测，详见第二十二轮。push 与 npm 发布由用户处理。
 
 ## 工作流约定（用户明确要求）
 
@@ -59,6 +57,18 @@
    - **接受不改的 4 项**见「第十四轮」小节（`--expand` 行序、snapshot 原始字节、`--with-body` 省键、close 选项互斥）。若想让 `list --expand` 按编号排序，或让 snapshot 跨编码相等，说一声即可——都只影响输出顺序/口径，改动很小。
 
 9. **第十一轮报审（备查）**：Q1 W225 编号占用（已执行，第十二轮维持）；Q2 更多「台账表小节」词（未做，推荐暂不做：改成 E124 会把 `## 已完成` 的行当开放项）；Q3 年份标题（第十二轮已做）；Q4 `list --json` 暴露被占用编号（第十二轮已做，`citedRows`）；Q5 台账复测留给测试者。
+
+## 第二十二轮（2026-11-27）
+
+本轮按用户选定的范围处理 W201、写入诊断和附录。设计和计划保存在 `docs/superpowers/specs/2026-11-27-w201-exit-and-write-diagnostics-design.md` 与 `docs/superpowers/plans/2026-11-27-w201-exit-and-write-diagnostics.md`。
+
+- **#106/#118/#119/#115**：`issuemd limits FILE --body-bytes N --body-lines N` 把阈值写在首个 H2 之前，`--clear` 恢复默认 20,480 UTF-8 字节或 300 行，可预演并使用 `--if-unchanged`。W267 报无效或重复标记。混有其他文本的标记拒绝写入，避免丢原文。`check --json` 给出 `limits` 与 `size`。W201 报实测及超限维度，覆盖归档 payload，排除归档后的手写附录正文。`body` 首次超限时提示，`close --keep-body` 每次归档超限时提示，预演也显示。整理长正文可留摘要和判据，将大段证据转到链接文件。自动拆分或移动证据尚未实现。
+- **#105/#111/#122**：写入失败保留 errno，区分权限拒绝、只读挂载和路径消失。显式 `close --criteria` 提示 W205，沿用既有竖线输入规则。写成功在 stderr 给出 `wrote … (snapshot S)`，预演和无操作无写入回执。可用写后 snapshot 串联后续条件写入。
+- **#114/#116/#126**：close 文案说明三种收尾方式的正文去向。重复附录各报 W266，`--strict` 失败，涉及归档的 close 和从已关闭表 reopen 会退出 2。按号只读、校验和 rename 仍扫描全部附录。`close --keep-body` 可创建缺失的附录，`reopen` 只回收带 `appendix:auto` 标记且已无其他内容的节。既有空附录、手写文字和 HTML 注释均保留。
+- **独立复审**：复现并修正了 `limits` 误识别部分 HTML 原文和多行注释、`adopt` 迁移时丢失 H1 上方阈值、报告写入失败时漏掉已落盘的回执等问题，均有回归测试。
+- **复测**：全量 765 pass，指定 round19–22 与 adopt 共 175 pass。`npm run build` 成功，`dist/bin/issuemd.js` 为 755，版本 0.1.0。另用 BOM + CRLF + 无尾换行台账验证 limits 的预演 diff 可直接应用，写后快照可串联清除操作，清除后字节与原样本相同。三份外部台账前后 SHA-256 一致。dogfood 0/0，snapshot `8c804812408296c8`。cafe 0/2（W264 ×2）。Orca archive 0/33（W201 ×10、W250 ×12、W264 ×11），snapshot `e114ff5dac30dc2a`。cafe 和 Orca 的 strict exit 3，dogfood strict exit 0。
+- **Q1（已决定）**：归档 prune 留下一轮，先明确预演、显式删除范围和证据保留规则。
+- **Q2（待讨论）**：#124 整行都是粗体的句子仍可能被认成标签，最小样本能使后续判据在 close 时丢失。建议下一轮先补保守的关闭守卫，再决定标签文法。#104 写入时的近似标签提示、#117 判据合并、#120/#123 结构化判据、#27/#113 的 W202 诊断和 #127 `find` 也待处理。
 
 ## 第二十一轮（2026-11-27）
 

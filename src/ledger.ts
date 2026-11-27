@@ -608,9 +608,24 @@ export function limitsRecords(ledger: { lines: string[]; sections: Section[] }):
   const firstH2 = ledger.sections.find((section) => section.level === 2)?.line_start ?? ledger.lines.length + 1;
   const fenced = fencedLines(ledger.lines, true);
   const records: LimitsRecord[] = [];
+  let literalEnd: RegExp | undefined;
   for (let index = 0; index < firstH2 - 1; index++) {
     const line = ledger.lines[index]!;
-    if (fenced[index] || !/^ {0,3}<!-- issuemd:limits:/.test(line)) continue;
+    if (literalEnd) {
+      if (literalEnd.test(line)) literalEnd = undefined;
+      continue;
+    }
+    if (fenced[index]) continue;
+    const rawTag = /^ {0,3}<(pre|script|style|textarea)(?=[ \t/>]|$)/i.exec(line)?.[1];
+    if (rawTag) {
+      const end = new RegExp(`</${rawTag}>`, "i");
+      if (!end.test(line)) literalEnd = end;
+      continue;
+    }
+    if (!/^ {0,3}<!-- issuemd:limits:/.test(line)) {
+      if (/^ {0,3}<!--(?:(?!-->).)*$/.test(line)) literalEnd = /-->/;
+      continue;
+    }
     const match = /^ {0,3}<!-- issuemd:limits:((?:(?!<!--|-->).)*)-->[ \t]*$/.exec(line);
     if (!match) {
       records.push({ line: index + 1, problem: "limits marker must be a standalone comment", unsafeToRewrite: true });

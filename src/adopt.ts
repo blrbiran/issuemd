@@ -21,7 +21,7 @@
 
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { bodyBlocks, countSuffix, isStatusWord, stripCountSuffixes, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
+import { bodyBlocks, countSuffix, limitsRecords, isStatusWord, stripCountSuffixes, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
 import { archiveHeading, endsInFence, fencedLines, formatRow, guideBlockLines, KEPT_BODY_VERSION, KEPT_BODY_START, KEPT_BODY_END, statusBlockLines, unescapeCell } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
@@ -1165,7 +1165,8 @@ export function adopt(src: string): AdoptResult {
   // any section, so the loop above never sees them.
   const firstTop = sections.find((section) => section.level <= 2);
   const preambleEnd = firstTop ? firstTop.line_start - 1 : lines.length;
-  const preamble = trimBlankEdges(lines.slice(0, preambleEnd).filter((_, at) => !topBodyLines.has(at + 1)))
+  const leadingLimits = new Set(limitsRecords({ lines, sections }).filter(({ line }) => line <= preambleEnd).map(({ line }) => line));
+  const preamble = trimBlankEdges(lines.slice(0, preambleEnd).filter((_, at) => !topBodyLines.has(at + 1) && !leadingLimits.has(at + 1)))
     .filter((line) => !/^>\s*(?:唯一台账|读法：)/.test(line));
   if (preamble.length > 0) {
     // Escaped like every other kept text: a heading left here (a range
@@ -1338,6 +1339,7 @@ export function adopt(src: string): AdoptResult {
     "",
     ...header,
     "",
+    ...around([...leadingLimits].map((line) => lines[line - 1]!)),
     "## 怎么用",
     "",
     ...around(guide.before),
