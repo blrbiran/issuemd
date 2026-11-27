@@ -137,3 +137,40 @@ describe("check size metrics", () => {
     expect(JSON.parse(result.stdout).size.lines).toBeGreaterThan(0);
   });
 });
+
+describe("write-time W201 hint", () => {
+  test("body --append warns when it pushes an issue over the limits", async () => {
+    const path = ledgerFrom(fixture, "");
+    const result = await run(["body", path, "2", "--append", "--body-file", bigBody(400)]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("W201");
+  });
+
+  test("body --body-file warns on a first crossing", async () => {
+    const path = ledgerFrom(fixture, "");
+    const result = await run(["body", path, "2", "--body-file", bigBody(400)]);
+    expect(result.stderr).toContain("W201");
+  });
+
+  test("dry-run also warns and writes nothing", async () => {
+    const path = ledgerFrom(fixture, "");
+    const before = readFileSync(path, "utf8");
+    const result = await run(["body", path, "2", "--body-file", bigBody(400), "--dry-run"]);
+    expect(result.stderr).toContain("W201");
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("a body that stays under the limit says nothing about W201", async () => {
+    const path = ledgerFrom(fixture, "");
+    const result = await run(["body", path, "2", "--body-file", bigBody(5)]);
+    expect(result.stderr).not.toContain("W201");
+  });
+});
+
+test("close --keep-body warns when the archived body is over the limits", async () => {
+  const path = ledgerFrom(fixture, "");
+  await run(["body", path, "2", "--body-file", bigBody(400)]);
+  const result = await run(["close", path, "2", "--status", "已修", "--criteria", "x", "--keep-body"]);
+  expect(result.code).toBe(0);
+  expect(result.stderr).toContain("W201");
+});

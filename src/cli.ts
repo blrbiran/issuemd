@@ -1705,7 +1705,15 @@ function cmdClose(rest: string[], v: Values): CliResult {
     preserveTrailingBlanks,
   });
   if (keepBody && result.code === 0) {
-    return { code: 0, stdout: result.stdout, stderr: result.stderr + `W250: kept the body of #${idText} by moving it into 附录\n` };
+    // The archived body is just as long inside 附录 (#119). Say so at close
+    // time rather than only at the next check.
+    const size = Buffer.byteLength(bodyText.join("\n"));
+    const limits = effectiveLimits(ledger);
+    const over: string[] = [];
+    if (size > limits.bodyBytes) over.push(`${(size / 1024).toFixed(1)} KiB (limit ${(limits.bodyBytes / 1024).toFixed(0)} KiB)`);
+    if (bodyText.length - 1 > limits.bodyLines) over.push(`${bodyText.length - 1} lines (limit ${limits.bodyLines})`);
+    const hint = over.length > 0 ? `W201: the archived body is now ${over.join(", ")}; consider trimming it before keeping it\n` : "";
+    return { code: 0, stdout: result.stdout, stderr: result.stderr + `W250: kept the body of #${idText} by moving it into 附录\n` + hint };
   }
   return result;
 }
@@ -2058,6 +2066,38 @@ function cmdRename(rest: string[], v: Values): CliResult {
   return { ...result, stderr: result.stderr + changes.join("") };
 }
 
+/**
+ * A write that pushes one issue body past the W201 limits should say so now,
+ * not at the next `check` (dogfood #106). Only the first crossing is reported:
+ * a body that was already over the limit does not need a reminder on every
+ * append, and `check` still owns the authoritative list. Dry runs report too,
+ * because that is where a caller decides whether to apply the change.
+ */
+function w201CrossingNote(ledger: ReturnType<typeof parseLedger>, lines: string[], id: string): string {
+  const limits = effectiveLimits(ledger);
+  const before = bodyBlocks(ledger).find((candidate) => `${candidate.id.start}${candidate.id.suffix}` === id);
+  if (!before) return "";
+  const beforeLines = ledger.lines.slice(before.line - 1, before.end);
+  const measure = (block: string[]) => ({
+    lines: block.length - 1,
+    bytes: Buffer.byteLength(block.join("\n")),
+  });
+  const was = measure(beforeLines);
+  const draft = parseLedger(lines.join("\n"));
+  const after = bodyBlocks(draft).find((candidate) => `${candidate.id.start}${candidate.id.suffix}` === id);
+  if (!after) return "";
+  const now = measure(lines.slice(after.line - 1, after.end));
+  const over = (size: { lines: number; bytes: number }) => size.lines > limits.bodyLines || size.bytes > limits.bodyBytes;
+  const equal = (a: number, b: number) => a === b;
+  if (!over(was) && over(now) && !(equal(was.lines, now.lines) && equal(was.bytes, now.bytes))) {
+    const parts: string[] = [];
+    if (now.bytes > limits.bodyBytes) parts.push(`${(now.bytes / 1024).toFixed(1)} KiB (limit ${(limits.bodyBytes / 1024).toFixed(0)} KiB)`);
+    if (now.lines > limits.bodyLines) parts.push(`${now.lines} lines (limit ${limits.bodyLines})`);
+    return `W201: this body is now ${parts.join(", ")}; move history to a separate evidence file\n`;
+  }
+  return "";
+}
+
 /** Last nonblank body line, or the heading line for an empty body. */
 function bodyContentEnd(lines: string[], heading: number, end: number): number {
   while (end > heading && lines[end - 1]!.trim() === "") end--;
@@ -2115,7 +2155,10 @@ function cmdBody(rest: string[], v: Values): CliResult {
     const at = bodyInsertAt(ledger, found.span, section.line_end);
     lines = insertBlock(lines, at, [`### Issue ${idText}: ${found.row.summary}`, "", ...read.lines]);
   }
-  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  if (result.code !== 0) return result;
+  const hint = w201CrossingNote(ledger, lines, idText);
+  return hint ? { ...result, stderr: result.stderr + hint } : result;
 }
 
 /** Change one row's priority; the only row field that had no verb (dogfood #30). */
