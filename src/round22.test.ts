@@ -9,7 +9,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { spawnSync } from "node:child_process";
+
 import { run } from "./cli.js";
+import { built } from "../tests/built.js";
 
 const dir = mkdtempSync(join(tmpdir(), "issuemd-round22-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -115,5 +118,22 @@ describe("W201 scope", () => {
     const codes = JSON.parse((await run(["check", path, "--json"])).stdout)
       .warnings.filter((w: { code: string }) => w.code === "W201");
     expect(codes).toHaveLength(0);
+  });
+});
+
+describe("check size metrics", () => {
+  test("text and JSON both report size", async () => {
+    const json = JSON.parse((await run(["check", fixture, "--json"])).stdout);
+    expect(Object.keys(json.size).sort()).toEqual(["archivedBlocks", "archivedLines", "bodyLines", "bytes", "lines"]);
+    expect(json.size.bytes).toBeGreaterThan(0);
+    const plain = (await run(["check", fixture])).stdout;
+    expect(plain).toMatch(/\d+ lines · body \d+/);
+  });
+
+  test("json is valid for stdin", () => {
+    const src = readFileSync(fixture, "utf8");
+    const result = spawnSync("node", [built("bin/issuemd.js"), "check", "-", "--json"], { input: src, encoding: "utf8" });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).size.lines).toBeGreaterThan(0);
   });
 });

@@ -73,6 +73,7 @@ import {
   labelsIn,
   openStatusCounts,
   spanText,
+  ledgerSize,
   summaryLine,
   toListedIssue,
   viewIssue,
@@ -428,7 +429,7 @@ function cmdCheck(rest: string[], v: Values): CliResult {
     if (v.json) {
       return {
         code,
-        stdout: JSON.stringify({ ...report, ...citedRowsField(ledger), limits: effectiveLimits(ledger), snapshot: snapshotOf(loaded.src) }, null, 2) + "\n",
+        stdout: JSON.stringify({ ...report, ...citedRowsField(ledger), limits: effectiveLimits(ledger), size: ledgerSize(ledger, loaded.src), snapshot: snapshotOf(loaded.src) }, null, 2) + "\n",
         stderr: "",
       };
     }
@@ -451,7 +452,11 @@ function cmdCheck(rest: string[], v: Values): CliResult {
         if (group.length > 3) lines.push(`  … (${group.length - 3} more, use --json for all)`);
       }
     }
-    lines.push(`${report.errors.length} errors, ${report.warnings.length} warnings`);
+    const size = ledgerSize(ledger, loaded.src);
+    const archive = size.archivedBlocks > 0 ? ` · archived ${size.archivedLines} in ${size.archivedBlocks} block(s)` : "";
+    lines.push(
+      `${report.errors.length} errors, ${report.warnings.length} warnings · ${(size.bytes / 1024).toFixed(1)} KiB / ${size.lines} lines · body ${size.bodyLines}${archive}`,
+    );
     return { code, stdout: lines.join("\n") + "\n", stderr: "" };
   } catch (error) {
     return err(`issuemd check: ${(error as Error).message}\n`, 2);

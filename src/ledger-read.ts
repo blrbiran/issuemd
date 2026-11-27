@@ -391,6 +391,34 @@ export function withBody(
   return out;
 }
 
+
+export type LedgerSize = { bytes: number; lines: number; bodyLines: number; archivedLines: number; archivedBlocks: number };
+
+/**
+ * How big this ledger is, and how much of it is issue bodies versus frozen
+ * archives (`check --json size`, dogfood #115). Without these numbers an agent
+ * can only tell "0 errors" from "0 errors": a 300-line ledger and a 12,000-line
+ * one look the same.
+ */
+export function ledgerSize(ledger: ReturnType<typeof parseLedger>, src: string): LedgerSize {
+  const blocks = bodyBlocks(ledger);
+  const bodyLines = blocks.reduce((total, block) => total + (block.end - block.line), 0);
+  const appendices = ledger.sections.filter((section) => section.level === 2 && section.title === "附录");
+  let archivedLines = 0;
+  let archivedBlocks = 0;
+  for (const appendix of appendices) {
+    for (let line = appendix.line_start; line <= appendix.line_end; line++) {
+      if (!ledger.visible.has(line)) continue;
+      const match = ARCHIVE_HEADING.exec(ledger.lines[line - 1] ?? "");
+      if (!match) continue;
+      const section = ledger.sections.find((candidate) => candidate.line_start === line && candidate.level === 3);
+      archivedBlocks++;
+      archivedLines += (section?.line_end ?? line) - line + 1;
+    }
+  }
+  return { bytes: Buffer.byteLength(src), lines: ledger.lines.length, bodyLines, archivedLines, archivedBlocks };
+}
+
 export function openStatusCounts(rows: LedgerRow[]): Record<string, number | null> {
   const counts = new Map<string, bigint>();
   for (const row of rows) {
