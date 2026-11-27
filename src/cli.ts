@@ -97,6 +97,7 @@ const COMMANDS = {
   list: { usage: "issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]", options: ["status", "priority", "closed", "expand", "json", "with-body"] },
   show: { usage: "issuemd show    FILE ID [--body-only | [--json] [--label NAME]]", options: ["json", "label", "body-only"] },
   counts: { usage: "issuemd counts  FILE [--json]", options: ["json"] },
+  limits: { usage: "issuemd limits  FILE [--body-bytes N] [--body-lines N] [--clear]", options: ["body-bytes", "body-lines", "clear", "dry-run", "if-unchanged"] },
   read: { usage: "issuemd read    FILE <H2 heading>", options: [] },
   new: { usage: "issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-] [--allow-duplicate-title]", options: ["title", "id", "status", "priority", "body-file", "allow-duplicate-title", "dry-run", "if-unchanged"] },
   close: { usage: "issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | --no-criteria] [--keep-body]", options: ["status", "criteria", "criteria-from-body", "no-criteria", "keep-body", "dry-run", "if-unchanged"] },
@@ -121,6 +122,9 @@ const OPTION_HELP: Record<string, string> = {
     "--status <S>              list: filter; new/reopen: open status (未决); close: closed status (已修)",
   priority:
     "--priority <P>            list: filter by priority; new: P0–P3 or \"\" (default P2); change later: issuemd priority FILE ID P",
+  "body-bytes": "--body-bytes <N>          limits: W201 byte limit for one issue body (UTF-8; default 20480)",
+  "body-lines": "--body-lines <N>          limits: W201 line limit for one issue body (default 300)",
+  clear: "--clear                   limits: remove the marker and use the defaults",
   closed: "--closed                  list: show the closed table instead of the index",
   expand: "--expand                  list: one entry per id (a `20, 24` or `7–20` row becomes several)",
   "with-body":
@@ -238,6 +242,10 @@ const OPTIONS = {
   version: { type: "boolean" },
   strict: { type: "boolean" },
   "verify-commits": { type: "boolean" },
+  // limits
+  "body-bytes": { type: "string" },
+  "body-lines": { type: "string" },
+  clear: { type: "boolean" },
   // list
   status: { type: "string" },
   priority: { type: "string" },
@@ -326,6 +334,8 @@ export async function run(argv: string[]): Promise<CliResult> {
       return cmdShow(positionals.slice(1), values);
     case "counts":
       return cmdCounts(positionals.slice(1), values);
+    case "limits":
+      return cmdLimits(positionals.slice(1), values);
     case "read":
       return cmdRead(positionals.slice(1));
     case "new":
@@ -1257,6 +1267,66 @@ function writeHighWaterMark(lines: string[], ledger: ReturnType<typeof parseLedg
   const firstH2 = ledger.sections.find((section) => section.level === 2)?.line_start ?? lines.length + 1;
   const at = firstH2 > 1 && lines[firstH2 - 2]?.trim() === "" ? firstH2 - 1 : firstH2;
   return insertLines(lines, at, [marker]);
+}
+
+function writeLimitsMarker(lines: string[], ledger: ReturnType<typeof parseLedger>, values: { bodyBytes: number; bodyLines: number } | null): string[] {
+  const records = limitsRecords(ledger);
+  if (values == null) {
+    let updated = [...lines];
+    for (const record of [...records].reverse()) updated = removeLines(updated, record.line, 1);
+    return updated;
+  }
+  const marker = `${LIMITS_MARKER} body-bytes=${values.bodyBytes} body-lines=${values.bodyLines} -->`;
+  if (records.length > 0) {
+    let updated = [...lines];
+    updated[records[0]!.line - 1] = marker;
+    for (const record of records.slice(1).reverse()) updated = removeLines(updated, record.line, 1);
+    return updated;
+  }
+  const firstH2 = ledger.sections.find((section) => section.level === 2)?.line_start ?? lines.length + 1;
+  const at = firstH2 > 1 && lines[firstH2 - 2]?.trim() === "" ? firstH2 - 1 : firstH2;
+  return insertLines(lines, at, [marker]);
+}
+
+/** Set or clear the per-ledger W201 limits kept in the preamble. */
+function cmdLimits(rest: string[], v: Values): CliResult {
+  const file = rest[0];
+  if (file == null || rest.length !== 1) {
+    return err(`usage: ${COMMANDS.limits.usage}\n`, 2);
+  }
+  const bytes = v["body-bytes"];
+  const linesOption = v["body-lines"];
+  if (v.clear && (bytes != null || linesOption != null)) {
+    return err("issuemd limits: --clear removes the marker; do not combine it with --body-bytes or --body-lines\n", 2);
+  }
+  if (!v.clear && bytes == null && linesOption == null) {
+    return err(`issuemd limits: nothing to do; pass ${"`"}--body-bytes N${"`"}, ${"`"}--body-lines N${"`"} or ${"`"}--clear${"`"}\nusage: ${COMMANDS.limits.usage}\n`, 2);
+  }
+  const positive = (raw: string, flag: string): number | CliResult => {
+    if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+      return err(`issuemd limits: ${flag} expects a positive whole number, got '${raw}'\n`, 2);
+    }
+    return Number(raw);
+  };
+  const values: { bodyBytes: number; bodyLines: number } = { ...DEFAULT_LIMITS };
+  const opened = openLedger(file, v["if-unchanged"]);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
+  const current = effectiveLimits(ledger);
+  values.bodyBytes = current.bodyBytes;
+  values.bodyLines = current.bodyLines;
+  if (bytes != null) {
+    const parsed = positive(bytes, "--body-bytes");
+    if (typeof parsed !== "number") return parsed;
+    values.bodyBytes = parsed;
+  }
+  if (linesOption != null) {
+    const parsed = positive(linesOption, "--body-lines");
+    if (typeof parsed !== "number") return parsed;
+    values.bodyLines = parsed;
+  }
+  const lines = writeLimitsMarker(loaded.lines, ledger, v.clear ? null : values);
+  return commit(file, loaded, errors, lines, !!v["dry-run"]);
 }
 
 function cmdNew(rest: string[], v: Values): CliResult {

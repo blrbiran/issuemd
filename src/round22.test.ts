@@ -61,3 +61,33 @@ describe("W267: ledger limits marker", () => {
     expect(doc.warnings.some((w: { code: string }) => w.code === "W267")).toBe(true);
   });
 });
+describe("limits verb", () => {
+  test("sets, updates, and clears the marker", async () => {
+    const path = ledgerFrom(fixture, "");
+    expect((await run(["limits", path, "--body-bytes", "40960"])).code).toBe(0);
+    expect(JSON.parse((await run(["check", path, "--json"])).stdout).limits.bodyBytes).toBe(40960);
+    expect((await run(["limits", path, "--body-lines", "600"])).code).toBe(0);
+    const both = JSON.parse((await run(["check", path, "--json"])).stdout).limits;
+    expect([both.bodyBytes, both.bodyLines]).toEqual([40960, 600]);
+    expect((await run(["limits", path, "--clear"])).code).toBe(0);
+    expect(JSON.parse((await run(["check", path, "--json"])).stdout).limits.source).toBe("default");
+  });
+
+  test("--dry-run changes nothing; bad values exit 2", async () => {
+    const path = ledgerFrom(fixture, "");
+    const before = readFileSync(path, "utf8");
+    const dry = await run(["limits", path, "--body-bytes", "40960", "--dry-run"]);
+    expect(dry.stdout).toContain("+");
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect((await run(["limits", path, "--body-bytes", "0"])).code).toBe(2);
+    expect((await run(["limits", path])).code).toBe(2);
+    expect((await run(["limits", path, "--clear", "--body-bytes", "1"])).code).toBe(2);
+  });
+
+  test("does not disturb the high-water marker", async () => {
+    const path = ledgerFrom(fixture, "<!-- issuemd:high-water: 20 -->\n");
+    await run(["limits", path, "--body-bytes", "40960"]);
+    expect(text(path)).toContain("<!-- issuemd:high-water: 20 -->");
+    expect(text(path)).toContain("body-bytes=40960");
+  });
+});
