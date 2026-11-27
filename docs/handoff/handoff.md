@@ -19,7 +19,7 @@
 
 - 第十九轮修复 #97–#100 并补齐 #101 的 `split` 覆盖；第二十轮修复 #23 补充复测发现的重复附录归档遗漏。两轮均已快进合入本地 `main`。待推送提交数用 `git rev-list --count origin/main..main` 现查。
 - `npm run typecheck && npm test` 通过，690 项；`npm run build` 成功，`dist/bin/issuemd.js` 权限为 755。第十七轮大台账性能检查现在测 CPU 时间，12,800 条为 259 ms。
-- 最新源码只读检查：dogfood 0 errors / 6 warnings（W261 6，W262 0；snapshot 与本轮开始相同）；cafe 0 errors / 6 warnings（W201 1、W202 2、W221 1、W260 2）；orca archive 0 errors / 67 warnings（W201 7、W202 17、W206 1、W250 9、W261 33）。三份外部文件均未修改。
+- 最新源码只读检查：dogfood 0 errors / 6 warnings（W261 6，W262 0；snapshot `67bc4035…` 与本轮开始相同）；cafe 0 errors / 6 warnings（W201 1、W202 2、W221 1、W260 2）；orca archive 0 errors / 40 warnings —— 该外部文件在本轮进行中被其他进程大幅改写（其仓库 `git diff` 约 +9100/−3675），所以别拿之前的 67 当基线，检查本身仍是 0 error。我们未写入这三份文件。
 - 下一步由测试者复测第十九轮 #97–#100；第二十轮 #23 重复附录场景已由回归测试覆盖。push 与发版由用户手动处理，建议版本仍为 `0.2.0`。
 
 ## 工作流约定（用户明确要求）
