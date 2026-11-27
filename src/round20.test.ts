@@ -51,7 +51,7 @@ test("check reports kept-body archives in every appendix section", async () => {
 test("reopen and check agree on tab-separated archive IDs", async () => {
   const { file, source, archive } = await closeWithArchive("tabbed-appendix-archive.md");
   const tabbed = archive.replace("### #2 ", "### #2\t");
-  writeFileSync(file, appendDuplicateArchive(source, tabbed));
+  writeFileSync(file, `${source.trimEnd()}\n\n${tabbed}\n`);
 
   const checked = await run(["check", file, "--json"]);
   expect(checked.code).toBe(0);
@@ -70,8 +70,8 @@ test("check and rename agree on archive headings with closing ATX hashes", async
   expect(checked.code).toBe(0);
   expect(JSON.parse(checked.stdout).warnings.filter(({ code }: { code: string }) => code === "W250")).toHaveLength(2);
   const reopened = await run(["reopen", file, "2"]);
-  expect(reopened.code).toBe(3);
-  expect(reopened.stderr).toContain("multiple archives for #2");
+  expect(reopened.code).toBe(2);
+  expect(reopened.stderr).toContain("W266");
   const renamed = await run(["rename", file, "2", "新标题"]);
   expect(renamed.code).toBe(0);
   expect(renamed.stderr.match(/updated #2 archive title:/g)).toHaveLength(2);
@@ -87,7 +87,7 @@ for (const [label, malformed] of [
     const literal = malformed === "heading"
       ? archive.replace("### #2 ", "### #2 ")
       : archive.replace("（已关闭，正文保留）", "（已关闭，正文保留） ##");
-    writeFileSync(file, appendDuplicateArchive(source, literal));
+    writeFileSync(file, `${source.trimEnd()}\n\n${literal}\n`);
 
     const checked = await run(["check", file, "--json"]);
     expect(checked.code).toBe(0);
@@ -261,7 +261,7 @@ test("close refuses an appendix fence with U+2028 in its info string", async () 
   expect(readFileSync(file, "utf8")).toBe(before);
 });
 
-test("close refuses an archive in a later appendix using its original source line", async () => {
+test("close refuses an archive in a later appendix and reports the ambiguous headings", async () => {
   const archive = [
     "### #2 侧栏宽度不可调（已关闭，正文保留）",
     "",
@@ -277,8 +277,8 @@ test("close refuses an archive in a later appendix using its original source lin
   expect(warning).toBeDefined();
 
   const closed = await run(["close", file, "2", "--keep-body"]);
-  expect(closed.code).toBe(3);
-  expect(closed.stderr).toContain(`L${warning.line}`);
+  expect(closed.code).toBe(2);
+  expect(closed.stderr).toMatch(/W266.*L\d+.*L\d+/);
   expect(closed.stderr.endsWith("\n")).toBe(true);
   expect(readFileSync(file, "utf8")).toBe(before);
 });
@@ -299,9 +299,8 @@ test("reopen refuses multiple archives across appendix sections without changing
   writeFileSync(file, duplicated);
 
   const reopened = await run(["reopen", file, "2"]);
-  expect(reopened.code).toBe(3);
-  expect(reopened.stderr).toContain("multiple archives for #2");
-  expect(reopened.stderr).toMatch(/L\d+.*L\d+/s);
+  expect(reopened.code).toBe(2);
+  expect(reopened.stderr).toMatch(/W266.*L\d+.*L\d+/);
   expect(readFileSync(file, "utf8")).toBe(duplicated);
 });
 
@@ -571,27 +570,23 @@ test("reopen preserves archived final-body trailing blank lines", async () => {
   expect(readFileSync(file, "utf8")).toBe(before);
 });
 
-test("reopen restores a unique archive kept in a later appendix section", async () => {
+test("a unique archive is readable across duplicate appendices but reopen refuses", async () => {
   const { file, source, archive } = await closeWithArchive("later-appendix-reopen.md");
   const withoutFirst = source.replace(archive, "");
   const moved = `${withoutFirst.trimEnd()}\n\n## 附录\n\n${archive}\n`;
   writeFileSync(file, moved);
-  expect((await run(["check", file, "--strict"])).code).toBe(0);
+  expect((await run(["check", file, "--strict"])).code).toBe(3);
 
   const reopened = await run(["reopen", file, "2"]);
-  expect(reopened.code).toBe(0);
-  const restored = readFileSync(file, "utf8");
-  expect(restored).toContain("### Issue 2: 侧栏宽度不可调");
-  expect(restored).toContain("**现象**：侧栏固定 240px，无法拖拽。");
-  expect(restored).toContain("**根因**：宽度写死在 CSS 变量。");
-  expect(restored).toContain("**验收判据**：重启后保持上次宽度。");
-  expect(restored.match(/\*\*根因\*\*：宽度写死在 CSS 变量。/g)).toHaveLength(1);
-  expect(restored).not.toContain("### #2 侧栏宽度不可调（已关闭，正文保留）");
+  expect(reopened.code).toBe(2);
+  expect(reopened.stderr).toMatch(/W266.*L\d+.*L\d+/);
+  expect(readFileSync(file, "utf8")).toBe(moved);
   const body = await run(["show", file, "2", "--body-only"]);
-  expect(body.stdout).toBe([
+  expect(body.code).toBe(0);
+  expect(body.stdout.trim()).toBe([
     "**现象**：侧栏固定 240px，无法拖拽。",
     "**根因**：宽度写死在 CSS 变量。",
     "**期望**：可拖拽并记忆。",
     "**验收判据**：重启后保持上次宽度。",
-  ].join("\n") + "\n");
+  ].join("\n"));
 });

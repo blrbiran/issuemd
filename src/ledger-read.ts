@@ -7,7 +7,7 @@
  */
 
 import type { IdSpan } from "./issue-id.js";
-import { bodyBlocks, parseLedger, type BodyBlock, type LedgerRow, type TableKind, ARCHIVE_HEADING, KEPT_BODY_END, KEPT_BODY_START, KEPT_BODY_VERSION } from "./ledger.js";
+import { bodyBlocks, parseLedger, type BodyBlock, type LedgerRow, type TableKind, ARCHIVE_HEADING, archivePayloadRange } from "./ledger.js";
 import { fencedLines } from "./scan.js";
 import { bodyLabels, labelBlock, type LabelBlock, extractCriteria } from "./ledger-edit.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
@@ -81,42 +81,16 @@ function archivePayload(
   id: string,
   fenced: boolean[],
 ): ArchivedBody | undefined {
-  const lines = ledger.lines;
-  const versionLine = section.line_start + 1;
-  const versioned = lines[versionLine - 1]?.trim() === KEPT_BODY_VERSION;
-  let payloadStart: number;
-  let payloadEndExclusive: number;
-  let appendFinalNewline = false;
-  if (versioned) {
-    const startMarkerLine = versionLine + 1;
-    if (fenced[startMarkerLine - 1] || lines[startMarkerLine - 1]?.trim() !== KEPT_BODY_START) return undefined;
-    let endMarkerLine: number | undefined;
-    for (let line = startMarkerLine + 1; line <= section.line_end; line++) {
-      if (!fenced[line - 1] && lines[line - 1]?.trim() === KEPT_BODY_END) {
-        endMarkerLine = line;
-        break;
-      }
-    }
-    if (endMarkerLine == null) return undefined;
-    payloadStart = startMarkerLine + 1;
-    payloadEndExclusive = endMarkerLine;
-    appendFinalNewline = true;
-  } else {
-    let endMarkerLine: number | undefined;
-    for (let line = section.line_start + 1; line <= section.line_end; line++) {
-      if (!fenced[line - 1] && lines[line - 1]?.trim() === KEPT_BODY_END) endMarkerLine = line;
-    }
-    payloadStart = section.line_start + 1;
-    payloadEndExclusive = endMarkerLine ?? section.line_end + 1;
-    appendFinalNewline = endMarkerLine != null || section.line_end < lines.length || ledger.finalNewline;
-  }
-  const payloadLines = lines.slice(payloadStart - 1, payloadEndExclusive - 1);
-  const text = payloadLines.length ? payloadLines.join("\n") + (appendFinalNewline ? "\n" : "") : "";
+  const range = archivePayloadRange(ledger, section, fenced);
+  if (!range) return undefined;
+  const { start, end, finalNewline } = range;
+  const payloadLines = ledger.lines.slice(start - 1, end);
+  const text = payloadLines.length ? payloadLines.join("\n") + (finalNewline ? "\n" : "") : "";
   return {
     archived: true,
     id,
-    line: payloadStart,
-    end: payloadEndExclusive - 1,
+    line: start,
+    end,
     text,
     content: text,
   };
@@ -403,17 +377,16 @@ export type LedgerSize = { bytes: number; lines: number; bodyLines: number; arch
 export function ledgerSize(ledger: ReturnType<typeof parseLedger>, src: string): LedgerSize {
   const blocks = bodyBlocks(ledger);
   const bodyLines = blocks.reduce((total, block) => total + (block.end - block.line), 0);
-  const appendices = ledger.sections.filter((section) => section.level === 2 && section.title === "附录");
   let archivedLines = 0;
   let archivedBlocks = 0;
-  for (const appendix of appendices) {
-    for (let line = appendix.line_start; line <= appendix.line_end; line++) {
-      if (!ledger.visible.has(line)) continue;
-      const match = ARCHIVE_HEADING.exec(ledger.lines[line - 1] ?? "");
-      if (!match) continue;
-      const section = ledger.sections.find((candidate) => candidate.line_start === line && candidate.level === 3);
+  const archives = ledger.sections.filter((section) => section.level === 3 && section.parent?.title === "附录" &&
+    section.parent.level === 2 && ledger.visible.has(section.line_start) && ARCHIVE_HEADING.test(ledger.lines[section.line_start - 1]!));
+  if (archives.length > 0) {
+    const fenced = fencedLines(ledger.lines, true);
+    for (const section of archives) {
+      const range = archivePayloadRange(ledger, section, fenced);
       archivedBlocks++;
-      archivedLines += (section?.line_end ?? line) - line + 1;
+      if (range) archivedLines += range.end - range.start + 1;
     }
   }
   return { bytes: Buffer.byteLength(src), lines: ledger.lines.length, bodyLines, archivedLines, archivedBlocks };

@@ -556,11 +556,47 @@ export function highWaterRecords(ledger: { lines: string[]; sections: Section[] 
   return records;
 }
 
+/** Locate the payload as read by show, independent of surrounding commentary. */
+export function archivePayloadRange(
+  ledger: { lines: string[]; finalNewline: boolean }, section: Section, fenced: boolean[],
+): { start: number; end: number; finalNewline: boolean } | undefined {
+  const lines = ledger.lines;
+  const versionLine = section.line_start + 1;
+  const versioned = lines[versionLine - 1]?.trim() === KEPT_BODY_VERSION;
+  let payloadStart: number;
+  let payloadEndExclusive: number;
+  let appendFinalNewline = false;
+  if (versioned) {
+    const startMarkerLine = versionLine + 1;
+    if (fenced[startMarkerLine - 1] || lines[startMarkerLine - 1]?.trim() !== KEPT_BODY_START) return undefined;
+    let endMarkerLine: number | undefined;
+    for (let line = startMarkerLine + 1; line <= section.line_end; line++) {
+      if (!fenced[line - 1] && lines[line - 1]?.trim() === KEPT_BODY_END) {
+        endMarkerLine = line;
+        break;
+      }
+    }
+    if (endMarkerLine == null) return undefined;
+    payloadStart = startMarkerLine + 1;
+    payloadEndExclusive = endMarkerLine;
+    appendFinalNewline = true;
+  } else {
+    let endMarkerLine: number | undefined;
+    for (let line = section.line_start + 1; line <= section.line_end; line++) {
+      if (!fenced[line - 1] && lines[line - 1]?.trim() === KEPT_BODY_END) endMarkerLine = line;
+    }
+    payloadStart = section.line_start + 1;
+    payloadEndExclusive = endMarkerLine ?? section.line_end + 1;
+    appendFinalNewline = endMarkerLine != null || section.line_end < lines.length || ledger.finalNewline;
+  }
+  return { start: payloadStart, end: payloadEndExclusive - 1, finalNewline: appendFinalNewline };
+}
+
 export const LIMITS_MARKER = "<!-- issuemd:limits:";
 /** W201 defaults. Kept here so `check`, the write verbs and the docs agree. */
 export const DEFAULT_LIMITS = { bodyBytes: 20 * 1024, bodyLines: 300 } as const;
 
-export type LimitsRecord = { line: number; bodyBytes?: number; bodyLines?: number; problem?: string };
+export type LimitsRecord = { line: number; bodyBytes?: number; bodyLines?: number; problem?: string; unsafeToRewrite?: true };
 export type EffectiveLimits = { bodyBytes: number; bodyLines: number; source: "ledger" | "default" };
 
 /**
@@ -575,9 +611,9 @@ export function limitsRecords(ledger: { lines: string[]; sections: Section[] }):
   for (let index = 0; index < firstH2 - 1; index++) {
     const line = ledger.lines[index]!;
     if (fenced[index] || !/^ {0,3}<!-- issuemd:limits:/.test(line)) continue;
-    const match = /^ {0,3}<!-- issuemd:limits:(.*?)-->[ \t]*$/.exec(line);
+    const match = /^ {0,3}<!-- issuemd:limits:((?:(?!<!--|-->).)*)-->[ \t]*$/.exec(line);
     if (!match) {
-      records.push({ line: index + 1, problem: "unterminated limits marker" });
+      records.push({ line: index + 1, problem: "limits marker must be a standalone comment", unsafeToRewrite: true });
       continue;
     }
     const record: LimitsRecord = { line: index + 1 };
@@ -588,13 +624,14 @@ export function limitsRecords(ledger: { lines: string[]; sections: Section[] }):
         record.problem = `bad limits entry '${part}'`;
         break;
       }
-      if (key === "body-bytes") record.bodyBytes = parsed;
-      else if (key === "body-lines") record.bodyLines = parsed;
+      if (key === "body-bytes" && record.bodyBytes == null) record.bodyBytes = parsed;
+      else if (key === "body-lines" && record.bodyLines == null) record.bodyLines = parsed;
       else {
-        record.problem = `unknown limits key '${key ?? ""}'`;
+        record.problem = `unknown or duplicate limits key '${key ?? ""}'`;
         break;
       }
     }
+    if (record.bodyBytes == null && record.bodyLines == null) record.problem ??= "missing limits entries";
     records.push(record);
   }
   return records;

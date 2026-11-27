@@ -143,8 +143,8 @@ const OPTION_HELP: Record<string, string> = {
   "criteria-from-body":
     "--criteria-from-body      close: lift the **验收判据** block into the column (the default\n" +
     "                            when the body has one); refuses if it is missing or empty",
-  "no-criteria": "--no-criteria             close: close with an empty criteria cell on purpose",
-  "keep-body": "--keep-body               close: move the body into 附录 instead of deleting it",
+  "no-criteria": "--no-criteria             close: leave the criteria cell empty and delete the body (unless kept)",
+  "keep-body": "--keep-body               close: retain the body as evidence in 附录; the archived text stays in the file",
   guide: "--guide                   sync: rewrite the controlled guide and status blocks",
   "fix-tables": "--fix-tables              sync: add missing table separator rows",
   titles: "--titles                  sync: align body headings with index summaries",
@@ -992,12 +992,17 @@ function commit(
       return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 4);
     }
   } catch (error) {
-    return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
+    return writeFailure(file, error);
   }
   // The caller learns what landed and which bytes to feed the next
   // --if-unchanged, without a second `show` (dogfood #122).
-  const receiptLine = receipt ? `wrote ${file} ${receipt} (snapshot ${snapshotOf(content)})\n` : "";
+  const receiptLine = receipt ? writeReceipt(file, receipt, content) : "";
   return { code: 0, stdout: "", stderr: (report ?? "") + receiptLine + hardLinkNote(file, loaded) };
+}
+
+function writeReceipt(file: string, description: string, content: string): string {
+  const oneLine = (value: string) => value.replace(/[\r\n\u2028\u2029]/g, (character) => JSON.stringify(character).slice(1, -1).replace(/[\u2028\u2029]/g, " "));
+  return `wrote ${oneLine(file)} ${oneLine(description)} (snapshot ${snapshotOf(content)})\n`;
 }
 
 const LOCK_WAIT_MS = 2000;
@@ -1100,17 +1105,30 @@ function lockedWrite(
   }
 }
 
-/**
- * An atomic replace only needs the directory to be writable, so a ledger
- * someone made read-only (chmod 444, to protect it) would be rewritten
- * anyway. Honour the mode: dry-runs still work, real writes do not.
- */
+function writeFailure(file: string, error: unknown, target: "file" | "directory" = "directory"): CliResult {
+  const { code, message } = error as NodeJS.ErrnoException;
+  let reason: string;
+  switch (code) {
+    case "EACCES":
+      reason = target === "file"
+        ? "the file is read-only or write permission was denied (if you own it, check whether chmod u+w is appropriate)"
+        : "permission denied while writing in the ledger directory";
+      break;
+    case "EPERM": reason = "write denied by permissions or policy (for example a sandbox or immutable file)"; break;
+    case "EROFS": reason = "the filesystem is mounted read-only"; break;
+    case "ENOENT": reason = "the file or its directory is no longer there; re-read it with 'issuemd list' or 'issuemd show' before retrying"; break;
+    default: return err(`issuemd: cannot write '${file}': ${message}\n`, 2);
+  }
+  return err(`issuemd: cannot write '${file}': ${code}: ${reason} (${message}); nothing written\n`, 2);
+}
+
+/** Honor read-only files even when the parent directory permits replacement. */
 function readOnlyRefusal(file: string, loaded: Loaded): CliResult | undefined {
   try {
     accessSync(loaded.path, fsConstants.W_OK);
     return undefined;
-  } catch {
-    return err(`issuemd: refusing to write '${file}': the file is read-only (make it writable first); nothing written\n`, 2);
+  } catch (error) {
+    return writeFailure(file, error, "file");
   }
 }
 
@@ -1125,7 +1143,7 @@ function hardLinkNote(file: string, loaded: Loaded): string {
 function openLedger(
   file: string,
   expected?: string,
-): { loaded: Loaded; ledger: ReturnType<typeof parseLedger>; errors: Diagnostic[] } | CliResult {
+): { loaded: Loaded; ledger: ReturnType<typeof parseLedger>; errors: Diagnostic[]; warnings: Diagnostic[] } | CliResult {
   const loaded = loadWritable(file, expected);
   if ("code" in loaded) return loaded;
   const ledger = parseLedger(joinDocument(loaded.lines, loaded.doc));
@@ -1134,7 +1152,8 @@ function openLedger(
   // Baseline diagnostics must be the checker's full set, not just the parser's:
   // the write gate only refuses *new* errors, so a pre-existing E112 in the
   // input must not look new after the edit.
-  return { loaded, ledger, errors: checkLedger(loaded.doc.text, file).errors };
+  const { errors, warnings } = checkParsedLedger(ledger, file);
+  return { loaded, ledger, errors, warnings };
 }
 
 // ---- write commands ---------------------------------------------------
@@ -1324,6 +1343,11 @@ function cmdLimits(rest: string[], v: Values): CliResult {
   const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
+  const unsafe = limitsRecords(ledger).filter(({ unsafeToRewrite }) => unsafeToRewrite);
+  if (unsafe.length > 0) {
+    const locations = unsafe.map(({ line }) => `L${line}`).join(", ");
+    return err(`issuemd limits: W267 the limits marker must be a standalone comment (${locations}); repair it without removing neighboring text\n`, 2);
+  }
   const current = effectiveLimits(ledger);
   values.bodyBytes = current.bodyBytes;
   values.bodyLines = current.bodyLines;
@@ -1341,7 +1365,7 @@ function cmdLimits(rest: string[], v: Values): CliResult {
   const change: string[] = [];
   if (values.bodyBytes !== current.bodyBytes) change.push(`body-bytes ${current.bodyBytes} → ${values.bodyBytes}`);
   if (values.bodyLines !== current.bodyLines) change.push(`body-lines ${current.bodyLines} → ${values.bodyLines}`);
-  const receipt = v.clear ? "limits cleared" : `limits ${change.join(", ")}`;
+  const receipt = v.clear ? "limits cleared" : `limits ${change.join(", ") || "marker updated"}`;
   return commit(file, loaded, errors, lines, !!v["dry-run"], { receipt });
 }
 
@@ -1492,6 +1516,18 @@ function cmdNew(rest: string[], v: Values): CliResult {
   return result.code === 0 && warnings.length > 0 ? { ...result, stderr: result.stderr + warnings.join("") } : result;
 }
 
+const APPENDIX_AUTO = "<!-- issuemd:appendix:auto -->";
+
+function duplicateAppendixRefusal(verb: string, appendices: { line_start: number }[]): CliResult | undefined {
+  if (appendices.length <= 1) return;
+  const locations = appendices.map(({ line_start }) => `L${line_start}`).join(", ");
+  return err(`issuemd ${verb}: W266 multiple ## 附录 sections (${locations}); resolve the duplicate headings before writing archives\n`, 2);
+}
+
+function criteriaPipeNote(criteria: string): string {
+  return criteria.includes("|") ? "W205: pipes in --criteria are escaped in the Markdown cell; input \\| denotes a literal pipe\n" : "";
+}
+
 function cmdClose(rest: string[], v: Values): CliResult {
   const file = rest[0];
   const idText = rest[1];
@@ -1530,7 +1566,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
     const lines = [...loaded.lines];
     lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 4, criteria);
     return commit(file, loaded, errors, lines, !!v["dry-run"], {
-      report: `updated #${idText} criteria: ${JSON.stringify(found.row.criteria)} → ${JSON.stringify(criteria)}\n`,
+      report: `updated #${idText} criteria: ${JSON.stringify(found.row.criteria)} → ${JSON.stringify(criteria)}\n` + criteriaPipeNote(criteria),
       receipt: `#${idText} criteria`,
     });
   }
@@ -1553,6 +1589,8 @@ function cmdClose(rest: string[], v: Values): CliResult {
     const appendices = ledger.sections.filter(
       (section) => section.level === 2 && section.title === "附录",
     );
+    const ambiguity = duplicateAppendixRefusal("close", appendices);
+    if (ambiguity) return ambiguity;
     const existing = ledger.sections.find((section) => {
       if (section.level !== 3 || !ledger.visible.has(section.line_start)) return false;
       const match = ARCHIVE_HEADING.exec(loaded.lines[section.line_start - 1] ?? "");
@@ -1613,11 +1651,15 @@ function cmdClose(rest: string[], v: Values): CliResult {
     return err(
       `issuemd close: #${idText} has no criteria to record (no --criteria and no non-empty **验收判据** in the body). ` +
         (labelHint ? `${labelHint.message}. ` : "") +
-        "Pass --criteria TEXT, --keep-body, or --no-criteria to close it without criteria on purpose\n",
+        "Pass --criteria TEXT to record a conclusion, --no-criteria to leave the cell empty and delete the body, or --keep-body to retain evidence in 附录 (the body stays in the file)\n",
       2,
     );
   }
 
+  // `new`/`rename` tell the caller a pipe was escaped in the cell (W205);
+  // `close --criteria` used to rewrite the input just as silently (dogfood
+  // #111). Report it on the same terms.
+  const escapedNote = v.criteria == null ? "" : criteriaPipeNote(criteria);
   // A table cell cannot store a backslash directly before `|`: the reader
   // takes it as a pipe escape (`echo a \| b` reads back as `echo a | b`), so
   // promoting the text would change it silently. Refuse and name the ways
@@ -1695,7 +1737,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
     if (target) {
       lines = insertLines(lines, insertAt, ["", ...archive]);
     } else {
-      lines = insertLines(lines, insertAt, ["", "## 附录", "", ...archive]);
+      lines = insertLines(lines, insertAt, ["", "## 附录", APPENDIX_AUTO, "", ...archive]);
     }
   }
   // The row is located again after the archive insertion: 附录 may sit above
@@ -1712,23 +1754,21 @@ function cmdClose(rest: string[], v: Values): CliResult {
     formatRow([idText, status, found.row.priority, found.row.summary, criteria]),
   ]);
 
+  let overLimit: Diagnostic | undefined;
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
+    observeCheck(report) { overLimit = report.warnings.find(({ code, id }) => code === "W201" && id === idText); },
     allowLost: (diagnostic) => diagnostic.code === "E102" && diagnostic.id === idText,
     preserveTrailingBlanks,
     receipt: `#${idText} closed as ${status}`,
   });
   if (keepBody && result.code === 0) {
-    // The archived body is just as long inside 附录 (#119). Say so at close
-    // time rather than only at the next check.
-    const size = Buffer.byteLength(bodyText.join("\n"));
-    const limits = effectiveLimits(ledger);
-    const over: string[] = [];
-    if (size > limits.bodyBytes) over.push(`${(size / 1024).toFixed(1)} KiB (limit ${(limits.bodyBytes / 1024).toFixed(0)} KiB)`);
-    if (bodyText.length - 1 > limits.bodyLines) over.push(`${bodyText.length - 1} lines (limit ${limits.bodyLines})`);
-    const hint = over.length > 0 ? `W201: the archived body is now ${over.join(", ")}; consider trimming it before keeping it\n` : "";
-    return { code: 0, stdout: result.stdout, stderr: result.stderr + `W250: kept the body of #${idText} by moving it into 附录\n` + hint };
+    const hint = overLimit ? `W201: #${idText} ${overLimit.message}\n` : "";
+    return {
+      code: 0, stdout: result.stdout,
+      stderr: result.stderr + `W250: kept the body of #${idText} by moving it into 附录\n` + escapedNote + hint,
+    };
   }
-  return result;
+  return result.code === 0 && escapedNote ? { ...result, stderr: result.stderr + escapedNote } : result;
 }
 
 function inlineCodeCommitHashes(text: string): string {
@@ -1785,7 +1825,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
     }
     const lines = [...loaded.lines];
     lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 1, wanted);
-    return commit(file, loaded, errors, lines, !!v["dry-run"]);
+    return commit(file, loaded, errors, lines, !!v["dry-run"], { receipt: `#${idText} status ${found.row.status} → ${wanted}` });
   }
   // Closed rows may carry summaries that cannot be a body heading (older
   // ledgers); reopening needs one, so name the fix instead of failing the gate.
@@ -1820,6 +1860,8 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   const appendices = ledger.sections.filter(
     (section) => section.level === 2 && section.title === "附录",
   );
+  const ambiguity = duplicateAppendixRefusal("reopen", appendices);
+  if (ambiguity) return ambiguity;
   const archivedCandidates = ledger.sections.filter((section) => {
     if (section.level !== 3 || !ledger.visible.has(section.line_start)) return false;
     const match = ARCHIVE_HEADING.exec(loaded.lines[section.line_start - 1] ?? "");
@@ -1894,6 +1936,21 @@ function cmdReopen(rest: string[], v: Values): CliResult {
       ? archived.line_start - 1
       : archived.line_start;
     archiveSpan = { start, end };
+  }
+
+  // Reclaim only the exact generated section, and only if every remaining
+  // line is empty or the provenance marker. User comments also count as data.
+  const appendix = appendices[0];
+  if (archiveSpan && appendix && loaded.lines[appendix.line_start] === APPENDIX_AUTO) {
+    const remaining = loaded.lines.slice(appendix.line_start + 1, appendix.line_end)
+      .filter((_, index) => {
+        const line = appendix.line_start + 2 + index;
+        return line < archiveSpan!.start || line > archiveSpan!.end;
+      });
+    if (remaining.every((line) => line === "")) {
+      const start = loaded.lines[appendix.line_start - 2] === "" ? appendix.line_start - 1 : appendix.line_start;
+      archiveSpan = { start, end: archiveSpan.end };
+    }
   }
 
   // Remove the later block first so the earlier coordinates stay valid.
@@ -2074,44 +2131,12 @@ function cmdRename(rest: string[], v: Values): CliResult {
       }
     }
   }
-  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"], { receipt: `#${idText} renamed` });
   if (result.code !== 0) return result;
   if (next.includes("|")) {
     changes.push("W205: the new title contains a pipe; it was escaped in the table cell\n");
   }
   return { ...result, stderr: result.stderr + changes.join("") };
-}
-
-/**
- * A write that pushes one issue body past the W201 limits should say so now,
- * not at the next `check` (dogfood #106). Only the first crossing is reported:
- * a body that was already over the limit does not need a reminder on every
- * append, and `check` still owns the authoritative list. Dry runs report too,
- * because that is where a caller decides whether to apply the change.
- */
-function w201CrossingNote(ledger: ReturnType<typeof parseLedger>, lines: string[], id: string): string {
-  const limits = effectiveLimits(ledger);
-  const before = bodyBlocks(ledger).find((candidate) => `${candidate.id.start}${candidate.id.suffix}` === id);
-  if (!before) return "";
-  const beforeLines = ledger.lines.slice(before.line - 1, before.end);
-  const measure = (block: string[]) => ({
-    lines: block.length - 1,
-    bytes: Buffer.byteLength(block.join("\n")),
-  });
-  const was = measure(beforeLines);
-  const draft = parseLedger(lines.join("\n"));
-  const after = bodyBlocks(draft).find((candidate) => `${candidate.id.start}${candidate.id.suffix}` === id);
-  if (!after) return "";
-  const now = measure(lines.slice(after.line - 1, after.end));
-  const over = (size: { lines: number; bytes: number }) => size.lines > limits.bodyLines || size.bytes > limits.bodyBytes;
-  const equal = (a: number, b: number) => a === b;
-  if (!over(was) && over(now) && !(equal(was.lines, now.lines) && equal(was.bytes, now.bytes))) {
-    const parts: string[] = [];
-    if (now.bytes > limits.bodyBytes) parts.push(`${(now.bytes / 1024).toFixed(1)} KiB (limit ${(limits.bodyBytes / 1024).toFixed(0)} KiB)`);
-    if (now.lines > limits.bodyLines) parts.push(`${now.lines} lines (limit ${limits.bodyLines})`);
-    return `W201: this body is now ${parts.join(", ")}; move history to a separate evidence file\n`;
-  }
-  return "";
 }
 
 /** Last nonblank body line, or the heading line for an empty body. */
@@ -2131,7 +2156,7 @@ function cmdBody(rest: string[], v: Values): CliResult {
   if ("code" in read) return read;
   const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
-  const { loaded, ledger, errors } = opened;
+  const { loaded, ledger, errors, warnings } = opened;
   const found = findRow(ledger, idText);
   if (!found) return missingIssue("body", idText);
   const refused = perIdRefusal("body", idText, found);
@@ -2173,10 +2198,13 @@ function cmdBody(rest: string[], v: Values): CliResult {
   }
   const bytes = Buffer.byteLength(incoming.join("\n"));
   const receipt = v.append ? `#${idText} body appended, ${bytes} bytes` : `#${idText} body replaced, ${bytes} bytes`;
-  const result = commit(file, loaded, errors, lines, !!v["dry-run"], { receipt });
-  if (result.code !== 0) return result;
-  const hint = w201CrossingNote(ledger, lines, idText);
-  return hint ? { ...result, stderr: result.stderr + hint } : result;
+  let overLimit: Diagnostic | undefined;
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
+    receipt,
+    observeCheck(report) { overLimit = report.warnings.find(({ code, id }) => code === "W201" && id === idText); },
+  });
+  if (result.code !== 0 || !overLimit || warnings.some(({ code, id }) => code === "W201" && id === idText)) return result;
+  return { ...result, stderr: result.stderr + `W201: #${idText} ${overLimit.message}; move older evidence to a linked file\n` };
 }
 
 /** Change one row's priority; the only row field that had no verb (dogfood #30). */
@@ -2252,7 +2280,7 @@ function cmdSplit(rest: string[], v: Values): CliResult {
   // The ids this row covers are the only E102s split may multiply: they were
   // already reported (once, for the first missing one) before the split.
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
-    receipt: `split into ${rowIds.size} rows`,
+    receipt: `#${idText} split into ${rowIds.size} rows`,
     tolerate: (diagnostic) => diagnostic.code === "E102" && diagnostic.id != null && rowIds.has(diagnostic.id),
     observeCheck: (report) => {
       const remaining = new Map(priorCounts);
@@ -2364,7 +2392,7 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
       if ("locked" in written) return written.locked;
       if (!written.ok) return err(`issuemd: E130 '${file}' changed after it was read; re-read and retry\n`, 4);
     } catch (error) {
-      return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
+      return writeFailure(file, error);
     }
   }
   // Written after the ledger so a failed conversion never leaves a report
@@ -2376,7 +2404,7 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
   return {
     code: 0,
     stdout: (unchanged ? "(no changes)\n\n" : "") + report,
-    stderr: unchanged ? "" : hardLinkNote(file, loaded),
+    stderr: unchanged ? "" : writeReceipt(file, "adopted ledger", target) + hardLinkNote(file, loaded),
   };
 }
 
@@ -2500,12 +2528,12 @@ function cmdSync(rest: string[], v: Values): CliResult {
       }
       lines = rewriteBlock(lines, block.begin, block.end, block.content, range);
     }
-    return commit(file, loaded, errors, lines, !!v["dry-run"]);
+    return commit(file, loaded, errors, lines, !!v["dry-run"], { receipt: "sync --guide" });
   }
 
   if (v["fix-tables"]) {
     lines = fixTables(lines, ledger);
-    return commit(file, loaded, errors, lines, !!v["dry-run"]);
+    return commit(file, loaded, errors, lines, !!v["dry-run"], { receipt: "sync --fix-tables" });
   }
 
   if (v["criteria-labels"]) return syncCriteriaLabels(file, loaded, ledger, errors, v);
@@ -2557,7 +2585,7 @@ function syncCriteriaLabels(
   }
   let lines = [...loaded.lines];
   for (const change of changes.sort((a, b) => b.line - a.line)) lines[change.line - 1] = change.newLine;
-  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"], { receipt: "sync --criteria-labels" });
   if (result.code !== 0) return result;
   const receipt = changes.map(({ id, oldLabel }) =>
     `updated #${id} criteria label: ${JSON.stringify(oldLabel)} → "验收判据"`).join("\n");
@@ -2661,7 +2689,7 @@ function syncTitles(
     }
   }
 
-  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"], { receipt: "sync --titles" });
   if (result.code !== 0) return skippedNote ? { ...result, stderr: result.stderr + skippedNote } : result;
   const changesNote = changes.map((change) => prefer === "body"
     ? `updated #${change.id} summary: ${JSON.stringify(change.oldSummary)} → ${JSON.stringify(change.title)}`

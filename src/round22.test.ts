@@ -5,7 +5,7 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,7 +37,6 @@ function bigBody(n: number): string {
 }
 
 const text = (path: string) => readFileSync(path, "utf8");
-const count = (path: string, pattern: RegExp) => (text(path).match(pattern) ?? []).length;
 
 describe("W267: ledger limits marker", () => {
   test("a preamble marker changes the effective limits", async () => {
@@ -213,4 +212,160 @@ describe("write receipts", () => {
     const limits = await run(["limits", path, "--body-bytes", "40960"]);
     expect(limits.stderr).toMatch(/wrote .*limits body-bytes 20480 → 40960/);
   });
+});
+
+describe("write diagnostics", () => {
+  test("close --criteria says the pipe was escaped", async () => {
+    const path = ledgerFrom(fixture, "");
+    const result = await run(["close", path, "2", "--criteria", "a | b"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("W205");
+  });
+
+  test("a criteria without a pipe stays silent on W205", async () => {
+    const path = ledgerFrom(fixture, "");
+    const result = await run(["close", path, "2", "--criteria", "plain"]);
+    expect(result.stderr).not.toContain("W205");
+  });
+
+  test("a real read-only file still reports read-only with the chmod hint", async () => {
+    const path = ledgerFrom(fixture, "");
+    chmodSync(path, 0o444);
+    try {
+      const result = await run(["priority", path, "2", "P3"]);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("read-only");
+      expect(result.stderr).toContain("chmod");
+    } finally {
+      chmodSync(path, 0o644);
+    }
+  });
+
+  test("a missing file is not described as read-only", async () => {
+    const gone = join(dir, "vanished.md");
+    const result = await run(["priority", gone, "2", "P3"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).not.toContain("read-only");
+  });
+});
+
+
+test("duplicate appendix headings warn and block archive writes", async () => {
+  const path = ledgerFrom(fixture, "", "\n## 附录\n\nSecond appendix.\n");
+  const before = text(path);
+  const checked = await run(["check", path, "--strict", "--json"]);
+  expect(checked.code).toBe(3);
+  expect(JSON.parse(checked.stdout).warnings.filter((w: { code: string }) => w.code === "W266")).toHaveLength(2);
+  for (const flags of [[], ["--dry-run"]]) {
+    const closed = await run(["close", path, "2", "--keep-body", ...flags]);
+    expect(closed.code).toBe(2);
+    expect(closed.stderr).toMatch(/W266.*L\d+.*L\d+/);
+    expect(text(path)).toBe(before);
+  }
+});
+
+for (const variant of ["lf", "crlf-bom", "no-final-newline"]) {
+  test(`reopen reclaims an empty generated appendix (${variant})`, async () => {
+    const path = ledgerFrom(fixture);
+    let before = text(path).replace(/\n## 附录[\s\S]*$/, "\n");
+    if (variant === "crlf-bom") before = "\uFEFF" + before.replaceAll("\n", "\r\n");
+    if (variant === "no-final-newline") before = before.trimEnd();
+    writeFileSync(path, before);
+    for (const id of ["2", "4"]) {
+      expect((await run(["close", path, id, "--keep-body"])).code).toBe(0);
+      expect(text(path)).toContain("<!-- issuemd:appendix:auto -->");
+      expect((await run(["reopen", path, id, "--status", id === "4" ? "观察" : "未决"])).code).toBe(0);
+      expect(text(path)).toBe(before);
+    }
+  });
+}
+
+test("reopen keeps a generated appendix with a user's HTML comment", async () => {
+  const path = ledgerFrom(fixture);
+  writeFileSync(path, text(path).replace(/\n## 附录[\s\S]*$/, "\n"));
+  expect((await run(["close", path, "2", "--keep-body"])).code).toBe(0);
+  writeFileSync(path, text(path) + "\n<!-- retain this note -->\n");
+  expect((await run(["reopen", path, "2"])).code).toBe(0);
+  expect(text(path)).toContain("## 附录");
+  expect(text(path)).toContain("<!-- retain this note -->");
+});
+
+
+test("check measures only the archive payload, leaving unrelated trailing notes outside W201", async () => {
+  const path = ledgerFrom(fixture);
+  expect((await run(["close", path, "2", "--keep-body"])).code).toBe(0);
+  const before = JSON.parse((await run(["check", path, "--json"])).stdout);
+  writeFileSync(path, text(path) + "\n" + "Appendix note.\n".repeat(400));
+  const after = JSON.parse((await run(["check", path, "--json"])).stdout);
+  expect(after.warnings.map((w: { code: string }) => w.code)).toEqual(["W250"]);
+  expect(after.size.archivedLines).toBe(before.size.archivedLines);
+});
+
+test("duplicate limits keys warn and cannot override the default", async () => {
+  const path = ledgerFrom(fixture, "<!-- issuemd:limits: body-lines=2 body-lines=600 -->\n");
+  const checked = JSON.parse((await run(["check", path, "--json"])).stdout);
+  expect(checked.limits).toEqual({ bodyBytes: 20480, bodyLines: 300, source: "default" });
+  expect(checked.warnings).toContainEqual(expect.objectContaining({ code: "W267" }));
+});
+
+test("closing without criteria explains how each option handles the body", async () => {
+  const path = ledgerFrom(fixture);
+  writeFileSync(path, text(path).replace("**验收判据**：重启后保持上次宽度。", ""));
+  const result = await run(["close", path, "2"]);
+  expect(result.code).toBe(2);
+  expect(result.stderr).toMatch(/--no-criteria.*deletes? the body/);
+  expect(result.stderr).toMatch(/--keep-body.*retain/);
+});
+
+
+test("renaming keeps its change report and includes one new snapshot receipt", async () => {
+  const path = ledgerFrom(fixture);
+  const renamed = await run(["rename", path, "2", "new title"]);
+  const shown = JSON.parse((await run(["show", path, "2", "--json"])).stdout);
+  expect(renamed.stderr).toContain("updated #2 body title");
+  expect(renamed.stderr.match(/^wrote .*$/gm)).toEqual([`wrote ${path} #2 renamed (snapshot ${shown.snapshot})`]);
+});
+
+test("replacing a missing body still reports introduced W201", async () => {
+  const path = ledgerFrom(fixture);
+  writeFileSync(path, text(path).replace(/^### Issue 2:[\s\S]*?(?=^### Issue 3:)/m, ""));
+  const result = await run(["body", path, "2", "--body-file", bigBody(400)]);
+  expect(result.code).toBe(0);
+  expect(result.stderr).toContain("W201");
+});
+
+
+test("a permission error creating the write lock names the directory and errno", async () => {
+  const folder = join(dir, "readable-directory");
+  mkdirSync(folder);
+  const path = join(folder, "ledger.md");
+  writeFileSync(path, readFileSync(fixture));
+  chmodSync(folder, 0o555);
+  try {
+    const result = await run(["priority", path, "2", "P3"]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("EACCES");
+    expect(result.stderr).toContain("directory");
+    expect(result.stderr).not.toContain("chmod u+w");
+  } finally {
+    chmodSync(folder, 0o755);
+  }
+});
+
+
+test("limits refuses to overwrite prose after a malformed marker", async () => {
+  const path = ledgerFrom(fixture, "<!-- issuemd:limits: body-lines=600 --> Keep this note.\n");
+  const before = text(path);
+  for (const flags of [["--clear"], ["--body-lines", "601"]]) {
+    const result = await run(["limits", path, ...flags]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/L\d+/);
+    expect(text(path)).toBe(before);
+  }
+});
+
+test("archive W201 includes the last LF of the payload", async () => {
+  const path = ledgerFrom(fixture, "<!-- issuemd:limits: body-bytes=3 -->\n", ["", "### #1 登录页闪烁（已关闭，正文保留）", "<!-- issuemd:kept-body:v2 -->", "<!-- issuemd:kept-body:start -->", "abc", "<!-- issuemd:kept-body:end -->", ""].join("\n"));
+  const report = JSON.parse((await run(["check", path, "--json"])).stdout);
+  expect(report.warnings).toContainEqual(expect.objectContaining({ code: "W201", id: "1", message: expect.stringContaining("4 UTF-8 bytes") }));
 });

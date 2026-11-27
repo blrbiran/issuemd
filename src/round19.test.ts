@@ -192,7 +192,7 @@ test("#99 rename reports both drifted title copies in dry-run and real writes", 
   expect(result.stdout).toBe("");
   expect(result.stderr).toContain('table summary: "侧栏宽度不可调" → "统一新标题"');
   expect(result.stderr).toContain('body title: "正文旧标题" → "统一新标题"');
-  expect(preview.stderr.split("\n").filter((line) => line.startsWith("updated "))).toEqual(result.stderr.trimEnd().split("\n"));
+  expect(preview.stderr.split("\n").filter((line) => line.startsWith("updated "))).toEqual(result.stderr.split("\n").filter((line) => line.startsWith("updated ")));
   expect((await run(["check", ledger, "--strict"])).code).toBe(0);
   expect(await run(args)).toEqual({ code: 0, stdout: "(no changes)\n", stderr: "" });
 });

@@ -1097,7 +1097,7 @@ describe("probe: adopt gives each id of an open multi-id row its body", () => {
   test("existing bodies attach to the row; check passes; split works afterwards", async () => {
     const path = file("# T\n\n## 待处理\n\n| # | 状态 | 摘要 |\n|---|---|---|\n| 2, 30 | 未决 | 合并两条 |\n| 10 | 未决 | 十 |\n\n## 正文\n\n### Issue 2: 合并两条\n\na\n\n### Issue 30: 合并两条\n\nb\n");
     const result = await run(["adopt", path]);
-    expect(result.stderr).toBe("");
+    expect(result.stderr).toMatch(/^wrote .* adopted ledger \(snapshot [0-9a-f]{16}\)\n$/);
     expect(result.code).toBe(0);
     const out = text(path);
     expect(out).toContain("| 2, 30 | 未决 |  | 合并两条 |");

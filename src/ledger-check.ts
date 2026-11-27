@@ -2,7 +2,7 @@ import { inlineCodeRanges } from "./scan.js";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
-import { countSuffix, effectiveLimits, type EffectiveLimits, highWaterRecords, limitsRecords, maxIssueId, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
+import { archivePayloadRange, countSuffix, effectiveLimits, type EffectiveLimits, highWaterRecords, limitsRecords, maxIssueId, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
 import { ARCHIVE_HEADING, bodyLabels, criteriaLabelHint, criteriaSupplementHint, extractCriteria, fencedLines, unescapeCell } from "./ledger-edit.js";
 
 import { STATUS_CLASSES } from "./statuses.js";
@@ -106,16 +106,19 @@ function checkBodySize(
   limits: EffectiveLimits,
   id: string | undefined,
   warnings: Diagnostic[],
+  diagnosticLine = line,
+  subject = "Issue body",
+  finalNewline = false,
 ): void {
   const lineCount = end - line;
-  const byteCount = Buffer.byteLength(lines.slice(line, end).join("\n"));
+  const byteCount = Buffer.byteLength(lines.slice(line, end).join("\n")) + (lineCount > 0 && finalNewline ? 1 : 0);
   if (lineCount <= limits.bodyLines && byteCount <= limits.bodyBytes) return;
   const over: string[] = [];
   if (byteCount > limits.bodyBytes) {
-    over.push(`${(byteCount / 1024).toFixed(1)} KiB (limit ${(limits.bodyBytes / 1024).toFixed(0)} KiB)`);
+    over.push(`${byteCount} UTF-8 bytes (limit ${limits.bodyBytes})`);
   }
   if (lineCount > limits.bodyLines) over.push(`${lineCount} lines (limit ${limits.bodyLines})`);
-  warnings.push({ code: "W201", line, ...(id != null ? { id } : {}), message: `Issue body exceeds limits: ${over.join(", ")}` });
+  warnings.push({ code: "W201", line: diagnosticLine, ...(id != null ? { id } : {}), message: `${subject} exceeds limits: ${over.join(", ")}` });
 }
 
 function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind, IdSet>, limits: EffectiveLimits) {
@@ -252,11 +255,18 @@ function checkRows(ledger: Ledger, ids: Record<TableKind, IdSet>) {
 function checkAppendix(ledger: Ledger, limits: EffectiveLimits) {
   const { lines, visible, sections, warnings, rows } = ledger;
   const appendices = sections.filter((section) => section.level === 2 && section.title === "附录");
-  const archiveLines = new Set(
+  if (appendices.length > 1) {
+    for (const appendix of appendices) warnings.push({
+      code: "W266", line: appendix.line_start,
+      message: `Duplicate ## 附录 heading (${appendices.length} found); resolve the ambiguity before reading the section or writing archives`,
+    });
+  }
+  const archiveLines = new Map(
     sections.filter((section) => section.level === 3 && visible.has(section.line_start) &&
       appendices.some((appendix) => section.line_start > appendix.line_start && section.line_start <= appendix.line_end))
-      .map((section) => section.line_start),
+      .map((section) => [section.line_start, section] as const),
   );
+  const fenced = archiveLines.size ? fencedLines(lines, true) : [];
   const single = (kind: TableKind, id: string) =>
     rows[kind].find((row) => row.ids.length === 1 && idText(row.ids[0]) === id);
   // A second copy of one issue's body in 附录: an escaped `\### Issue N:`
@@ -282,11 +292,8 @@ function checkAppendix(ledger: Ledger, limits: EffectiveLimits) {
       duplicate(line, match[1], true);
       const [, id, summary] = match;
       warnings.push({ code: "W250", line, id, message: "Issue body kept in 附录 by close --keep-body" });
-      // A kept body is still a body: moving it into 附录 must not make an
-      // over-limit issue look smaller (#119). The extent is the widest the
-      // archive can be (its H3 subtree), a deliberately conservative bound.
-      const archiveEnd = ledger.sections.find((section) => section.line_start === line && section.level === 3)?.line_end ?? line;
-      checkBodySize(lines, line, archiveEnd + 1, limits, id, warnings);
+      const range = archivePayloadRange(ledger, archiveLines.get(line)!, fenced);
+      if (range) checkBodySize(lines, range.start - 1, range.end, limits, id, warnings, line, "Archived body", range.finalNewline);
       const closedRow = single("closed", id);
       if (closedRow && foldWhitespace(closedRow.summary) !== foldWhitespace(unescapeCell(summary))) {
         warnings.push({
