@@ -91,3 +91,29 @@ describe("limits verb", () => {
     expect(text(path)).toContain("body-bytes=40960");
   });
 });
+
+describe("W201 scope", () => {
+  test("message names the measured value and the exceeded dimension", async () => {
+    const path = ledgerFrom(fixture, "");
+    await run(["body", path, "2", "--body-file", bigBody(400)]);
+    const warnings = JSON.parse((await run(["check", path, "--json"])).stdout).warnings;
+    const w201 = warnings.find((w: { code: string }) => w.code === "W201");
+    expect(w201.message).toMatch(/\d+ lines \(limit 300\)/);
+  });
+
+  test("a kept-body archive over the limit still reports W201 with its id", async () => {
+    const path = ledgerFrom(fixture, "");
+    await run(["body", path, "2", "--body-file", bigBody(400)]);
+    await run(["close", path, "2", "--status", "已修", "--criteria", "x", "--keep-body"]);
+    const found = JSON.parse((await run(["check", path, "--json"])).stdout)
+      .warnings.filter((w: { code: string; id?: string }) => w.code === "W201" && w.id === "2");
+    expect(found.length).toBeGreaterThan(0);
+  });
+
+  test("a hand-written appendix is not measured", async () => {
+    const path = ledgerFrom(fixture, "", `\n## 附录\n\n${readFileSync(bigBody(400), "utf8")}\n`);
+    const codes = JSON.parse((await run(["check", path, "--json"])).stdout)
+      .warnings.filter((w: { code: string }) => w.code === "W201");
+    expect(codes).toHaveLength(0);
+  });
+});

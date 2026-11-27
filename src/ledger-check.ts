@@ -94,6 +94,30 @@ function checkStatusBlock(ledger: Ledger) {
   }
 }
 
+/**
+ * W201: one issue body is longer than the ledger's limits. Only the
+ * dimensions that actually exceed are named; a bare "exceeds limits" left
+ * users unable to tell whether to shorten, split, or raise the limit (#118).
+ */
+function checkBodySize(
+  lines: string[],
+  line: number,
+  end: number,
+  limits: EffectiveLimits,
+  id: string | undefined,
+  warnings: Diagnostic[],
+): void {
+  const lineCount = end - line;
+  const byteCount = Buffer.byteLength(lines.slice(line, end).join("\n"));
+  if (lineCount <= limits.bodyLines && byteCount <= limits.bodyBytes) return;
+  const over: string[] = [];
+  if (byteCount > limits.bodyBytes) {
+    over.push(`${(byteCount / 1024).toFixed(1)} KiB (limit ${(limits.bodyBytes / 1024).toFixed(0)} KiB)`);
+  }
+  if (lineCount > limits.bodyLines) over.push(`${lineCount} lines (limit ${limits.bodyLines})`);
+  warnings.push({ code: "W201", line, ...(id != null ? { id } : {}), message: `Issue body exceeds limits: ${over.join(", ")}` });
+}
+
 function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind, IdSet>, limits: EffectiveLimits) {
   const { lines, visible, errors, warnings } = ledger;
   const { body, bodies } = checkHeadings(ledger);
@@ -133,9 +157,7 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
       if (labels.has(name)) warnings.push({ code: "W206", line: line + current - 1, id, message: `Duplicate body label: ${name}` });
       labels.add(name);
     }
-    if (end - line > 300 || Buffer.byteLength(lines.slice(line, end).join("\n")) > 20 * 1024) {
-      warnings.push({ code: "W201", line, id, message: "Issue body exceeds 300 lines or 20 KiB" });
-    }
+    checkBodySize(lines, line, end, limits, id, warnings);
     // An open issue whose body has no non-empty 验收判据 can never be closed
     // (`close --criteria-from-body` refuses it), so a bare `new` skeleton or a
     // deleted criteria block leaves an open item that is not verifiable at
@@ -227,7 +249,7 @@ function checkRows(ledger: Ledger, ids: Record<TableKind, IdSet>) {
  * heading is the only way `check` can tell a kept body apart from prose, so it
  * is what W250 keys on. Fenced lookalikes are not data.
  */
-function checkAppendix(ledger: Ledger) {
+function checkAppendix(ledger: Ledger, limits: EffectiveLimits) {
   const { lines, visible, sections, warnings, rows } = ledger;
   const appendices = sections.filter((section) => section.level === 2 && section.title === "附录");
   const archiveLines = new Set(
@@ -260,6 +282,11 @@ function checkAppendix(ledger: Ledger) {
       duplicate(line, match[1], true);
       const [, id, summary] = match;
       warnings.push({ code: "W250", line, id, message: "Issue body kept in 附录 by close --keep-body" });
+      // A kept body is still a body: moving it into 附录 must not make an
+      // over-limit issue look smaller (#119). The extent is the widest the
+      // archive can be (its H3 subtree), a deliberately conservative bound.
+      const archiveEnd = ledger.sections.find((section) => section.line_start === line && section.level === 3)?.line_end ?? line;
+      checkBodySize(lines, line, archiveEnd + 1, limits, id, warnings);
       const closedRow = single("closed", id);
       if (closedRow && foldWhitespace(closedRow.summary) !== foldWhitespace(unescapeCell(summary))) {
         warnings.push({
@@ -461,7 +488,7 @@ export function checkParsedLedger(parsed: Ledger, file: string, options: Options
     checkBodies(ledger, open, ids, limits);
     checkRows(ledger, ids);
     checkDuplicateSummaries(ledger);
-    checkAppendix(ledger);
+    checkAppendix(ledger, limits);
     checkGuide(ledger);
     const highWater = highWaterRecords(ledger);
     if (highWater.length > 1 || highWater.some((record) => record.value == null)) {
