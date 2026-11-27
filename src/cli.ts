@@ -900,7 +900,7 @@ function commit(
   before: Diagnostic[],
   candidate: string[],
   dryRun: boolean,
-  { tolerate, allowLost, observeCheck, validateCandidate, preserveTrailingBlanks }: {
+  { tolerate, allowLost, observeCheck, validateCandidate, preserveTrailingBlanks, report, receipt }: {
     /** Split may name missing bodies individually instead of once per range. */
     tolerate?: (diagnostic: Diagnostic) => boolean;
     /** Existing errors a verb is allowed to resolve intentionally. */
@@ -910,6 +910,10 @@ function commit(
     validateCandidate?: (ledger: ReturnType<typeof parseLedger>) => CliResult | undefined;
     /** Reopen may restore source body lines that were archived before EOF. */
     preserveTrailingBlanks?: boolean;
+    /** A previewable change summary; printed on --dry-run and on the real write. */
+    report?: string;
+    /** One line describing what changed; printed with the post-write snapshot. */
+    receipt?: string;
   } = {},
 ): CliResult {
   const newLines = terminate(candidate, loaded.doc, loaded.lines, preserveTrailingBlanks);
@@ -970,7 +974,7 @@ function commit(
   if (candidateRefusal) return candidateRefusal;
   if (dryRun) {
     const diff = unifiedDiff(loaded.lines, newLines, file, loaded.doc.finalNewline, loaded.doc.eol, loaded.doc.bom ? "\uFEFF" : "");
-    return { code: 0, stdout: diff || "(no changes)\n", stderr: snapshotNote(loaded) };
+    return { code: 0, stdout: diff || "(no changes)\n", stderr: (report ?? "") + snapshotNote(loaded) };
   }
   const unchanged = newLines.length === loaded.lines.length &&
     newLines.every((line, index) => line === loaded.lines[index]);
@@ -990,7 +994,10 @@ function commit(
   } catch (error) {
     return err(`issuemd: cannot write '${file}': ${(error as Error).message}\n`, 2);
   }
-  return { code: 0, stdout: "", stderr: hardLinkNote(file, loaded) };
+  // The caller learns what landed and which bytes to feed the next
+  // --if-unchanged, without a second `show` (dogfood #122).
+  const receiptLine = receipt ? `wrote ${file} ${receipt} (snapshot ${snapshotOf(content)})\n` : "";
+  return { code: 0, stdout: "", stderr: (report ?? "") + receiptLine + hardLinkNote(file, loaded) };
 }
 
 const LOCK_WAIT_MS = 2000;
@@ -1331,7 +1338,11 @@ function cmdLimits(rest: string[], v: Values): CliResult {
     values.bodyLines = parsed;
   }
   const lines = writeLimitsMarker(loaded.lines, ledger, v.clear ? null : values);
-  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const change: string[] = [];
+  if (values.bodyBytes !== current.bodyBytes) change.push(`body-bytes ${current.bodyBytes} → ${values.bodyBytes}`);
+  if (values.bodyLines !== current.bodyLines) change.push(`body-lines ${current.bodyLines} → ${values.bodyLines}`);
+  const receipt = v.clear ? "limits cleared" : `limits ${change.join(", ")}`;
+  return commit(file, loaded, errors, lines, !!v["dry-run"], { receipt });
 }
 
 function cmdNew(rest: string[], v: Values): CliResult {
@@ -1456,6 +1467,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   lines = writeHighWaterMark(lines, ledger, Math.max(max, span.start));
 
   const committed = commit(file, loaded, errors, lines, !!v["dry-run"], {
+    receipt: `#${idText} new`,
     validateCandidate(candidate) {
       const cited = unreadableHolding(candidate, idText, candidate.cited);
       if (!cited) return;
@@ -1517,10 +1529,10 @@ function cmdClose(rest: string[], v: Values): CliResult {
     if (criteria === found.row.criteria) return commit(file, loaded, errors, loaded.lines, !!v["dry-run"]);
     const lines = [...loaded.lines];
     lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 4, criteria);
-    const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
-    return result.code === 0
-      ? { ...result, stderr: result.stderr + `updated #${idText} criteria: ${JSON.stringify(found.row.criteria)} → ${JSON.stringify(criteria)}\n` }
-      : result;
+    return commit(file, loaded, errors, lines, !!v["dry-run"], {
+      report: `updated #${idText} criteria: ${JSON.stringify(found.row.criteria)} → ${JSON.stringify(criteria)}\n`,
+      receipt: `#${idText} criteria`,
+    });
   }
   const status = v.status ?? "已修";
   if (statusCategory(status) !== "closed") {
@@ -1703,6 +1715,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
     allowLost: (diagnostic) => diagnostic.code === "E102" && diagnostic.id === idText,
     preserveTrailingBlanks,
+    receipt: `#${idText} closed as ${status}`,
   });
   if (keepBody && result.code === 0) {
     // The archived body is just as long inside 附录 (#119). Say so at close
@@ -1941,6 +1954,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
 
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
     preserveTrailingBlanks: restoreAtEof,
+    receipt: `#${idText} reopened as ${reopenStatus}`,
   });
   if (result.code !== 0 || extractCriteria(bodyLines.slice(1)) != null) return result;
   return {
@@ -1981,7 +1995,9 @@ function cmdStatus(rest: string[], v: Values): CliResult {
 
   const lines = [...loaded.lines];
   lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 1, next);
-  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  return commit(file, loaded, errors, lines, !!v["dry-run"], {
+    receipt: `#${idText} status ${found.row.status} → ${next}`,
+  });
 }
 
 function cmdRename(rest: string[], v: Values): CliResult {
@@ -2155,7 +2171,9 @@ function cmdBody(rest: string[], v: Values): CliResult {
     const at = bodyInsertAt(ledger, found.span, section.line_end);
     lines = insertBlock(lines, at, [`### Issue ${idText}: ${found.row.summary}`, "", ...read.lines]);
   }
-  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const bytes = Buffer.byteLength(incoming.join("\n"));
+  const receipt = v.append ? `#${idText} body appended, ${bytes} bytes` : `#${idText} body replaced, ${bytes} bytes`;
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"], { receipt });
   if (result.code !== 0) return result;
   const hint = w201CrossingNote(ledger, lines, idText);
   return hint ? { ...result, stderr: result.stderr + hint } : result;
@@ -2179,7 +2197,9 @@ function cmdPriority(rest: string[], v: Values): CliResult {
   if (refused) return refused;
   const lines = [...loaded.lines];
   lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 2, next);
-  return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  return commit(file, loaded, errors, lines, !!v["dry-run"], {
+    receipt: `#${idText} priority ${found.row.priority || "(none)"} → ${next || "(none)"}`,
+  });
 }
 
 /**
@@ -2232,6 +2252,7 @@ function cmdSplit(rest: string[], v: Values): CliResult {
   // The ids this row covers are the only E102s split may multiply: they were
   // already reported (once, for the first missing one) before the split.
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
+    receipt: `split into ${rowIds.size} rows`,
     tolerate: (diagnostic) => diagnostic.code === "E102" && diagnostic.id != null && rowIds.has(diagnostic.id),
     observeCheck: (report) => {
       const remaining = new Map(priorCounts);

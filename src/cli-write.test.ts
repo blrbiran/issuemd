@@ -52,7 +52,9 @@ describe("new", () => {
     const path = ledger();
     const result = await run(["new", path, "--title", "缓存未失效", "--status", "未决", "--priority", "P1"]);
     expect(result.code).toBe(0);
-    expect(result.stderr).toBe("");
+    // The write receipt names the id and the post-write snapshot; W211 is absent.
+    expect(result.stderr).toMatch(/^wrote .* #21 new \(snapshot [0-9a-f]{16}\)$/m);
+    expect(result.stderr).not.toContain("W211");
     expect(text(path)).toContain("| 21 | 未决 | P1 | 缓存未失效 |");
     expect(text(path)).toContain("### Issue 21: 缓存未失效");
     expect((await clean(path)).code).toBe(0);
@@ -143,7 +145,7 @@ describe("new", () => {
     const path = ledger();
     const result = await run(["new", path, "--title", "新号", "--id", "21"]);
     expect(result.code).toBe(0);
-    expect(result.stderr).toBe("");
+    expect(result.stderr).not.toContain("W211");
   });
 
   test("a suffixed --id is a distinct issue, not a reused number", async () => {
@@ -151,7 +153,7 @@ describe("new", () => {
     writeFileSync(path, TEMPLATE);
     await run(["new", path, "--title", "base", "--id", "1"]);
     // `1a` shares a base with `1` but is its own issue; it must not trip W211.
-    expect((await run(["new", path, "--title", "child", "--id", "1a"])).stderr).toBe("");
+    expect((await run(["new", path, "--title", "child", "--id", "1a"])).stderr).not.toContain("W211");
   });
 
   test("a non-ledger is refused with exit 3 and no write", async () => {

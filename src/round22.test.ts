@@ -174,3 +174,43 @@ test("close --keep-body warns when the archived body is over the limits", async 
   expect(result.code).toBe(0);
   expect(result.stderr).toContain("W201");
 });
+
+describe("write receipts", () => {
+  test("every write verb reports what it did and the new snapshot", async () => {
+    const path = ledgerFrom(fixture, "");
+    const status = await run(["status", path, "2", "观察"]);
+    expect(status.code).toBe(0);
+    expect(status.stdout).toBe("");
+    expect(status.stderr).toMatch(/^wrote .* #2 status 未决 → 观察 \(snapshot [0-9a-f]{16}\)$/m);
+  });
+
+  test("the receipt snapshot chains into --if-unchanged", async () => {
+    const path = ledgerFrom(fixture, "");
+    const first = await run(["status", path, "2", "观察"]);
+    const snapshot = /snapshot ([0-9a-f]{16})/.exec(first.stderr)![1];
+    const second = await run(["priority", path, "2", "P3", "--if-unchanged", snapshot]);
+    expect(second.code).toBe(0);
+    expect(second.stderr).toContain("#2 priority P1 → P3");
+  });
+
+  test("--dry-run and no-op writes keep their old output", async () => {
+    const path = ledgerFrom(fixture, "");
+    expect((await run(["status", path, "2", "未决"])).stdout).toBe("(no changes)\n");
+    expect((await run(["status", path, "2", "观察", "--dry-run"])).stderr).not.toContain("wrote ");
+  });
+
+  test("body, close, reopen, new, split and limits all report", async () => {
+    const path = ledgerFrom(fixture, "");
+    const body = await run(["body", path, "2", "--append", "--body-file", bigBody(2)]);
+    expect(body.stderr).toMatch(/wrote .*#2 body appended/);
+    const closed = await run(["close", path, "2", "--criteria", "ok"]);
+    expect(closed.stderr).toMatch(/wrote .*#2 closed as 已修/);
+    const reopened = await run(["reopen", path, "2"]);
+    expect(reopened.stderr).toMatch(/wrote .*#2 reopened as 未决/);
+    const filed = await run(["new", path, "--title", "回执检查"]);
+    expect(filed.stderr).toMatch(/wrote .*#\d+ new/);
+    expect(filed.stdout.trim()).toMatch(/^\d+$/);
+    const limits = await run(["limits", path, "--body-bytes", "40960"]);
+    expect(limits.stderr).toMatch(/wrote .*limits body-bytes 20480 → 40960/);
+  });
+});
