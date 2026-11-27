@@ -33,7 +33,7 @@ import { inlineCodeRanges, scan } from "./scan.js";
 import { buildSections, countLines } from "./sections.js";
 import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
 import { parseId, parseIds, compareIds, type IdSpan } from "./issue-id.js";
-import { bodyBlocks, countSuffix, highWaterRecords, HIGH_WATER_MARKER, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
+import { bodyBlocks, countSuffix, DEFAULT_LIMITS, effectiveLimits, highWaterRecords, HIGH_WATER_MARKER, LIMITS_MARKER, limitsRecords, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
 import { checkLedger, checkParsedLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
 import {
   bodySkeleton,
@@ -418,7 +418,7 @@ function cmdCheck(rest: string[], v: Values): CliResult {
     if (v.json) {
       return {
         code,
-        stdout: JSON.stringify({ ...report, ...citedRowsField(ledger), snapshot: snapshotOf(loaded.src) }, null, 2) + "\n",
+        stdout: JSON.stringify({ ...report, ...citedRowsField(ledger), limits: effectiveLimits(ledger), snapshot: snapshotOf(loaded.src) }, null, 2) + "\n",
         stderr: "",
       };
     }

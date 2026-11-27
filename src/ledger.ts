@@ -556,6 +556,63 @@ export function highWaterRecords(ledger: { lines: string[]; sections: Section[] 
   return records;
 }
 
+export const LIMITS_MARKER = "<!-- issuemd:limits:";
+/** W201 defaults. Kept here so `check`, the write verbs and the docs agree. */
+export const DEFAULT_LIMITS = { bodyBytes: 20 * 1024, bodyLines: 300 } as const;
+
+export type LimitsRecord = { line: number; bodyBytes?: number; bodyLines?: number; problem?: string };
+export type EffectiveLimits = { bodyBytes: number; bodyLines: number; source: "ledger" | "default" };
+
+/**
+ * Read the optional W201 limits from the document preamble. A marker outside
+ * the preamble (after the first H2) is user prose and is ignored, the same
+ * rule the high-water mark follows.
+ */
+export function limitsRecords(ledger: { lines: string[]; sections: Section[] }): LimitsRecord[] {
+  const firstH2 = ledger.sections.find((section) => section.level === 2)?.line_start ?? ledger.lines.length + 1;
+  const fenced = fencedLines(ledger.lines, true);
+  const records: LimitsRecord[] = [];
+  for (let index = 0; index < firstH2 - 1; index++) {
+    const line = ledger.lines[index]!;
+    if (fenced[index] || !/^ {0,3}<!-- issuemd:limits:/.test(line)) continue;
+    const match = /^ {0,3}<!-- issuemd:limits:(.*?)-->[ \t]*$/.exec(line);
+    if (!match) {
+      records.push({ line: index + 1, problem: "unterminated limits marker" });
+      continue;
+    }
+    const record: LimitsRecord = { line: index + 1 };
+    for (const part of match[1]!.trim().split(/\s+/).filter(Boolean)) {
+      const [key, value, ...rest] = part.split("=");
+      const parsed = value != null && rest.length === 0 && /^[1-9]\d*$/.test(value) ? Number(value) : undefined;
+      if (parsed == null || !Number.isSafeInteger(parsed)) {
+        record.problem = `bad limits entry '${part}'`;
+        break;
+      }
+      if (key === "body-bytes") record.bodyBytes = parsed;
+      else if (key === "body-lines") record.bodyLines = parsed;
+      else {
+        record.problem = `unknown limits key '${key ?? ""}'`;
+        break;
+      }
+    }
+    records.push(record);
+  }
+  return records;
+}
+
+/** The limits W201 actually uses: exactly one well-formed marker, or defaults. */
+export function effectiveLimits(ledger: { lines: string[]; sections: Section[] }): EffectiveLimits {
+  const records = limitsRecords(ledger);
+  if (records.length === 1 && !records[0]!.problem) {
+    return {
+      bodyBytes: records[0]!.bodyBytes ?? DEFAULT_LIMITS.bodyBytes,
+      bodyLines: records[0]!.bodyLines ?? DEFAULT_LIMITS.bodyLines,
+      source: "ledger",
+    };
+  }
+  return { ...DEFAULT_LIMITS, source: "default" };
+}
+
 /** Well-formed `### Issue N: title` bodies strictly inside `## 正文`. */
 export function bodyBlocks(ledger: ReturnType<typeof parseLedger>): BodyBlock[] {
   // Without the skeleton there is no ledger to speak of; `show` reports E120

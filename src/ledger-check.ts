@@ -2,7 +2,7 @@ import { inlineCodeRanges } from "./scan.js";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
-import { countSuffix, highWaterRecords, maxIssueId, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
+import { countSuffix, effectiveLimits, type EffectiveLimits, highWaterRecords, limitsRecords, maxIssueId, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
 import { ARCHIVE_HEADING, bodyLabels, criteriaLabelHint, criteriaSupplementHint, extractCriteria, fencedLines, unescapeCell } from "./ledger-edit.js";
 
 import { STATUS_CLASSES } from "./statuses.js";
@@ -94,7 +94,7 @@ function checkStatusBlock(ledger: Ledger) {
   }
 }
 
-function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind, IdSet>) {
+function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind, IdSet>, limits: EffectiveLimits) {
   const { lines, visible, errors, warnings } = ledger;
   const { body, bodies } = checkHeadings(ledger);
   const byId = new Map<string, LedgerRow>();
@@ -448,6 +448,7 @@ export function checkParsedLedger(parsed: Ledger, file: string, options: Options
   }
 
   if (!errors.some(({ code }) => code === "E120")) {
+    const limits = effectiveLimits(ledger);
     checkStatusBlock(ledger);
     checkDuplicateIds(open, "open", errors);
     checkDuplicateIds(closed, "closed", errors);
@@ -457,7 +458,7 @@ export function checkParsedLedger(parsed: Ledger, file: string, options: Options
         errors.push({ code: "E104", line: row.line, id: idText({ ...span, start: overlap }), message: "ID appears in both tables" });
       }
     }
-    checkBodies(ledger, open, ids);
+    checkBodies(ledger, open, ids, limits);
     checkRows(ledger, ids);
     checkDuplicateSummaries(ledger);
     checkAppendix(ledger);
@@ -479,6 +480,14 @@ export function checkParsedLedger(parsed: Ledger, file: string, options: Options
       });
     }
     checkHashes(ledger, file, options.verifyCommits ?? false);
+    const limitsRecordsFound = limitsRecords(ledger);
+    if (limitsRecordsFound.length > 1 || limitsRecordsFound.some((record) => record.problem)) {
+      warnings.push({
+        code: "W267",
+        line: limitsRecordsFound[0]?.line ?? 1,
+        message: "The ledger limits marker is malformed or duplicated; default limits (20 KiB / 300 lines) are in effect",
+      });
+    }
   }
   const compare = (a: Diagnostic, b: Diagnostic) => a.line - b.line || a.code.localeCompare(b.code);
   errors.sort(compare);
