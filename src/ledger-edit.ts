@@ -159,16 +159,27 @@ export function ascendingRows(rows: LedgerRow[]): boolean {
 // ---- fences ------------------------------------------------------------
 
 /** True when the last line leaves a code fence open. */
-export function endsInFence(lines: string[]): boolean {
-  let fence: { char: string; len: number } | undefined;
+export function endsInFence(lines: string[], inBody = false): boolean {
+  let fence: { char: string; len: number; margin: number } | undefined;
+  let listMargin = 0;
   for (const line of lines) {
-    const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    const leading = /^[ \t]*/.exec(line)![0];
+    let indent = 0;
+    for (const char of leading) indent += char === "\t" ? 4 - (indent % 4) : 1;
+    const text = line.slice(leading.length);
+    if (fence && fence.margin > indent && text) fence = undefined;
+    if (!fence && inBody && text && indent < listMargin) listMargin = 0;
+    const margin = fence?.margin ?? listMargin;
+    const delimiter = indent >= margin && indent - margin <= 3 ? /^(`{3,}|~{3,})([\s\S]*)$/.exec(text) : null;
     if (!fence) {
-      // A backtick fence's info string may not itself contain a backtick.
-      if (match && !(match[1]!.startsWith("`") && match[2]!.includes("`"))) {
-        fence = { char: match[1]![0]!, len: match[1]!.length };
+      if (delimiter && !(delimiter[1]!.startsWith("`") && delimiter[2]!.includes("`"))) {
+        fence = { char: delimiter[1]![0]!, len: delimiter[1]!.length, margin };
+      } else if (inBody && indent - listMargin <= 3) {
+        const item = /^(?:[-*+]|\d{1,9}[.)])( {1,4})(?=\S)/.exec(text);
+        if (item) listMargin = indent + item[0].length;
       }
-    } else if (match && match[1]![0] === fence.char && match[1]!.length >= fence.len && /^[ \t]*$/.test(match[2]!)) {
+    } else if (delimiter && delimiter[1]![0] === fence.char &&
+        delimiter[1]!.length >= fence.len && /^[ \t]*$/.test(delimiter[2]!)) {
       fence = undefined;
     }
   }
@@ -183,10 +194,8 @@ export function endsInFence(lines: string[]): boolean {
  * `rename`, and reported by `check` (W250/W251/W252). It is deliberately not
  * an `Issue N:` heading: 附录 must not hold issue headings (E123).
  */
-export { ARCHIVE_HEADING, KEPT_BODY_END } from "./ledger.js";
+export { ARCHIVE_HEADING, KEPT_BODY_VERSION, KEPT_BODY_START, KEPT_BODY_END } from "./ledger.js";
 export const archiveHeading = (id: string, summary: string) => `### #${id} ${summary}（已关闭，正文保留）`;
-/** The provenance note under the heading; `reopen` drops it when restoring. */
-export const ARCHIVE_NOTE = /^>\s*(?:关闭时以 --keep-body\s*|adopt 时)保留了原正文/;
 
 export function bodySkeleton(id: string, title: string, criteria = ""): string[] {
   return [

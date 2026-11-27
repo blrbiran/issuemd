@@ -2,7 +2,7 @@ import { inlineCodeRanges } from "./scan.js";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
-import { countSuffix, parseLedger, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
+import { countSuffix, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
 import { ARCHIVE_HEADING, criteriaLabelHint, extractCriteria, fencedLines, labelName, unescapeCell } from "./ledger-edit.js";
 
 import { STATUS_CLASSES } from "./statuses.js";
@@ -37,7 +37,7 @@ function checkHeadings(ledger: Ledger) {
   for (const section of sections) {
     const { level, title, line_start: line } = section;
     const inBody = line > body.line_start && line <= body.line_end;
-    const issue = level === 3 ? /^Issue\s+([^:\s]+)\s*:\s*(.*)$/.exec(title) : null;
+    const issue = level === 3 ? ISSUE_HEADING.exec(title) : null;
     if (!inBody) {
       if (level === 3 && /^Issue(?:\s|$)/.test(title)) {
         errors.push({ code: "E123", line, message: "Issue headings belong in 正文" });
@@ -223,8 +223,12 @@ function checkRows(ledger: Ledger, ids: Record<TableKind, IdSet>) {
  */
 function checkAppendix(ledger: Ledger) {
   const { lines, visible, sections, warnings, rows } = ledger;
-  const appendix = sections.find((section) => section.level === 2 && section.title === "附录");
-  if (!appendix) return;
+  const appendices = sections.filter((section) => section.level === 2 && section.title === "附录");
+  const archiveLines = new Set(
+    sections.filter((section) => section.level === 3 && visible.has(section.line_start) &&
+      appendices.some((appendix) => section.line_start > appendix.line_start && section.line_start <= appendix.line_end))
+      .map((section) => section.line_start),
+  );
   const single = (kind: TableKind, id: string) =>
     rows[kind].find((row) => row.ids.length === 1 && idText(row.ids[0]) === id);
   // A second copy of one issue's body in 附录: an escaped `\### Issue N:`
@@ -239,24 +243,27 @@ function checkAppendix(ledger: Ledger) {
       warnings.push({ code: "W253", line, id, message: "Another copy of this issue's body already exists (body, archive or escaped copy in 附录)" });
     }
   };
-  for (let line = appendix.line_start + 1; line <= appendix.line_end; line++) {
-    if (!visible.has(line)) continue;
-    const escaped = /^\\#{1,6}[ \t]+Issue[ \t]+(\d+[a-z]?)[ \t]*:/.exec(lines[line - 1]);
-    if (escaped) duplicate(line, escaped[1], false);
-    const match = ARCHIVE_HEADING.exec(lines[line - 1]);
-    if (!match) continue;
-    duplicate(line, match[1], true);
-    const [, id, summary] = match;
-    warnings.push({ code: "W250", line, id, message: "Issue body kept in 附录 by close --keep-body" });
-    const closedRow = single("closed", id);
-    if (closedRow && foldWhitespace(closedRow.summary) !== foldWhitespace(unescapeCell(summary))) {
-      warnings.push({
-        code: "W251", line, id, message: "Archive heading summary differs from the closed table",
-        expected: closedRow.summary, actual: summary,
-      });
-    }
-    if (single("open", id)) {
-      warnings.push({ code: "W252", line, id, message: "Archive kept for an issue that is open again; reopen normally restores it" });
+  for (const appendix of appendices) {
+    for (let line = appendix.line_start + 1; line <= appendix.line_end; line++) {
+      if (!visible.has(line)) continue;
+      const escaped = /^\\#{1,6}[ \t]+Issue[ \t]+(\d+[a-z]?)[ \t]*:/.exec(lines[line - 1]);
+      if (escaped) duplicate(line, escaped[1], false);
+      if (!archiveLines.has(line)) continue;
+      const match = ARCHIVE_HEADING.exec(lines[line - 1]);
+      if (!match) continue;
+      duplicate(line, match[1], true);
+      const [, id, summary] = match;
+      warnings.push({ code: "W250", line, id, message: "Issue body kept in 附录 by close --keep-body" });
+      const closedRow = single("closed", id);
+      if (closedRow && foldWhitespace(closedRow.summary) !== foldWhitespace(unescapeCell(summary))) {
+        warnings.push({
+          code: "W251", line, id, message: "Archive heading summary differs from the closed table",
+          expected: closedRow.summary, actual: summary,
+        });
+      }
+      if (single("open", id)) {
+        warnings.push({ code: "W252", line, id, message: "Archive kept for an issue that is open again; reopen normally restores it" });
+      }
     }
   }
 }

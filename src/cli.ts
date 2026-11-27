@@ -44,7 +44,8 @@ import {
   guideBlockLines,
   archiveHeading,
   ARCHIVE_HEADING,
-  ARCHIVE_NOTE,
+  KEPT_BODY_VERSION,
+  KEPT_BODY_START,
   KEPT_BODY_END,
   insertBlock,
   insertLines,
@@ -826,10 +827,16 @@ export function openFailure(file: string, e: unknown): CliResult {
  * that blank into a trailing newline — so drop trailing blank lines whenever
  * the source had none.
  */
-function terminate(lines: string[], doc: Document, original: string[] = []): string[] {
+function terminate(
+  lines: string[],
+  doc: Document,
+  original: string[] = [],
+  preserveTrailingBlanks = false,
+): string[] {
   let end = lines.length;
   while (end > 0 && lines[end - 1] === "") end--;
   if (!doc.finalNewline) return end === lines.length ? lines : lines.slice(0, end);
+  if (preserveTrailingBlanks) return lines;
   // A write never adds blank lines at the end of the file: removing the last
   // body of 正文 used to leave its separating blank line dangling at EOF.
   let kept = 0;
@@ -854,7 +861,7 @@ function commit(
   before: Diagnostic[],
   candidate: string[],
   dryRun: boolean,
-  { tolerate, allowLost, observeCheck, validateCandidate }: {
+  { tolerate, allowLost, observeCheck, validateCandidate, preserveTrailingBlanks }: {
     /** Split may name missing bodies individually instead of once per range. */
     tolerate?: (diagnostic: Diagnostic) => boolean;
     /** Existing errors a verb is allowed to resolve intentionally. */
@@ -862,9 +869,11 @@ function commit(
     /** Optional observer for warnings computed with the candidate snapshot. */
     observeCheck?: (report: ReturnType<typeof checkLedger>) => void;
     validateCandidate?: (ledger: ReturnType<typeof parseLedger>) => CliResult | undefined;
+    /** Reopen may restore source body lines that were archived before EOF. */
+    preserveTrailingBlanks?: boolean;
   } = {},
 ): CliResult {
-  const newLines = terminate(candidate, loaded.doc, loaded.lines);
+  const newLines = terminate(candidate, loaded.doc, loaded.lines, preserveTrailingBlanks);
   const content = joinDocument(newLines, loaded.doc);
   const parsed = parseLedger(content);
   const checked = checkParsedLedger(parsed, file);
@@ -1073,7 +1082,7 @@ function openLedger(
 ): { loaded: Loaded; ledger: ReturnType<typeof parseLedger>; errors: Diagnostic[] } | CliResult {
   const loaded = loadWritable(file, expected);
   if ("code" in loaded) return loaded;
-  const ledger = parseLedger(loaded.lines.join("\n"));
+  const ledger = parseLedger(joinDocument(loaded.lines, loaded.doc));
   const unusable = unusableLedger(ledger);
   if (unusable) return unusable;
   // Baseline diagnostics must be the checker's full set, not just the parser's:
@@ -1185,7 +1194,7 @@ function readBodyFile(spec: string, verb = "new"): { lines: string[] } | CliResu
     // A top-level heading inside a body ends the issue block early: `show`
     // stops at it and `close` leaves it behind as orphaned content, all while
     // `check` stays green.
-    const fenced = fencedLines(lines);
+    const fenced = fencedLines(lines, true);
     const heading = lines.findIndex((line, index) => !fenced[index] && /^ {0,3}#{1,2}(?:[ \t]|$)/.test(line));
     if (heading !== -1) {
       return err(
@@ -1194,13 +1203,15 @@ function readBodyFile(spec: string, verb = "new"): { lines: string[] } | CliResu
         2,
       );
     }
-    // The marker ends a kept-body archive; in a body it would cut the archive
-    // short at close --keep-body. Inside a fence it is an example and fine.
-    const marker = lines.findIndex((line, index) => !fenced[index] && line.trim() === KEPT_BODY_END);
+    // Archive boundary markers in a body could split the saved payload. Inside
+    // a fence they are examples and remain ordinary user content.
+    const marker = lines.findIndex((line, index) => !fenced[index] &&
+      (line.trim() === KEPT_BODY_VERSION || line.trim() === KEPT_BODY_START || line.trim() === KEPT_BODY_END));
     if (marker !== -1) {
+      const value = lines[marker]!.trim();
       return err(
-        `issuemd ${verb}: --body-file may not contain the line '${KEPT_BODY_END}' outside a code fence ` +
-          "(it marks the end of a kept-body archive)\n",
+        `issuemd ${verb}: --body-file may not contain the archive marker '${value}' outside a code fence\n` +
+          "(these markers delimit a kept-body archive)\n",
         2,
       );
     }
@@ -1387,6 +1398,28 @@ function cmdClose(rest: string[], v: Values): CliResult {
   );
   const bodyText = block ? ledger.lines.slice(block.line - 1, block.end) : [];
   const keepBody = !!v["keep-body"] && block != null;
+  const h2Sections = ledger.sections.filter((section) => section.level === 2);
+  const bodySection = h2Sections.find((section) => section.title === "正文");
+  const preserveTrailingBlanks = keepBody && bodySection != null && h2Sections.at(-1) === bodySection &&
+    block?.end === bodySection.line_end;
+  if (keepBody) {
+    const appendices = ledger.sections.filter(
+      (section) => section.level === 2 && section.title === "附录",
+    );
+    const existing = ledger.sections.find((section) => {
+      if (section.level !== 3 || !ledger.visible.has(section.line_start)) return false;
+      const match = ARCHIVE_HEADING.exec(loaded.lines[section.line_start - 1] ?? "");
+      return match?.[1] === idText &&
+        appendices.some((appendix) => section.line_start > appendix.line_start && section.line_start <= appendix.line_end);
+    });
+    if (existing) {
+      return err(
+        `issuemd close: 附录 already has an archive for #${idText} (L${existing.line_start}); ` +
+          "merge or remove it first, then close --keep-body\n",
+        3,
+      );
+    }
+  }
   // Criteria are stored once and must not vanish silently (spec §7.2): the
   // body is deleted by close, so whatever it says has to land somewhere.
   const fromBody = extractCriteria(bodyText);
@@ -1450,25 +1483,31 @@ function cmdClose(rest: string[], v: Values): CliResult {
   let archive: string[] | undefined;
   if (block) {
     if (keepBody) {
-      // Drop only the heading, then any leading blank lines: assuming a blank
-      // line follows the heading would silently eat the first body line of a
-      // tightly written ledger.
+      // Preserve the source block's lines exactly after its heading. The first
+      // blank separates heading from body; any additional edge blanks belong to
+      // the user's text and must survive close/reopen.
       const kept = bodyText.slice(1);
-      while (kept.length > 0 && kept[0]!.trim() === "") kept.shift();
-      while (kept.length > 0 && kept.at(-1)!.trim() === "") kept.pop();
-      const keptFenced = fencedLines(kept);
-      if (kept.some((line, index) => !keptFenced[index] && line.trim() === KEPT_BODY_END)) {
+      if (endsInFence(kept, true)) {
         return err(
-          `issuemd close: the body of #${idText} contains '${KEPT_BODY_END}' outside a code fence; ` +
-            "reopen would cut the body there. Fence it or remove it first (issuemd body)\n",
+          `issuemd close: the body of #${idText} ends inside an unclosed code fence; close the fence before archiving it\n`,
+          3,
+        );
+      }
+      const keptFenced = fencedLines(kept, true);
+      const marker = kept.findIndex((line, index) => !keptFenced[index] &&
+        (line.trim() === KEPT_BODY_VERSION || line.trim() === KEPT_BODY_START || line.trim() === KEPT_BODY_END));
+      if (marker !== -1) {
+        const value = kept[marker]!.trim();
+        return err(
+          `issuemd close: the body of #${idText} contains '${value}' outside a code fence; ` +
+            "reopen would misread the body boundary. Fence it or remove it first (issuemd body)\n",
           3,
         );
       }
       archive = [
         archiveHeading(idText, found.row.summary),
-        "",
-        `> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。`,
-        "",
+        KEPT_BODY_VERSION,
+        KEPT_BODY_START,
         ...kept,
         // An explicit end: text appended to 附录 later would otherwise belong
         // to this H3, and `reopen` would pull it into the issue body.
@@ -1480,33 +1519,28 @@ function cmdClose(rest: string[], v: Values): CliResult {
   if (archive) {
     // Locate 附录 *after* the body removal: it may sit before 正文, in which
     // case inserting first would shift the block we then delete.
-    const afterRemoval = parseLedger(lines.join("\n"));
+    const afterRemoval = parseLedger(joinDocument(lines, loaded.doc));
     const target = afterRemoval.sections.find((section) => section.level === 2 && section.title === "附录");
-    // An archive appended after an unclosed fence is code to every reader:
+    // Place the archive before the appendix's existing trailing blank lines so
+    // `reopen` can later restore those bytes instead of `terminate` discarding
+    // them when the archive is removed.
+    const scopeStart = target?.line_start ?? 0;
+    let last = target?.line_end ?? lines.length;
+    while (last > scopeStart && lines[last - 1] === "") last--;
+    const insertAt = last + 1;
+    // An archive inserted after an unclosed fence is code to every reader:
     // check and reopen would never see it (the body is gone for good).
-    const insertAt = target ? target.line_end : lines.length;
-    if (endsInFence(lines.slice(0, insertAt))) {
+    if (endsInFence(lines.slice(0, insertAt - 1))) {
       return err(
         `issuemd close: 附录 ends inside an unclosed code fence; close the fence first, ` +
           "or the kept body would be swallowed by it\n",
         3,
       );
     }
-    // A second archive for the same id (an old one without an end marker, a
-    // W252 leftover) would make reopen restore the wrong text.
-    const fencedNow = fencedLines(lines);
-    const existing = lines.findIndex((text, index) => !fencedNow[index] && ARCHIVE_HEADING.exec(text)?.[1] === idText);
-    if (existing >= 0) {
-      return err(
-        `issuemd close: 附录 already has an archive for #${idText} (L${existing + 1}); ` +
-          "merge or remove it first, then close --keep-body\n",
-        3,
-      );
-    }
     if (target) {
-      lines = insertLines(lines, target.line_end + 1, ["", ...archive]);
+      lines = insertLines(lines, insertAt, ["", ...archive]);
     } else {
-      lines = insertLines(lines, lines.length + 1, ["", "## 附录", "", ...archive]);
+      lines = insertLines(lines, insertAt, ["", "## 附录", "", ...archive]);
     }
   }
   // The row is located again after the archive insertion: 附录 may sit above
@@ -1525,6 +1559,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
 
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
     allowLost: (diagnostic) => diagnostic.code === "E102" && diagnostic.id === idText,
+    preserveTrailingBlanks,
   });
   if (keepBody && result.code === 0) {
     return { code: 0, stdout: result.stdout, stderr: result.stderr + `W250: kept the body of #${idText} by moving it into 附录\n` };
@@ -1618,32 +1653,71 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   // `close --keep-body` archived the body in 附录 precisely so it could be
   // recovered. Restore it instead of leaving an empty skeleton and a W250
   // heading that claims the (now open) issue still has a kept body.
-  const archiveHeading = new RegExp(`^#${idText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} .*（已关闭，正文保留）$`);
-  const archived = ledger.sections.find(
-    (section) => section.level === 3 && archiveHeading.test(section.title),
+  const appendices = ledger.sections.filter(
+    (section) => section.level === 2 && section.title === "附录",
   );
+  const archivedCandidates = ledger.sections.filter((section) => {
+    if (section.level !== 3 || !ledger.visible.has(section.line_start)) return false;
+    const match = ARCHIVE_HEADING.exec(loaded.lines[section.line_start - 1] ?? "");
+    return match?.[1] === idText &&
+      appendices.some((appendix) => section.line_start > appendix.line_start && section.line_start <= appendix.line_end);
+  });
+  if (archivedCandidates.length > 1) {
+    const locations = archivedCandidates.map(({ line_start }) => `L${line_start}`).join(", ");
+    return err(
+      `issuemd reopen: multiple archives for #${idText} in 附录 (${locations}); merge or remove duplicates first\n`,
+      3,
+    );
+  }
+  const archived = archivedCandidates[0];
   // The archive spans heading → end marker. Archives written before the
   // marker existed fall back to the H3's extent, minus trailing blank lines
   // (those separate it from whatever follows and must stay).
   let archiveSpan: { start: number; end: number } | undefined;
   let restored: string[] | undefined;
   if (archived) {
-    const fenced = fencedLines(loaded.lines);
+    const fenced = fencedLines(loaded.lines, true);
+    const versionLine = archived.line_start + 1;
+    const isVersioned = loaded.lines[versionLine - 1]?.trim() === KEPT_BODY_VERSION;
     let end = archived.line_end;
     for (let line = archived.line_start + 1; line <= archived.line_end; line++) {
       if (!fenced[line - 1] && loaded.lines[line - 1]!.trim() === KEPT_BODY_END) {
         end = line;
-        break;
+        if (isVersioned) break;
       }
     }
-    while (end > archived.line_start && loaded.lines[end - 1]!.trim() === "") end--;
-    // Only the archive's own marker and note line are markup; the same text
-    // inside the body (a fenced example) is content and must come back.
     const markerAt = !fenced[end - 1] && loaded.lines[end - 1]!.trim() === KEPT_BODY_END ? end : undefined;
-    const content = loaded.lines.slice(archived.line_start, markerAt ? end - 1 : end);
-    const noteAt = content.findIndex((line) => line.trim() !== "");
-    if (noteAt >= 0 && ARCHIVE_NOTE.test(content[noteAt]!)) content.splice(noteAt, 1);
-    restored = trimBlank(content);
+    // The version marker distinguishes current archives from legacy payloads
+    // that may contain the new start-marker text literally.
+    const startMarkerLine = versionLine + 1;
+    const startMarkerText = loaded.lines[startMarkerLine - 1];
+    if (isVersioned && (fenced[startMarkerLine - 1] || startMarkerText?.trim() !== KEPT_BODY_START)) {
+      return err(
+        `issuemd reopen: archive for #${idText} is missing its payload start marker; repair the archive first\\n`,
+        3,
+      );
+    }
+    if (isVersioned && markerAt == null) {
+      return err(
+        `issuemd reopen: archive for #${idText} is missing its visible end marker; restore it or repair the archive first\\n`,
+        3,
+      );
+    }
+    const payloadStart = isVersioned ? startMarkerLine : undefined;
+    if (payloadStart != null) {
+      restored = loaded.lines.slice(payloadStart, end - 1);
+    } else {
+      const content = loaded.lines.slice(archived.line_start, markerAt ? end - 1 : end);
+      if (markerAt) {
+        // Legacy archives have no payload-start marker. Preserve every line
+        // between the heading and end marker, including the old provenance note.
+        restored = content;
+      } else {
+        // Markerless legacy archives end at the H3 boundary. Preserve all
+        // content in that extent; trimming would silently discard edge lines.
+        restored = content;
+      }
+    }
     // The closed row's criteria may have been given on the command line and
     // exist nowhere in the archived text; preserve it as a labeled history value.
     const archivedCriteria = extractCriteria(restored);
@@ -1652,7 +1726,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
       restored.push("", `**关闭时判据**：${criterionEvidence}`);
     }
     // `close` inserted one blank line before the archive; take it back.
-    const start = archived.line_start > 1 && loaded.lines[archived.line_start - 2]!.trim() === ""
+    const start = archived.line_start > 1 && loaded.lines[archived.line_start - 2] === ""
       ? archived.line_start - 1
       : archived.line_start;
     archiveSpan = { start, end };
@@ -1682,15 +1756,21 @@ function cmdReopen(rest: string[], v: Values): CliResult {
 
   // Coordinates for the body block are taken after the index edit landed,
   // so they already reflect the one-line shift it caused.
-  const reopened = parseLedger(lines.join("\n"));
+  const reopened = parseLedger(joinDocument(lines, loaded.doc));
   const bodySection = reopened.sections.find(
     (section) => section.level === 2 && section.title === "正文",
   );
   if (!bodySection) return err("issuemd reopen: the 正文 section is missing\n", 3);
-  const bodyAt = bodyInsertAt(reopened, found.span, bodySection.line_end);
+  const hasRestoredBody = archived != null && restored != null;
+  const bodyBlocksAfterReopen = bodyBlocks(reopened);
+  const hasLaterBody = bodyBlocksAfterReopen.some((block) => compareIds(block.id, found.span) > 0);
+  const lastBodyBlock = bodyBlocksAfterReopen.at(-1);
+  const appendToEnd = hasRestoredBody && bodySection.line_end === lines.length && !hasLaterBody &&
+    (!lastBodyBlock || lastBodyBlock.end === bodySection.line_end);
+  const bodyAt = appendToEnd ? lines.length + 1 : bodyInsertAt(reopened, found.span, bodySection.line_end);
   let bodyLines: string[];
-  if (restored && restored.length > 0) {
-    bodyLines = [`### Issue ${spanText(found.span)}: ${found.row.summary}`, "", ...restored, ""];
+  if (hasRestoredBody) {
+    bodyLines = [`### Issue ${spanText(found.span)}: ${found.row.summary}`, ...restored!];
   } else {
     const acceptance = found.row.status === "已修" ? criterionEvidence : "";
     bodyLines = bodySkeleton(spanText(found.span), found.row.summary, acceptance);
@@ -1699,10 +1779,19 @@ function cmdReopen(rest: string[], v: Values): CliResult {
       if (criteriaAt >= 0) bodyLines[criteriaAt] = `**关闭理由**：${criterionEvidence}`;
     }
   }
-  lines = insertBlock(lines, bodyAt, bodyLines);
+  const restoreAtEof = appendToEnd;
+  const beforeBody = lines[bodyAt - 2];
+  const restoredBlock = hasRestoredBody && beforeBody !== undefined && beforeBody.trim() !== ""
+    ? ["", ...bodyLines]
+    : bodyLines;
+  lines = hasRestoredBody
+    ? insertLines(lines, bodyAt, restoredBlock)
+    : insertBlock(lines, bodyAt, bodyLines);
 
-  const result = commit(file, loaded, errors, lines, !!v["dry-run"]);
-  if (result.code !== 0 || extractCriteria(bodyLines.slice(2)) != null) return result;
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
+    preserveTrailingBlanks: restoreAtEof,
+  });
+  if (result.code !== 0 || extractCriteria(bodyLines.slice(1)) != null) return result;
   return {
     ...result,
     stderr: result.stderr + `issuemd reopen: #${idText} has no acceptance criteria; add **验收判据** before closing (W261)\n`,
@@ -1799,13 +1888,19 @@ function cmdRename(rest: string[], v: Values): CliResult {
   }
   // A kept-body archive heading is a third copy of the summary; keep it in
   // step, or it silently disagrees with the table forever (dogfood #40).
-  // Only archives inside the section recognized by check/reopen are managed.
-  const appendix = ledger.sections.find((section) => section.level === 2 && section.title === "附录");
-  if (appendix) {
-    const fenced = fencedLines(lines);
+  // Only archives inside a canonical 附录 section are managed; multiple
+  // appendix sections form one logical archive area.
+  const appendices = ledger.sections.filter((section) => section.level === 2 && section.title === "附录");
+  const archiveLines = new Set(
+    ledger.sections.filter((section) => section.level === 3 && ledger.visible.has(section.line_start) &&
+      appendices.some((appendix) => section.line_start > appendix.line_start && section.line_start <= appendix.line_end))
+      .map((section) => section.line_start),
+  );
+  const fenced = fencedLines(lines);
+  for (const appendix of appendices) {
     for (let line = appendix.line_start + 1; line <= appendix.line_end; line++) {
       const index = line - 1;
-      const match = fenced[index] ? null : ARCHIVE_HEADING.exec(lines[index]!);
+      const match = !archiveLines.has(line) || fenced[index] ? null : ARCHIVE_HEADING.exec(lines[index]!);
       if (match && match[1] === idText && unescapeCell(match[2]!) !== next) {
         lines[index] = archiveHeading(idText, next);
         reportTitle("archive title", unescapeCell(match[2]!));

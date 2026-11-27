@@ -259,11 +259,14 @@ test("with-body batch lookup stays below one second for 12,800 rows", async () =
   ].join("\n");
   const file = ledgerFile("large-batch.md", source);
   const started = performance.now();
+  const cpuStarted = process.cpuUsage();
   const result = await run(["list", file, "--json", "--with-body"]);
+  const cpu = process.cpuUsage(cpuStarted);
   const elapsed = performance.now() - started;
+  const cpuMs = (cpu.user + cpu.system) / 1000;
   expect(result.code).toBe(0);
-  console.log(`benchmark with-body 12,800 single-id rows: ${elapsed.toFixed(1)} ms`);
-  expect(elapsed).toBeLessThan(1_000);
+  console.log(`benchmark with-body 12,800 single-id rows: ${elapsed.toFixed(1)} ms wall, ${cpuMs.toFixed(1)} ms CPU`);
+  expect(cpuMs).toBeLessThan(1_000);
   const listed = JSON.parse(result.stdout);
   expect(listed.issueCount).toBe(count);
   expect(listed.issues[0]).toMatchObject({ id: "1", criteria: "item 1 is retained." });

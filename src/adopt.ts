@@ -21,8 +21,8 @@
 
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { countSuffix, isStatusWord, stripCountSuffixes, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
-import { archiveHeading, fencedLines, formatRow, guideBlockLines, KEPT_BODY_END, statusBlockLines, unescapeCell } from "./ledger-edit.js";
+import { bodyBlocks, countSuffix, isStatusWord, stripCountSuffixes, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
+import { archiveHeading, endsInFence, fencedLines, formatRow, guideBlockLines, KEPT_BODY_VERSION, KEPT_BODY_START, KEPT_BODY_END, statusBlockLines, unescapeCell } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
 
@@ -295,7 +295,7 @@ function rowsOf(blocks: Block[], badIds: BadIdRow[] = [], plainRows: number[] = 
 function plainStatus(raw: string): { word: string; keepRaw: boolean } | undefined {
   const emphasisFree = raw.replace(/\*\*|__|`/g, "").trim();
   let text = emphasisFree.replace(/^(?:✅|✔️|✔|☑️|☑)\s*/u, "").trim();
-  const annotated = /^(.*?)\s*[（(]([^（）()]*)[）)]$/.exec(text);
+  const annotated = /^([\s\S]*?)\s*[（(]([^（）()]*)[）)]$/.exec(text);
   if (annotated && STATUS_WORDS.has(annotated[1]!.trim())) text = annotated[1]!.trim();
   return STATUS_WORDS.has(text) ? { word: text, keepRaw: text !== emphasisFree } : undefined;
 }
@@ -309,7 +309,7 @@ function bodyHeadings(sections: Section[]): Body[] {
   const out: Body[] = [];
   for (const section of sections) {
     if (section.level !== 3) continue;
-    const match = /^Issue\s+(\d+[a-z]?)\s*:\s*(.*)$/.exec(section.title);
+    const match = /^Issue\s+(\d+[a-z]?)\s*:\s*([\s\S]*)$/.exec(section.title);
     if (!match) continue;
     out.push({
       idText: match[1]!,
@@ -396,7 +396,7 @@ function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
   let issueLevel = 0;
   const out = lines.map((line, index) => {
     if (fenced[index]) return line;
-    const outer = /^ {0,3}(#{1,3})[ \t]+(.*)$/.exec(line);
+    const outer = /^ {0,3}(#{1,3})[ \t]+([\s\S]*)$/.exec(line);
     if (outer) {
       const level = outer[1]!.length;
       if (/^Issue\s/.test(outer[2]!)) issueLevel = level;
@@ -405,7 +405,7 @@ function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
     if (issueLevel === 0) return line;
     // Closing `#`s are stripped only when whitespace separates them from the
     // text, as in CommonMark — `#### Use C#` keeps its `#`.
-    const match = /^ {0,3}(#{4,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+    const match = /^ {0,3}(#{4,6})[ \t]+([\s\S]+?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
     if (!match) return line;
     count++;
     return `**${match[2]}**`;
@@ -467,7 +467,7 @@ function stripCounts(lines: string[]): {
     if (fenced[index] || !/^ {0,3}#{1,6}[ \t]/.test(line)) return line;
     // check reads the title without ATX closing hashes (`## 旧（3） ##`) and
     // an issue heading's title without its `Issue N:` prefix.
-    const [, prefix, title, closing] = /^( {0,3}#{1,6}[ \t]+(?:Issue\s+[^:\s]+\s*:\s*)?)(.*?)((?:[ \t]+#+)?[ \t]*)$/.exec(line)!;
+    const [, prefix, title, closing] = /^( {0,3}#{1,6}[ \t]+(?:Issue\s+[^:\s]+\s*:\s*)?)([\s\S]*?)((?:[ \t]+#+)?[ \t]*)$/.exec(line)!;
     const stripped = stripCountSuffixes(title!);
     const next = stripped !== title ? prefix + stripped + closing : line;
     if (next !== line) {
@@ -492,6 +492,20 @@ export function adopt(src: string): AdoptResult {
   // W220 (a status outside the vocabulary) is the one warning adopt itself
   // reports on, so such a ledger still goes through the conversion.
   if (precheck.errors.length === 0 && !precheck.warnings.some(({ code }) => code === "W220")) {
+    const checkedSource = parseLedger(src);
+    for (const body of bodyBlocks(checkedSource)) {
+      const payload = checkedSource.lines.slice(body.line, body.end);
+      const fenced = fencedLines(payload, true);
+      const marker = payload.findIndex((line, index) => !fenced[index] &&
+        (line.trim() === KEPT_BODY_VERSION || line.trim() === KEPT_BODY_START || line.trim() === KEPT_BODY_END));
+      if (marker !== -1) {
+        const value = payload[marker]!.trim();
+        throw Object.assign(
+          new Error(`refusing to convert: issue body #${body.id.start}${body.id.suffix} contains reserved archive marker '${value}' at source L${body.line + marker + 1}`),
+          { code: "lost-content" },
+        );
+      }
+    }
     // A W225 table is not converted, but it is still there: saying only
     // "nothing to convert" hid the retained table from the reader (#56/#57).
     const cited = precheck.warnings.filter(({ code }) => code === "W225").length;
@@ -803,7 +817,7 @@ export function adopt(src: string): AdoptResult {
   let summaryCounts = 0;
   const isMultiId = (row: Row) => row.ids.length > 1 || /[–~-]/.test(row.idText);
   const headingTitleOf = (line: string) =>
-    /^ {0,3}#{1,3}[ \t]+Issue\s+[^:\s]+\s*:\s*(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line)?.[1] ?? "";
+    /^ {0,3}#{1,3}[ \t]+Issue\s+[^:\s]+\s*:\s*([\s\S]*?)(?:[ \t]+#+)?[ \t]*$/.exec(line)?.[1] ?? "";
   for (const row of open) {
     const body = bodyById.get(fullId(row));
     if (!body || isMultiId(row)) {
@@ -993,6 +1007,18 @@ export function adopt(src: string): AdoptResult {
       const content = body
         ? trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, id, body.line))
         : ["**现象**：", "", "**根因**：", "", "**期望**：", "", `**验收判据**：${row.criteria}`];
+      if (body) {
+        const fenced = fencedLines(content, true);
+        const marker = content.findIndex((line, index) => !fenced[index] &&
+          (line.trim() === KEPT_BODY_VERSION || line.trim() === KEPT_BODY_START || line.trim() === KEPT_BODY_END));
+        if (marker !== -1) {
+          const value = content[marker]!.trim();
+          throw Object.assign(
+            new Error(`refusing to convert: open issue body #${id} contains reserved archive marker '${value}' at source L${sourceLineOf(body.line)}`),
+            { code: "lost-content" },
+          );
+        }
+      }
       // The index has no criteria column. Criteria (or extra columns) an open
       // row carried in the old table go into its body instead of vanishing.
       // Extra columns are never 验收判据: a later `close` would promote them.
@@ -1201,13 +1227,33 @@ export function adopt(src: string): AdoptResult {
       });
     }
   }
+  if (archived.length > 0 && endsInFence(appendixOut)) {
+    throw Object.assign(
+      new Error("refusing to convert: existing 附录 ends inside an unclosed code fence; close the fence before archiving issue bodies"),
+      { code: "lost-content" },
+    );
+  }
   for (const row of archived) {
     const body = bodyById.get(fullId(row))!;
     usedBodyIds.add(body.idText);
-    // Same format as `close --keep-body`, so check (W250), rename and
-    // reopen treat an adopted archive exactly like one close wrote.
-    appendixOut.push(archiveHeading(row.idText, row.summary), "", "> adopt 时保留了原正文；状态见「已关闭」表。", "");
+    appendixOut.push(archiveHeading(row.idText, row.summary), KEPT_BODY_VERSION, KEPT_BODY_START);
     const content = trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, row.idText, body.line));
+    if (endsInFence(content, true)) {
+      throw Object.assign(
+        new Error(`refusing to archive issue body #${row.idText}: it ends inside an unclosed code fence at source L${sourceLineOf(body.line)}`),
+        { code: "lost-content" },
+      );
+    }
+    const fenced = fencedLines(content, true);
+    const marker = content.findIndex((line, index) => !fenced[index] &&
+      (line.trim() === KEPT_BODY_VERSION || line.trim() === KEPT_BODY_START || line.trim() === KEPT_BODY_END));
+    if (marker !== -1) {
+      const value = content[marker]!.trim();
+      throw Object.assign(
+        new Error(`refusing to convert: issue body #${row.idText} contains reserved archive marker '${value}' at source L${sourceLineOf(body.line)}`),
+        { code: "lost-content" },
+      );
+    }
     appendixOut.push(...(content.length ? content : ["（空）"]), KEPT_BODY_END, "");
   }
   // A body that lives inside preserved text is already copied with it; do not

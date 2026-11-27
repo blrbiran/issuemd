@@ -263,6 +263,35 @@ describe("adopt: third review round", () => {
     expect(result.stdout).toContain("已修");
   });
 
+  test("refuses to archive a closed body that ends inside a code fence", async () => {
+    const path = copy("cafe-shaped.md");
+    const source = readFileSync(path, "utf8").replace(
+      "### Issue 4: 工作项 4\n\n#### 验收判据",
+      "### Issue 4: 工作项 4\n\n```html" + String.fromCharCode(0x2028) + "info\nunclosed fence\n\n#### 验收判据",
+    );
+    writeFileSync(path, source);
+    const before = readFileSync(path, "utf8");
+
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain("unclosed code fence");
+    expect(result.stdout).toBe("");
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("refuses to append archives inside an unclosed appendix fence", async () => {
+    const path = copy("cafe-shaped.md");
+    const source = `${readFileSync(path, "utf8").trimEnd()}\n\n## 附录\n\n~~~html\nunclosed appendix fence\n`;
+    writeFileSync(path, source);
+    const before = readFileSync(path, "utf8");
+
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain("unclosed code fence");
+    expect(result.stdout).toBe("");
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
   test("an archived closed body keeps its blank lines and fences", async () => {
     const path = copy("canonical-clean.md");
     writeFileSync(path, readFileSync(path, "utf8")
@@ -271,7 +300,69 @@ describe("adopt: third review round", () => {
     expect(result.code).toBe(0);
     const out = after(path);
     expect(out).toContain("```\nline1\n\nline3\n```");
+    expect(out).toContain("<!-- issuemd:kept-body:start -->");
     expect((await run(["check", path])).code).toBe(0);
+  });
+
+  test("adopt keeps an archive marker inside a list-nested fence as body text", async () => {
+    const path = copy("cafe-shaped.md");
+    const marker = "<!-- issuemd:kept-body:start -->";
+    const source = readFileSync(path, "utf8").replace(
+      "#### 验收判据\n\n示例用例 4 给出预期结果。",
+      `#### 验收判据\n\n示例用例 4 给出预期结果。\n\n100. Marker example\n\n     ~~~html\n     ${marker}\n     ~~~`,
+    );
+    writeFileSync(path, source);
+
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    expect(readFileSync(path, "utf8")).toContain(marker);
+    expect((await run(["check", path])).code).toBe(0);
+  });
+
+  test("adopt handles U+2028 inside an issue heading title", async () => {
+    const path = copy("canonical-clean.md");
+    const summary = `侧栏${String.fromCharCode(0x2028)}宽度不可调`;
+    const source = readFileSync(path, "utf8")
+      .replace("## 索引", "## 待处理")
+      .replaceAll("侧栏宽度不可调", summary)
+      .replace("**验收判据**：重启后保持上次宽度。", "#### 验收判据\n\n重启后保持上次宽度。");
+    writeFileSync(path, source);
+
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(0);
+    expect((await run(["check", path])).code).toBe(0);
+    const shown = JSON.parse((await run(["show", path, "2", "--json"])).stdout);
+    expect(shown.summary).toBe(summary);
+    expect(shown.body.text).toContain("**根因**：宽度写死在 CSS 变量。");
+  });
+
+  test("no-op adopt refuses a reserved marker in an open issue body", async () => {
+    const path = copy("canonical-clean.md");
+    const marker = "<!-- issuemd:kept-body:start -->";
+    const source = readFileSync(path, "utf8")
+      .replace("**现象**：侧栏固定 240px，无法拖拽。", `**现象**：侧栏固定 240px，无法拖拽。\n\n${marker}`);
+    writeFileSync(path, source);
+    const before = readFileSync(path, "utf8");
+
+    const result = await run(["adopt", path]);
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain(marker);
+    expect(readFileSync(path, "utf8")).toBe(before);
+  });
+
+  test("refuses to adopt an open body containing a reserved archive marker", async () => {
+    const path = copy("canonical-clean.md");
+    const marker = "<!-- issuemd:kept-body:start -->";
+    const source = readFileSync(path, "utf8")
+      .replace("## 索引", "## 待处理")
+      .replace("**现象**：侧栏固定 240px，无法拖拽。", `**现象**：侧栏固定 240px，无法拖拽。\n\n${marker}`);
+    writeFileSync(path, source);
+    const before = readFileSync(path, "utf8");
+
+    const result = await run(["adopt", path, "--dry-run"]);
+    expect(result.code).toBe(3);
+    expect(result.stderr).toContain(marker);
+    expect(readFileSync(path, "utf8")).toBe(before);
   });
 
   test("2 and 2a are ordered by suffix, not only by number", async () => {

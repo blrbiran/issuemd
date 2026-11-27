@@ -3,8 +3,10 @@ import { buildSections, type Section } from "./sections.js";
 import { idText, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { STATUS_CLASSES } from "./statuses.js";
 
-export const ARCHIVE_HEADING = /^ {0,3}###\s+#([1-9]\d*[a-z]?)\s+(.*?)（已关闭，正文保留）\s*$/;
+export const ARCHIVE_HEADING = /^ {0,3}###[ \t]+#([1-9]\d*[a-z]?)[ \t]+([\s\S]*?)（已关闭，正文保留）(?:[ \t]+#+)?[ \t]*$/;
 
+export const KEPT_BODY_VERSION = "<!-- issuemd:kept-body:v2 -->";
+export const KEPT_BODY_START = "<!-- issuemd:kept-body:start -->";
 export const KEPT_BODY_END = "<!-- issuemd:kept-body:end -->";
 
 const CORE = ["索引", "已关闭", "正文"] as const;
@@ -337,7 +339,7 @@ function strayRows(
 type PipeBlock = { line: number; rows: string[][]; header: boolean; separator: boolean };
 export type { PipeBlock };
 export type BodyBlock = { id: IdSpan; title: string; line: number; end: number };
-export const ISSUE_HEADING = /^Issue\s+([^:\s]+)\s*:\s*(.*)$/;
+export const ISSUE_HEADING = /^Issue\s+([^:\s]+)\s*:\s*([\s\S]*)$/;
 const COLUMNS = {
   open: ["#", "状态", "P", "摘要"],
   closed: ["#", "状态", "P", "摘要", "判据"],

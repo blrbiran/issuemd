@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-26（第十九轮：dogfooding #97–#101）。写给下一位接手者。
+更新于 2026-11-27（第二十轮：dogfooding #23 追加复测缺口）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -15,12 +15,12 @@
 
 ## 一句话现状
 
-`issuemd` P0–P5 已完成。已发布版本为 `0.1.0`。外部 dogfooding 台账（`../issuemd_dogfooding/issue-20261124.md`）当前到 #101，状态由测试者维护。
+`issuemd` P0–P5 已完成。已发布版本为 `0.1.0`。外部 dogfooding 台账 `../issuemd_dogfooding/issue-20261124.md` 目前到 #101，由测试者维护状态；第二十轮复核发现并处理了 #23 的重复附录归档缺口。
 
-- 第十九轮修复 #97–#100，并补齐 #101 点出的 `split` 自动化覆盖缺口。已快进合入本地 `main`。待推送提交数用 `git rev-list --count origin/main..main` 现查。
-- `npm run typecheck && npm test` 通过，646 项。合入后的 `npm run build` 成功，`dist/bin/issuemd.js` 权限为 755。当前源码打成 `0.1.0` tarball 后离线安装冒烟通过。
-- 本轮只读检查结果（错误/警告）为 dogfood 0/6、cafe 0/6、orca archive 0/39。dogfood 的 6 条均为 W261，W262 为 0。三份 `adopt --dry-run` 均为 `(no changes)`。
-- 复测记录 #83、#85 和 #101 已覆盖第十四、十五、十八轮的主要路径。下一步请测试者复测第十九轮的 #97–#100，包括随 #98 修复的 #91 残项和随 #99 处理的 #86 改名提示。
+- 第十九轮修复 #97–#100 并补齐 #101 的 `split` 覆盖；第二十轮修复 #23 补充复测发现的重复附录归档遗漏。两轮均已快进合入本地 `main`。待推送提交数用 `git rev-list --count origin/main..main` 现查。
+- `npm run typecheck && npm test` 通过，690 项；`npm run build` 成功，`dist/bin/issuemd.js` 权限为 755。第十七轮大台账性能检查现在测 CPU 时间，12,800 条为 259 ms。
+- 最新源码只读检查：dogfood 0 errors / 6 warnings（W261 6，W262 0；snapshot 与本轮开始相同）；cafe 0 errors / 6 warnings（W201 1、W202 2、W221 1、W260 2）；orca archive 0 errors / 67 warnings（W201 7、W202 17、W206 1、W250 9、W261 33）。三份外部文件均未修改。
+- 下一步由测试者复测第十九轮 #97–#100；第二十轮 #23 重复附录场景已由回归测试覆盖。push 与发版由用户手动处理，建议版本仍为 `0.2.0`。
 
 ## 工作流约定（用户明确要求）
 
@@ -59,6 +59,18 @@
    - **接受不改的 4 项**见「第十四轮」小节（`--expand` 行序、snapshot 原始字节、`--with-body` 省键、close 选项互斥）。若想让 `list --expand` 按编号排序，或让 snapshot 跨编码相等，说一声即可——都只影响输出顺序/口径，改动很小。
 
 9. **第十一轮报审（备查）**：Q1 W225 编号占用（已执行，第十二轮维持）；Q2 更多「台账表小节」词（未做，推荐暂不做：改成 E124 会把 `## 已完成` 的行当开放项）；Q3 年份标题（第十二轮已做）；Q4 `list --json` 暴露被占用编号（第十二轮已做，`citedRows`）；Q5 台账复测留给测试者。
+
+## 第二十轮（2026-11-27）
+
+输入：dogfooding 台账更新后的完整只读复核。台账仍到 #101；逐项对照当前代码、spec、手册和历史复测，发现 #23 的补充复测尚未落到实现：重复 `## 附录` 时，check 与 rename 只管理第一节，reopen 的归档识别又与共享解析规则不同；close 的重复归档防护则误扫整个文件。
+
+- **#23 追加缺口**：多个 `## 附录` 继续允许存在，并作为同一个逻辑归档区处理。check 遍历全部附录，W250/W251/W252/W253 不遗漏后续节；rename 同步所有附录里的同号归档；reopen 只认附录内、共享 `ARCHIVE_HEADING` 规则识别出的唯一归档，出现多个时 exit 3、列出原始行号且不写入。标题只接受 Markdown scanner 认可的 ASCII 空格/制表符；合法 ATX 结尾 `#` 同样识别，NBSP 不会被误认为分隔符。
+- **close 防护**：`close --keep-body` 在原始快照上检查所有附录的归档，忽略附录外的相似示例；拒绝时引用原文件行号。写入仍放在第一个附录。
+- **归档格式与回归覆盖**：新 `close --keep-body` / `adopt` 归档带 `KEPT_BODY_VERSION`（`kept-body:v2`），并用 `KEPT_BODY_START`、`KEPT_BODY_END` 精确框住正文 payload；只有 version 标记存在时才按新格式解析，legacy archive 不会因正文里的字面 start/end 标记被误截断。新归档不把 provenance note 混进 payload，正文不能在 fence 外包含任一保留标记。legacy archive 保留 H3 到 end marker/H3 边界之间的全部内容，包括正文里的字面标记和旧 provenance note。round20 覆盖多附录 check/rename/reopen、tab/ATX/NBSP/U+2028 archive headings、U+2028 body title + H4 adoption、fence info separator 与 list-nested fence marker、close/adopt 对 unclosed body/appendix fence 和 marker collision 的拒绝、legacy marker/note 字面行与 H3 EOF、final/newline EOF、正文节后 H1 定位；adopt 的 no-op/open/closed body marker protection 也有用例。无 final newline 文件的多余空白按 `terminate` 既有契约规范为一个分隔空行。
+- **旧 P1 复核**：#18 的 exit 4、写锁、snapshot 与 `--if-unchanged` 已覆盖可重试冲突及复核后写入；额外写命令 JSON 仍无必要。#22 现行 spec 与实现一致：裸 `close` 自动提升非空判据，缺判据须显式选择，`--keep-body` 保留正文；已关闭空判据 warning 会把大量合法历史行变成 strict 噪声，不加。#46 的主要丢失/复制风险由 adopt 的内容与编号守恒门禁拦截；通用重复散文 warning 噪声高，独立 `adopt --verify` 暂不做。上述三项经当前代码与问题现场重新评估，维持实现。
+- `round17.test.ts` 的大台账性能门槛改为测 CPU 时间；本轮 12,800 条实测 CPU 259 ms。无 final newline 文件的多余空白按 `terminate` 既有规则规范成一个分隔空行。
+- `npm run typecheck && npm test` 通过，690 项；dogfooding 台账只读检查 0 errors、6 条 W261、0 条 W262，快照未变。外部台账未修改，issue 状态留给测试者维护。
+- 后续仍由测试者复测 #97–#100；用户手动 push，发布时机自定，建议版本仍为 `0.2.0`。
 
 ## 第十九轮（2026-11-26）
 
@@ -443,12 +455,12 @@ issuemd <command> --help
   - `missingIssue(verb, id)` / `badIdText()`：写命令的「没有这条」走 stderr；`show` 仍用 stdout 的 `(no such issue: N)`。`badIdText` 遇到多号形状（`30, 31`，`parseIds` 得到多个 span）时点名这些号并指向 `list --expand`（第十三轮，dogfood #71）。
   - 读命令的一致性 helper（第十三轮）：`structureNote(errors, knownLines)` / `diagnosticsField(errors)`。`cmdList` / `cmdCounts` / `cmdShow` 各跑一次 `checkLedger`；stderr 的 note 与 `--json` 的 `diagnostics` 都只在有 error 时出现。**N 是 `check` 的全部 error 数**（第十四轮：不因错误都在不可读行上而整体抑制）；`known` 只用于挑「first」，逐行细节仍由 `unreadableNote` / `diagnostics` 给出。`cmdShow` 的 `withNote` 现在拼 `structureNote + inheritedNote + twinNote`，查无此号的分支也拼 `structureNote`。
   - `list --with-body`（第十三轮 / 第十七轮）：`withBody(ledger, issue, index)` 在 `ledger-read.ts`，与 `viewIssue` 同源解析兄弟号正文（含区间行内部号，`bodyFrom` 标明）；必须配 `--json`，否则 exit 2。`cmdList` 按本次输出 ID 构造一次 `indexWithBody(ledger, issues, blocks)`，不展开未请求的区间编号；区间正文回退按 suffix + ID 二分取候选，并按行缓存，exact body 始终优先。显式同号行索引阻止错误借正文；扩大行序仍与 `findRow` 一致（#81/#82 复审修复）。两条读取路径都把正文块切片后调 `labelsIn`/`labelBlock`/`extractCriteria`。
-  - `readBodyFile` 剥 BOM 与开头空行，拒绝 fence 外的 `KEPT_BODY_END`。reopen 的归档恢复只剥「结束标记所在那一行」与「第一条非空行若是 ARCHIVE_NOTE」。
+  - `readBodyFile` 剥 BOM 与开头空行，拒绝 fence 外的 `KEPT_BODY_VERSION` / `KEPT_BODY_START` / `KEPT_BODY_END`。新归档带 version 标记，reopen 按 start/end 标记间的原行恢复；legacy archive 不按新标记猜边界，全部内容（含字面标记和旧 provenance note）保留进恢复的正文。
 - **`src/ledger-edit.ts`**：
   - `escapeCell` / `unescapeCell`：竖线前反斜杠为奇数才算已转义，与 `ledger.ts` 的 `splitCells` 读法一致。标题输入用 `unescapeCell` 归一，别再写 `.replace(/\\\|/g, "|")`。
   - `extractCriteria()` 合并所有非空 `**验收判据**` 块（去重，`joinClauses` 连接：前段以 `；`/`;` 结尾时不再加 `；`）；close 提升与 `show --json criteria` 都走它。`labelName()` 把 `**验收判据：**` 归一成 `验收判据`，labelBlock / labelsIn / W206 都用它。
   - `labelBlock()` 是唯一的标签解析：从 `**标签**` 行到下一个标签行或标题；空行、列表、fence 内容都属于它。**fence 内与本标签同名的标签行不算内容**（第十三轮，dogfood #61；只跳同名标签，Gherkin 的 `**Given**` 仍是判据——复审(16) 4）；块内 fence 允许任意缩进（`fencedLines(own, Infinity)`），列表项里的示例也能识别。fence 里的普通内容（`npm test`）仍算判据。`findLabel`、`extractCriteria`、`show --json labels` 都走它。
-  - 归档格式常量：`archiveHeading()`、`ARCHIVE_HEADING`、`ARCHIVE_NOTE`、`KEPT_BODY_END`。close / adopt / reopen / rename / check 共用，改格式只改这里，并跑 `keep-body round trip`。
+  - 归档格式常量：`archiveHeading()`、`ARCHIVE_HEADING`、`KEPT_BODY_VERSION`、`KEPT_BODY_START`、`KEPT_BODY_END`。close / adopt / reopen / rename / check 共用，改格式只改这里，并跑 `keep-body round trip`。
   - `ledger-edit` 与 `ledger-check` 互相 import（只在函数里用对方，模块初始化时不能用）。
 - **`src/ledger.ts`**：
   - `parseLedger` 的 `unreadable: UnreadableRow[]`：E108/E109 丢掉的表行，**以及 E124 的「游离行」**（`table: "stray"`）。下游（`maxIssueId`、`new --id` 撞号、`show` exit 3、`unreadableNote`、`list --json unreadableRows`）都靠它，所以 E124 行自动被保留编号。
@@ -528,6 +540,7 @@ issuemd <command> --help
 
 ## 仍然接受的已知项
 
+- **Legacy 归档没有版本标记时只能按 H3/最后可见 end marker 取边界**（第二十轮）：如果旧归档正文里恰好出现 `<!-- issuemd:kept-body:end -->`，`reopen` 会把它当成末行边界，后面的字面内容留在附录而不是被恢复。新归档带 `kept-body:v2` 标记，不受影响。手工修复方式是把那行放进 fence 或改成实体写法；不要再去猜 legacy 内容，猜测会删掉真实正文。
 - **W261 会让历史台账的 `--strict` 变红**（第十三轮）：三份真实台账分别有 5 / 1 / 20 条开放项没有非空 `验收判据`（`check` 仍是 0 error）。这是「每条 issue 都应可验证」的直接代价；若下一轮觉得太吵，可讨论把 W261 收进一个只在 `--strict` 下启用的子级开关，但不要静默删掉它——空骨架正是 #62 的病灶。
 - **摘要查重把「所有空白差异」当同一条**（第十三轮 #65）：`支持 IE11` / `支持 IE 11`、`Fix CSV` / `FixCSV` 会被 `new` 拒绝并报 W212。中文标题里空格不承载语义，英文里去掉空格也不是另一种写法，所以接受；真需要并存的用 `--allow-duplicate-title`。
 - **读命令的 `diagnostics.errors` 与 error 数同长**：误把整份台账写成坏表时，`list --json` 会带很多条（与 `check --json` 一致）。消费者应按 `code`/`id` 自行截断。

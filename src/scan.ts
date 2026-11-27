@@ -197,7 +197,7 @@ export function fencedLines(lines: string[], inBody = false): boolean[] {
     if (fence && fence.margin > indent && text) fence = undefined;
     if (!fence && inBody && text && indent < listMargin) listMargin = 0;
     const margin = fence?.margin ?? listMargin;
-    const delimiter = indent >= margin && indent - margin <= 3 ? /^(`{3,}|~{3,})(.*)$/.exec(text) : null;
+    const delimiter = indent >= margin && indent - margin <= 3 ? /^(`{3,}|~{3,})([\s\S]*)$/.exec(text) : null;
     if (!fence) {
       if (delimiter && !(delimiter[1]!.startsWith("`") && delimiter[2]!.includes("`"))) {
         fence = { char: delimiter[1]![0]!, len: delimiter[1]!.length, margin };
