@@ -68,6 +68,10 @@ test.each([
   "登记在本台账 #999",
   "记录在本台账 #999",
   "根据本台账 #999",
+  "参考本台账 #999",
+  "依照本台账 #999",
+  "基于本台账 #999",
+  "按照本台账 #999",
   "this ledger #999",
   "the current ledger #999",
 ])("self-ledger mention %j is local above the ceiling", async (reference) => {

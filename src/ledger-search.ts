@@ -71,7 +71,9 @@ function sourceRanges(ledger: Ledger): SourceRange[] {
 }
 
 const SELF_LEDGER = /^(?:本|该|这|此|同一|当前|current|本文|本文件|本文档|本份|这份|该份|当前这份|this)$/iu;
-const REFERENCE_PREFIX = /^(?:请|另|参|详|关于|根据|依据|参考|记载在|记录在|记在|登记在|写在|列在|见|据|按|如|在)/u;
+// Longer particles come first: `参考本` must strip `参考` (not `参`, which
+// would leave `考本` and flip the reference to external).
+const REFERENCE_PREFIX = /^(?:关于|根据|依据|参考|依照|按照|基于|记载在|记录在|记在|登记在|写在|列在|参见|详见|请|另|参|详|见|据|按|如|在)/u;
 const LEDGER_MENTION = /([\p{L}\p{N}_./-]+)[ \t]*(?:台账|ledger)/giu;
 const LEDGER_FILE = /[^\s`]*?(?:dogfood|ledger|issue-\d{8})[^\s`]*?\.md/giu;
 
