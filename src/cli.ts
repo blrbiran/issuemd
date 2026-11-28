@@ -35,7 +35,7 @@ import { matchProgressCue } from "./progress-matcher.js";
 import { buildSections, countLines } from "./sections.js";
 import { decodeDocument, joinDocument, readRaw, writeAtomically, type Document } from "./io.js";
 import { parseId, parseIds, compareIds, IdSet, type IdSpan } from "./issue-id.js";
-import { archiveInventory as discoverArchives, archivePayloadRange, archivePayloadSnapshot, hiddenArchiveRefusal, locateArchivePayload, validateSerializedArchive, bodyBlocks, countSuffix, DEFAULT_LIMITS, effectiveLimits, highWaterRecords, HIGH_WATER_MARKER, htmlBlockLines, LIMITS_MARKER, limitsRecords, maxIssueId, parseLedger, prunableArchive, type Diagnostic } from "./ledger.js";
+import { archiveInventory as discoverArchives, archivePayloadRange, archivePayloadSnapshot, archiveFramingSnapshot, hiddenArchiveRefusal, locateArchivePayload, validateSerializedArchive, bodyBlocks, countSuffix, DEFAULT_LIMITS, effectiveLimits, highWaterRecords, HIGH_WATER_MARKER, htmlBlockLines, LIMITS_MARKER, limitsRecords, maxIssueId, parseLedger, prunableArchive, type Diagnostic } from "./ledger.js";
 import { checkLedger, checkParsedLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
 import { findLedgerText, proseReferences } from "./ledger-search.js";
 import { buildMoveEvidence, validateMoveEvidence } from "./move-evidence.js";
@@ -150,8 +150,8 @@ const OPTION_HELP: Record<string, string> = {
   append: "--append                  body: add text at the end of the existing issue body",
   "move-evidence": "--move-evidence <LABEL>   body: move one visible evidence block into 附录 and link it from the body",
   criteria: "--criteria <TEXT>         criteria: replace the open body's acceptance criteria with one Markdown line\n" +
-    "                            close: on an open id, requires --status and removes the body unless --keep-body\n" +
-    "                            close: on a closed id, correct the criteria cell only",
+    "                            close: table-cell text; on an open id, requires --status and removes the body unless --keep-body\n" +
+    "                            close: on a closed id, correct the criteria cell only; \\| spells a literal pipe",
   "criteria-from-body":
     "--criteria-from-body      close: lift the **验收判据** block into the column (the default\n" +
     "                            when the body has one); refuses if it is missing or empty",
@@ -480,8 +480,13 @@ function cmdCheck(rest: string[], v: Values): CliResult {
     }
     const size = ledgerSize(ledger, loaded.src);
     const archive = size.archivedBlocks > 0 ? ` · archived ${size.archivedLines} in ${size.archivedBlocks} block(s)` : "";
+    const warningGroups = [
+      ["format", report.warnings.filter(({ code }) => code === "W202").length],
+      ["artifacts", report.warnings.filter(({ code }) => code === "W201" || code === "W250").length],
+      ["other", report.warnings.filter(({ code }) => code !== "W202" && code !== "W201" && code !== "W250").length],
+    ].filter(([, count]) => Number(count) > 0).map(([name, count]) => `${String(name)} ${Number(count)}`).join(", ");
     lines.push(
-      `${report.errors.length} errors, ${report.warnings.length} warnings · ${(size.bytes / 1024).toFixed(1)} KiB / ${size.lines} lines · body ${size.bodyLines}${archive}`,
+      `${report.errors.length} errors, ${report.warnings.length} warnings${warningGroups ? ` · ${warningGroups}` : ""} · ${(size.bytes / 1024).toFixed(1)} KiB / ${size.lines} lines · body ${size.bodyLines}${archive}`,
     );
     return { code, stdout: lines.join("\n") + "\n", stderr: "" };
   } catch (error) {
@@ -716,7 +721,7 @@ function cmdShow(rest: string[], v: Values): CliResult {
 
   if (v["body-only"]) {
     if (view.table === "closed" && (!view.body?.archived || view.body.id !== view.id)) {
-      const hidden = hiddenArchiveNote(discoverArchives(ledger), view.id);
+      const hidden = hiddenArchiveNote(discoverArchives(ledger), view.id, ledger);
       if (hidden) return withNote(err(`issuemd show: ${hidden}\n`));
     }
     if (!view.body || view.body.inherited || (view.table === "closed" && !view.body.archived)) {
@@ -1233,8 +1238,13 @@ function perIdRefusal(verb: string, idText: string, found: NonNullable<ReturnTyp
   return err(`issuemd ${verb}: #${idText} ${what}; split the row first: issuemd split FILE ${idText}\n`, 2);
 }
 
-function hiddenArchiveNote(inventory: ReturnType<typeof discoverArchives>, id: string): string | undefined {
-  if (inventory.archives.some((archive) => archive.id === id)) return undefined;
+function hiddenArchiveNote(inventory: ReturnType<typeof discoverArchives>, id: string, ledger: ReturnType<typeof parseLedger>): string | undefined {
+  const visible = inventory.archives.filter((archive) => archive.id === id);
+  const malformed = visible
+    .map(({ section }) => locateArchivePayload(ledger, section, inventory.masks).refusal)
+    .find((refusal) => refusal?.recognized);
+  if (malformed) return `#${id}: ${malformed.reason} (L${malformed.line})`;
+  if (visible.length > 0) return undefined;
   const refusal = hiddenArchiveRefusal(inventory, id);
   if (refusal) return `#${id}: ${refusal.reason} (${refusal.lines.map((line) => `L${line}`).join(", ")})`;
 }
@@ -1477,7 +1487,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   // Ids cited by W225 tables are reserved but not issues: skip them one by
   // one instead of jumping past the largest (an error-code table citing 500
   // must not move the next issue to 501).
-  const proseReservations = new Map(proseReferences(ledger).reverse().map((reference) => [reference.id, reference]));
+  const proseReservations = new Map(proseReferences(ledger).filter(({ external }) => !external).reverse().map((reference) => [reference.id, reference]));
   let next = max + 1;
   if (v.id == null) while (Number.isSafeInteger(next)) {
     const cited = unreadableHolding(ledger, String(next), ledger.cited);
@@ -1555,7 +1565,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   const committed = commit(file, loaded, errors, lines, !!v["dry-run"], {
     receipt: `#${idText} new`,
     validateCandidate(candidate) {
-      const reference = proseReferences(candidate).find(({ id }) => id === idText);
+      const reference = proseReferences(candidate).find(({ id, external }) => id === idText && !external);
       if (reference) {
         return err(`issuemd new: id ${idText} is reserved by a prose reference in the proposed ledger at L${reference.line}; pick another --id or edit the incoming text\n`, 2);
       }
@@ -1594,8 +1604,14 @@ function duplicateAppendixRefusal(verb: string, appendices: { line_start: number
   return err(`issuemd ${verb}: W266 multiple ## 附录 sections (${locations}); resolve the duplicate headings before writing archives\n`, 2);
 }
 
-function criteriaPipeNote(criteria: string): string {
-  return criteria.includes("|") ? "W205: pipes in --criteria are escaped in the Markdown cell; input \\| denotes a literal pipe\n" : "";
+function criteriaPipeNote(criteria: string, raw: string): string {
+  const pipe = criteria.includes("|")
+    ? "W205: pipes in --criteria are escaped in the Markdown cell; input \\| denotes a literal pipe\n"
+    : "";
+  const rewritten = unescapeCell(raw) !== raw
+    ? `--criteria was read as table-cell text; stored value is ${JSON.stringify(criteria)} (write \\\\| for a literal backslash before a pipe)\n`
+    : "";
+  return pipe + rewritten;
 }
 
 function cmdClose(rest: string[], v: Values): CliResult {
@@ -1636,7 +1652,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
     const lines = [...loaded.lines];
     lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 4, criteria);
     return commit(file, loaded, errors, lines, !!v["dry-run"], {
-      report: `updated #${idText} criteria: ${JSON.stringify(found.row.criteria)} → ${JSON.stringify(criteria)}\n` + criteriaPipeNote(criteria),
+      report: `updated #${idText} criteria: ${JSON.stringify(found.row.criteria)} → ${JSON.stringify(criteria)}\n` + criteriaPipeNote(criteria, v.criteria),
       receipt: `#${idText} criteria`,
     });
   }
@@ -1672,7 +1688,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
         3,
       );
     }
-    const hidden = hiddenArchiveNote(archiveIndex, idText);
+    const hidden = hiddenArchiveNote(archiveIndex, idText, ledger);
     if (hidden) return err(`issuemd close: ${hidden}\n`, 3);
   }
   // Criteria are stored once and must not vanish silently (spec §7.2): the
@@ -1734,7 +1750,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
   // `new`/`rename` tell the caller a pipe was escaped in the cell (W205);
   // `close --criteria` used to rewrite the input just as silently (dogfood
   // #111). Report it on the same terms.
-  const escapedNote = v.criteria == null ? "" : criteriaPipeNote(criteria);
+  const escapedNote = v.criteria == null ? "" : criteriaPipeNote(criteria, v.criteria);
   // A table cell cannot store a backslash directly before `|`: the reader
   // takes it as a pipe escape (`echo a \| b` reads back as `echo a | b`), so
   // promoting the text would change it silently. Refuse and name the ways
@@ -1843,7 +1859,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
     const hint = overLimit ? `W201: #${idText} ${overLimit.message}\n` : "";
     return {
       code: 0, stdout: result.stdout,
-      stderr: result.stderr + `W250: kept the body of #${idText} by moving it into 附录\n` + escapedNote + hint,
+      stderr: result.stderr + `W250: kept the body of #${idText} by moving it into 附录; remove with 'issuemd prune FILE ID' when reopen is no longer needed (verified v2/v3 archives only)\n` + escapedNote + hint,
     };
   }
   return result.code === 0 && escapedNote ? { ...result, stderr: result.stderr + escapedNote } : result;
@@ -1949,7 +1965,7 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   }
   const archived = archivedCandidates[0]?.section;
   if (!archived) {
-    const hidden = hiddenArchiveNote(archiveIndex, idText);
+    const hidden = hiddenArchiveNote(archiveIndex, idText, ledger);
     if (hidden) return err(`issuemd reopen: ${hidden}\n`, 3);
   }
   // The archive spans heading → end marker. Archives written before the
@@ -2743,13 +2759,6 @@ const errorIdentity = (diagnostics: Diagnostic[]) => diagnostics
   .sort()
   .join("\n");
 
-function archiveByteInventory(ledger: ReturnType<typeof parseLedger>, excludeLine?: number): string[] {
-  return discoverArchives(ledger).archives
-    .filter(({ section }) => section.line_start !== excludeLine)
-    .map(({ id, section }) => `${id}\n${ledger.lines.slice(section.line_start - 1, section.line_end).join("\n")}`)
-    .sort();
-}
-
 /** Delete one explicitly confirmed kept-body archive; the closed row stays. */
 function cmdPrune(rest: string[], v: Values): CliResult {
   const [file, idText] = rest;
@@ -2772,7 +2781,7 @@ function cmdPrune(rest: string[], v: Values): CliResult {
     const where = locations ? ` (${locations})` : "";
     return err(`issuemd prune: #${idText}: ${found.refusal.reason}${where}; nothing written\n`, found.refusal.code);
   }
-  const { start, section, end } = found.target;
+  const { start, end } = found.target;
   const candidate = loaded.lines.slice();
   candidate.splice(start - 1, end - start + 1);
   const candidateLines = terminate(candidate, loaded.doc, loaded.lines, true);
@@ -2781,8 +2790,9 @@ function cmdPrune(rest: string[], v: Values): CliResult {
   if (errorIdentity(errors) !== errorIdentity(afterErrors)) {
     return err("issuemd prune: refusing to write; the deletion would change existing check errors\n", 3);
   }
-  if (JSON.stringify(archiveByteInventory(ledger, section.line_start)) !== JSON.stringify(archiveByteInventory(candidateDoc))) {
-    return err("issuemd prune: refusing to write; another archive's bytes or boundary would change\n", 3);
+  if (JSON.stringify(archivePayloadSnapshot(candidateDoc, idText)) !== JSON.stringify(archivePayloadSnapshot(ledger, idText)) ||
+      JSON.stringify(archiveFramingSnapshot(candidateDoc, idText)) !== JSON.stringify(archiveFramingSnapshot(ledger, idText))) {
+    return err("issuemd prune: refusing to write; another archive's payload or framing would change\n", 3);
   }
   return commit(file, loaded, errors, candidateLines, dry, {
     preserveTrailingBlanks: true,

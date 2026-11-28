@@ -289,6 +289,8 @@ function qualifiedLabelLine(line: string): { label: string; rest: string } | und
   }
 }
 function parseLabelLine(line: string): { label: string; rest: string } | undefined {
+  const emphasis = /^ {0,3}\*\*([^*]+)\*\*[ \t]*$/.exec(line);
+  if (emphasis && /^(?:注意|提醒|重要提示|警告)[：:]/.test(emphasis[1]!) && /[。！？.!?]$/.test(emphasis[1]!)) return;
   const match = LABEL_LINE.exec(line);
   if (!match) return qualifiedLabelLine(line);
   return match[1] != null
@@ -359,6 +361,52 @@ export function criteriaSupplementHint(lines: string[], offset = 0, fenced?: boo
 }
 
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
+type ListMarker = { ordered: boolean; number?: bigint };
+function listMarker(line: string): ListMarker | undefined {
+  const match = /^[ \t]*([-*+]|\d+[.)])[ \t]+\S/.exec(line);
+  if (!match) return undefined;
+  const token = match[1]!;
+  return /^\d/.test(token) ? { ordered: true, number: BigInt(token.slice(0, -1)) } : { ordered: false };
+}
+
+/** A review/boundary section heading, not a criteria item that got cut off. */
+function isReviewSectionLabel(label: string): boolean {
+  const text = labelName(label);
+  // A label that can name criteria is a boundary, not a review heading.
+  if (/判据|判定标准|完成标准|验收标准|必须满足/.test(text)) return false;
+  if (/^(?:注意|提醒|重要提示|警告)[：:]/.test(text) && /[。！？.!?]$/.test(text)) return true;
+  let bare = text;
+  for (;;) {
+    const next = bare.replace(/[ \t]*[（(][^（）()]*[）)][ \t]*$/u, "").trim();
+    if (next === bare) break;
+    bare = next;
+  }
+  if (/[？?]$/.test(bare)) return true;
+  return /^(?:第[一二三四五六七八九十百千\d]+轮|本轮|下一轮)/.test(text) ||
+    /(?:复测|复核|核对|实测|边界|非目标|复测记录|复核记录|追加现场|相邻项|风险点|代码锚点|证据文件)$/.test(bare);
+}
+
+/** Whether the first list after a boundary continues the list already in the block. */
+function continuesCriteriaList(blockLines: string[], blockLine: number, boundaryLine: number, visibility: BodyVisibility, fenced: boolean[]): boolean {
+  let earlier: ListMarker | undefined;
+  for (let index = 0; index < blockLines.length; index++) {
+    const absolute = blockLine + index;
+    if (fenced[absolute - 1] || visibility.hidden[absolute - 1]) continue;
+    const marker = listMarker(visibility.text[absolute - 1] ?? blockLines[index]!);
+    if (marker) earlier = marker;
+  }
+  if (!earlier) return false;
+  for (let line = boundaryLine + 1; line <= visibility.text.length; line++) {
+    if (fenced[line - 1] || visibility.hidden[line - 1]) continue;
+    const text = visibility.text[line - 1]!;
+    if (/^ {0,3}#{1,6}(?:\s|$)/.test(text) || parseLabelLine(text)) return false;
+    const later = listMarker(text);
+    if (!later) continue;
+    if (earlier.ordered && later.ordered) return later.number! > earlier.number!;    return !earlier.ordered && !later.ordered;
+  }
+  return false;
+}
+
 type ListMargins = { startColumn: number; contentColumn: number };
 function advanceColumns(text: string, start = 0): number {
   let column = start;
@@ -660,16 +708,12 @@ export function criteriaBoundaryHints(
     const separateNonGoals = /^\*\*非目标\*\*[ \t]*$/.test(lines[boundary.line - 1]!) &&
       lines[boundary.line - 2]?.trim() === "";
     if (separateNonGoals || isCriteriaLabel(label)) continue;
-    const stop = blocks.find(({ line }) => line > boundary.line)?.line ?? lines.length + 1;
-    for (let next = boundary.line; next < stop - 1; next++) {
-      if (visibility.hidden[next] || fenced[next]) continue;
-      const text = visibility.text[next]!;
-      if (/^ {0,3}#{1,6}(?:\s|$)/.test(text)) break;
-      if (LIST_ITEM.test(text)) {
-        hints.push({ line: boundary.line + offset, detail: `standalone bold label **${standalone[1]}** separates possible criteria items` });
-        break;
-      }
-    }
+    if (/^\*\*/.test(lines[boundary.line - 1]!) && isReviewSectionLabel(label)) continue;
+    // A heading followed by a fresh list is a section, not a cut criteria list.
+    // Only an item that continues the block's numbering (or another bullet
+    // list) can hide criteria behind the boundary.
+    if (!continuesCriteriaList(block.lines, block.line, boundary.line, visibility, fenced)) continue;
+    hints.push({ line: boundary.line + offset, detail: `standalone bold label **${standalone[1]}** separates possible criteria items` });
   }
   return hints;
 }

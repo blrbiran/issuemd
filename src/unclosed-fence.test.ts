@@ -35,8 +35,9 @@ test("W270 points to an unclosed fence in the last managed issue body", async ()
   expect(checked.code).toBe(0);
   expect(value.warnings).toContainEqual(expect.objectContaining({
     code: "W270", id: "4", line: lineOf(source, opener),
-    message: expect.stringContaining("close the fence"),
+    message: expect.stringContaining("close --keep-body"),
   }));
+  expect(value.warnings.find((item: { code: string }) => item.code === "W270").message).toContain("reopen");
   expect((await run(["check", path, "--strict"])).code).toBe(3);
 });
 

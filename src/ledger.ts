@@ -765,6 +765,23 @@ export function locateArchivePayload(
     : versionText.trim() === KEPT_BODY_VERSION_V3 ? "v3"
       : undefined;
   const versionish = /^\s*<!-- issuemd:kept-body:v\d+ -->\s*$/.test(versionText);
+  // A visible archive heading may have its envelope lines wrapped in a fence,
+  // comment, or raw HTML block. Detect only the compact header position; legacy
+  // payload is unrestricted text and may contain marker-looking examples.
+  const hiddenHeaderMarker = (() => {
+    const candidates = [headingLine + 1, headingLine + 2, headingLine + 3]
+      .filter((line) => line <= section.line_end);
+    for (const line of candidates) {
+      const text = lines[line - 1]!.trim();
+      const versionMarker = /^<!-- issuemd:kept-body:v\d+ -->$/.test(text);
+      const startMarker = text === KEPT_BODY_START;
+      const countMarker = /^<!-- issuemd:kept-body:lines:(0|[1-9]\d*) -->$/.test(text);
+      if (versionMarker && hidden(line)) return line;
+      if ((startMarker || countMarker) && hidden(line) && candidates.some((prior) => prior < line && /^<!-- issuemd:kept-body:v\d+ -->$/.test(lines[prior - 1]!.trim()))) return line;
+    }
+    return undefined;
+  })();
+  if (hiddenHeaderMarker != null) return refusal(hiddenHeaderMarker, "kept-body envelope marker is hidden inside a literal block");
   const displacedVersion = (() => {
     for (let line = headingLine + 1; line <= Math.min(section.line_end, headingLine + 3); line++) {
       if (!visibleLine(line)) continue;
@@ -886,6 +903,17 @@ export function archivePayloadSnapshot(ledger: ReturnType<typeof parseLedger>, e
   return entries.sort().join("\n---\n");
 }
 
+export function archiveFramingSnapshot(ledger: ReturnType<typeof parseLedger>, excludeId?: string): string {
+  const inventory = archiveInventory(ledger);
+  const entries = inventory.archives.flatMap(({ id, section }) => {
+    if (id === excludeId) return [];
+    const located = locateArchivePayload(ledger, section, inventory.masks);
+    if (!located.range) return [`${id}:!${located.refusal?.reason ?? "missing framing"}`];
+    return [`${id}:${ledger.lines.slice(section.line_start - 1, located.range.framingEnd).join("\n")}`];
+  });
+  return entries.sort().join("\n---\n");
+}
+
 export function archiveEnvelopeDiagnostics(ledger: ReturnType<typeof parseLedger>): Diagnostic[] {
   const inventory = archiveInventory(ledger);
   const diagnostics: Diagnostic[] = [];
@@ -960,7 +988,7 @@ export function prunableArchive(
   if (!located.range || located.range.version === "legacy") {
     return { refusal: {
       code: 2,
-      reason: located.refusal?.reason ?? "only a verified v2/v3 archive can be pruned",
+      reason: located.refusal?.reason ?? "legacy archive has no verified envelope boundary and cannot be pruned safely",
       lines: located.refusal ? [located.refusal.line] : [section.line_start],
     } };
   }

@@ -182,6 +182,46 @@ test("prune preview applies with patch on BOM CRLF without a final newline", asy
   expect(readFileSync(ledger, "utf8").endsWith("\n")).toBe(false);
 });
 
+test.each([
+  ["fence", "```text\n<!-- issuemd:kept-body:v3 -->\n```"],
+  ["HTML comment", "<!--\n<!-- issuemd:kept-body:v3 -->\n-->"],
+  ["raw HTML", "<pre>\n<!-- issuemd:kept-body:v3 -->\n</pre>"],
+])("visible archive headings with a hidden v3 envelope fail closed (%s)", async (_name, wrapper) => {
+  const ledger = await oneArchiveLedger(`hidden-envelope-${_name}`);
+  const original = readFileSync(ledger, "utf8");
+  const hidden = original.replace("<!-- issuemd:kept-body:v3 -->", wrapper as string);
+  writeFileSync(ledger, hidden);
+
+  const checked = JSON.parse((await run(["check", ledger, "--json"])).stdout);
+  expect(checked.warnings).toContainEqual(expect.objectContaining({ code: "W269", id: "2" }));
+  expect((await run(["check", ledger, "--strict"])).code).toBe(3);
+  const before = readFileSync(ledger, "utf8");
+  const shown = await run(["show", ledger, "2", "--body-only"]);
+  expect(shown.code).toBe(1);
+  expect(shown.stderr).toContain("hidden");
+  const pruned = await run(["prune", ledger, "2", "--dry-run"]);
+  expect(pruned.code).toBe(2);
+  expect(pruned.stderr).toContain("hidden");
+  const reopened = await run(["reopen", ledger, "2"]);
+  expect(reopened.code).toBe(3);
+  expect(readFileSync(ledger, "utf8")).toBe(before);
+  expect(hidden).not.toBe(original);
+});
+
+test("legacy payload keeps literal marker-like body text readable", async () => {
+  const ledger = await oneArchiveLedger("legacy-literal-marker");
+  const source = readFileSync(ledger, "utf8")
+    .replace("<!-- issuemd:kept-body:v3 -->\n", "")
+    .replace("<!-- issuemd:kept-body:start -->\n", "")
+    .replace(/<!-- issuemd:kept-body:lines:\d+ -->\n/, "")
+    .replace("<!-- issuemd:kept-body:end -->\n", "")
+    .replace("keep this evidence", "keep this evidence\n<!-- issuemd:kept-body:lines:1 -->");
+  writeFileSync(ledger, source);
+  const shown = await run(["show", ledger, "2", "--body-only"]);
+  expect(shown.code).toBe(0);
+  expect(shown.stdout).toContain("<!-- issuemd:kept-body:lines:1 -->");
+});
+
 test("prune keeps newline-terminated trailing blanks but trims only new terminal blanks at EOF", async () => {
   const terminated = await oneArchiveLedger("prune-terminal-newline");
   const source = readFileSync(terminated, "utf8");
@@ -201,6 +241,75 @@ test("prune keeps newline-terminated trailing blanks but trims only new terminal
   snapshot = /snapshot: ([0-9a-f]{16})/.exec(preview.stderr)?.[1]!;
   expect((await run(["prune", unterminated, "2", "--confirm", "--if-unchanged", snapshot])).code).toBe(0);
   expect(readFileSync(unterminated, "utf8").endsWith("\n")).toBe(false);
+});
+
+test("prune removes a middle archive while preserving neighboring archive framing", async () => {
+  const ledger = fixture("prune-three-middle.md", canonical);
+  await archiveBody(ledger, "2", "**验收判据**：two\n");
+  await archiveBody(ledger, "3", "**验收判据**：three\n");
+  await archiveBody(ledger, "4", "**验收判据**：four\n");
+  const before = readFileSync(ledger, "utf8");
+  const block = (source: string, id: number) => {
+    const lines = source.split("\n");
+    const start = lines.findIndex((line) => line.startsWith(`### #${id} `));
+    const end = lines.findIndex((line, at) => at > start && line.startsWith("### #"));
+    return lines.slice(start, end < 0 ? undefined : end).join("\n").replace(/\n+$/, "");
+  };
+  const prune = async (id: string) => {
+    const preview = await run(["prune", ledger, id, "--dry-run"]);
+    expect(preview.code).toBe(0);
+    const snapshot = /snapshot: ([0-9a-f]{16})/.exec(preview.stderr)?.[1]!;
+    return run(["prune", ledger, id, "--confirm", "--if-unchanged", snapshot]);
+  };
+
+  expect((await prune("3")).code).toBe(0);
+  let after = readFileSync(ledger, "utf8");
+  expect(block(after, 2)).toBe(block(before, 2));
+  expect(block(after, 4)).toBe(block(before, 4));
+  expect(after).not.toContain("### #3 ");
+  expect((await prune("4")).code).toBe(0);
+  expect((await prune("2")).code).toBe(0);
+  after = readFileSync(ledger, "utf8");
+  expect(after).not.toContain("### #2 ");
+  expect(after).not.toContain("### #3 ");
+  expect(after).not.toContain("### #4 ");
+  expect((await run(["check", ledger, "--strict"])).code).toBe(0);
+});
+
+test("prune refuses legacy archives because their trailing boundary is not verifiable", async () => {
+  const ledger = await oneArchiveLedger("prune-legacy-boundary");
+  const source = readFileSync(ledger, "utf8")
+    .replace("<!-- issuemd:kept-body:v3 -->\n", "")
+    .replace("<!-- issuemd:kept-body:start -->\n", "")
+    .replace(/<!-- issuemd:kept-body:lines:\d+ -->\n/, "")
+    .replace("\n<!-- issuemd:kept-body:end -->\n", "\n");
+  writeFileSync(ledger, source);
+  const preview = await run(["prune", ledger, "2", "--dry-run"]);
+  expect(preview.code).toBe(2);
+  expect(preview.stderr).toContain("legacy archive has no verified envelope boundary");
+});
+
+test("W250 points to prune without changing strict behavior", async () => {
+  const ledger = await oneArchiveLedger("prune-w250-message");
+  const checked = await run(["check", ledger, "--json"]);
+  const warning = JSON.parse(checked.stdout).warnings.find((entry: { code: string }) => entry.code === "W250");
+  expect(warning.message).toContain("issuemd prune FILE ID");
+  expect((await run(["check", ledger, "--strict"])).code).toBe(0);
+});
+
+test("check text summary groups format and artifact warnings without changing JSON shape", async () => {
+  const ledger = fixture("check-warning-groups.md", canonical);
+  const first = fixture("check-warning-groups-2.body", "**现象**：evidence 1a2b3c4\n\n**验收判据**：works\n");
+  expect((await run(["body", ledger, "2", "--body-file", first])).code).toBe(0);
+  expect((await run(["close", ledger, "2", "--keep-body"])).code).toBe(0);
+  const second = fixture("check-warning-groups-4.body", "**现象**：Pinned hash def5678.\n\n**验收判据**：works\n");
+  expect((await run(["body", ledger, "4", "--body-file", second])).code).toBe(0);
+  const text = await run(["check", ledger]);
+  expect(text.stdout).toMatch(/\d+ errors, \d+ warnings · format 1, artifacts 1 · .* KiB \/ .* lines · body /);
+  const json = JSON.parse((await run(["check", ledger, "--json"])).stdout);
+  expect(json).not.toHaveProperty("format");
+  expect(json).not.toHaveProperty("artifacts");
+  expect(json.size).toEqual(expect.objectContaining({ bytes: expect.any(Number), lines: expect.any(Number), bodyLines: expect.any(Number) }));
 });
 
 test("an empty duplicate criteria label does not block close", async () => {

@@ -185,7 +185,7 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
     const unclosedFence = scanFences(bodyLines, true, ignored).unclosed;
     if (unclosedFence) warnings.push({
       code: "W270", line: line + unclosedFence.line - 1, id,
-      message: "Unclosed fenced code block; close the fence before modifying this issue section",
+      message: "Unclosed fenced code block; close it before modifying this issue section (close --keep-body and reopen refuse while the fence is unclosed)",
     });
     const fenced = fencedLines(bodyLines, true);
     const labelLines = new Map<string, number[]>();
@@ -366,7 +366,7 @@ function checkAppendix(ledger: Ledger, limits: EffectiveLimits) {
       const id = archive.id;
       const summary = match[2]!;
       duplicate(line, id, true);
-      warnings.push({ code: "W250", line, id, message: "Issue body kept in 附录 by close --keep-body" });
+      warnings.push({ code: "W250", line, id, message: "Issue body kept in 附录 by close --keep-body; remove with 'issuemd prune FILE ID' when reopen is no longer needed (verified v2/v3 archives only)" });
       const located = locateArchivePayload(ledger, archive.section, masks);
       if (located.refusal?.recognized) warnings.push({
         code: "W269", line: located.refusal.line, id,

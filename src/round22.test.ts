@@ -222,6 +222,29 @@ describe("write diagnostics", () => {
     expect(result.stderr).toContain("W205");
   });
 
+  test("close --criteria reports the exact stored value for escaped pipes", async () => {
+    const path = ledgerFrom(fixture, "");
+    const result = await run(["close", path, "2", "--status", "已修", "--criteria", "a \\| b"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("W205");
+    expect(result.stderr).toContain('stored value is "a | b"');
+
+    const closed = await run(["close", path, "2", "--criteria", "c \\| d"]);
+    expect(closed.code).toBe(0);
+    expect(closed.stderr).toContain("W205");
+    expect(closed.stderr).toContain(`stored value is ${JSON.stringify("c | d")}`);
+    const even = await run(["close", path, "2", "--criteria", "a \\\\| b"]);
+    expect(even.code).toBe(0);
+    expect(JSON.parse((await run(["show", path, "2", "--json"])).stdout).criteria).toBe("a \\\\| b");
+  });
+
+  test("close --criteria reports odd-backslash loss on an open issue", async () => {
+    const path = ledgerFrom(fixture, "");
+    const result = await run(["close", path, "2", "--status", "已修", "--criteria", "a \\\\\\\| b"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain(`stored value is ${JSON.stringify("a \\\\| b")}`);
+  });
+
   test("a criteria without a pipe stays silent on W205", async () => {
     const path = ledgerFrom(fixture, "");
     const result = await run(["close", path, "2", "--status", "已修", "--criteria", "plain"]);
