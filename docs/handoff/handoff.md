@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-28（第二十六轮，开放项判据编辑与诊断复核）。写给下一位接手者。
+更新于 2026-11-28（第二十七轮，诊断噪声、判据边界与归档清理）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -15,9 +15,10 @@
 
 ## 一句话现状
 
-`issuemd` P0–P5 已完成。包版本为 `0.1.0`。外部 dogfooding 台账由测试者维护，本轮核对至 #147。
+`issuemd` P0–P5 已完成。包版本为 `0.1.0`。外部 dogfooding 台账由测试者维护，本轮核对至 #150（Orca 测试台账当前位置不明）。
 
 - `criteria FILE ID --criteria TEXT` 安全替换开放项的验收判据。开放项的 `close --criteria` 现在需要显式 `--status S`。详见「第二十六轮」。
+- W268 不再把复核/边界小节标题当成判据歧义；只遮归档信封会 fail closed（W269）；显式跨台账引用不占号；`prune` 可删任意位置的 verified v2/v3 归档。详见「第二十七轮」。
 
 - 判据与归档保全覆盖 #103、#124、#131、#133、#138、#141、#142、#145。使用 `find FILE PATTERN --json` 搜索历史，W270 定位未闭合围栏，W271 显示尚未登记的引用号。
 - `sync --fix-hashes` 提供汇总和 `--require-complete`。W260 与标题同步共用进展词匹配规则。详见「第二十五轮」。
@@ -72,7 +73,7 @@
 - **#124**：`**注意：…句末标点。**` / `**提醒：…**` 作为强调句，不再切断父块。白名单限定在 `注意/提醒/重要提示/警告：`，复核标题 `**第二十六轮复核（…）：仍未修。**` 保持为标签边界。`**必须离线通过。**` 仍由 W268 阻止关闭。
 - **#115/#118/#128**：`check` 文本摘要按 format/artifacts/other 分组，JSON schema 不变；W270 文案点明 close/reopen 后果；spec/SKILL 补英文约 34 B/行、中文约 113 B/行的密度对照及归档读视图字节契约。
 - **只读复测**：`npm run typecheck` 通过，`npm test` 974 pass / 0 fail，`npm run build` 成功。Dogfood：0 errors / 20 warnings（W271）；Cafe：0 errors / 10 warnings（W264×2、W250×8）。W268 两份均为 0；Cafe 显式跨台账引用 W271 1→0，dogfood 27→20。SHA-256 前后相同：dogfood `fafccc02351d27de`、Cafe `17cbcb54de4eaa8b`。对两份台账逐个 open id 比较当前与 `main` 构建的 `criteria/labels/criteriaBlocks`，均 0 diffs（dogfood 26 条、Cafe 83 条）。Orca 当前测试台账原路径不存在，未能复测。
-- **尚未完成集成**：需等独立 code review 收敛、按阶段提交后 fast-forward 合入本地 `main` 并复跑 build；push `origin main` 仍待执行。本轮测试摘要已记录；当前 HEAD 以 `git log` 现查。
+- **集成**：本轮改动已 fast-forward 合入本地 `main`，合并后 `npm run build` 成功，并按用户本轮临时授权 push 到 `origin main`（两个提交：实现 + 文档）。已合并分支已删除。下一轮从干净 `main` 开始；用 `git status --short --branch` 与 `git rev-list --left-right --count origin/main...main` 现查是否还有待推送提交。包版本仍为 `0.1.0`。
 - **等待后续裁定**：#103 的“普通叙述后又出现另一组列表”边界；#106 的 W201 是否参与 `--strict`；#108/#144 规范化读视图 vs 原始 payload；#120/#123 的 `criteriaItems` 切分；#140 的 `narrow`、`--append --before`、`counts --markdown`。#27 保持已知歧义。
 
 ## 第二十六轮（2026-11-28）
