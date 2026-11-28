@@ -38,6 +38,7 @@ import { parseId, parseIds, compareIds, IdSet, type IdSpan } from "./issue-id.js
 import { archiveInventory as discoverArchives, archivePayloadRange, archivePayloadSnapshot, hiddenArchiveRefusal, locateArchivePayload, validateSerializedArchive, bodyBlocks, countSuffix, DEFAULT_LIMITS, effectiveLimits, highWaterRecords, HIGH_WATER_MARKER, htmlBlockLines, LIMITS_MARKER, limitsRecords, maxIssueId, parseLedger, prunableArchive, type Diagnostic } from "./ledger.js";
 import { checkLedger, checkParsedLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
 import { findLedgerText, proseReferences } from "./ledger-search.js";
+import { buildMoveEvidence, validateMoveEvidence } from "./move-evidence.js";
 import {
   bodySkeleton,
   bodyVisibility,
@@ -109,7 +110,7 @@ const COMMANDS = {
   reopen: { usage: "issuemd reopen  FILE ID [--status S] [--allow-duplicate-title]", options: ["status", "allow-duplicate-title", "dry-run", "if-unchanged"] },
   status: { usage: "issuemd status  FILE ID NEW_STATUS", options: ["dry-run", "if-unchanged"] },
   rename: { usage: "issuemd rename  FILE ID \"NEW TITLE\" [--allow-duplicate-title]", options: ["allow-duplicate-title", "dry-run", "if-unchanged"] },
-  body: { usage: "issuemd body    FILE ID --body-file PATH|- [--append]", options: ["body-file", "append", "dry-run", "if-unchanged"] },
+  body: { usage: "issuemd body    FILE ID (--body-file PATH|- [--append] | --move-evidence LABEL)", options: ["body-file", "append", "move-evidence", "dry-run", "if-unchanged"] },
   priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run", "if-unchanged"] },
   split: { usage: "issuemd split   FILE ID", options: ["dry-run", "if-unchanged"] },
   prune: { usage: "issuemd prune   FILE ID (--dry-run | --confirm --if-unchanged SNAPSHOT)", options: ["confirm", "dry-run", "if-unchanged"] },
@@ -142,8 +143,10 @@ const OPTION_HELP: Record<string, string> = {
   id: "--id <N>                  new: explicit issue id",
   "allow-duplicate-title":
     "--allow-duplicate-title   write it even though another open issue has the same summary",
-  "body-file": "--body-file <path|->      new/body: body text under the heading (no `### Issue` line), or '-' for stdin",
+  "body-file": "--body-file <path|->      new/body: use bold labels inside the body; no #, ##, or leading ### Issue heading\n" +
+    "                            Pass '-' to read from stdin",
   append: "--append                  body: add text at the end of the existing issue body",
+  "move-evidence": "--move-evidence <LABEL>   body: move one visible evidence block into 附录 and link it from the body",
   criteria: "--criteria <TEXT>         close: criteria column text; on a closed id, correct that cell only",
   "criteria-from-body":
     "--criteria-from-body      close: lift the **验收判据** block into the column (the default\n" +
@@ -272,6 +275,7 @@ const OPTIONS = {
   "allow-duplicate-title": { type: "boolean" },
   "body-file": { type: "string" },
   append: { type: "boolean" },
+  "move-evidence": { type: "string" },
   // close
   criteria: { type: "string" },
   "criteria-from-body": { type: "boolean" },
@@ -2193,11 +2197,19 @@ function bodyContentEnd(lines: string[], heading: number, end: number): number {
 function cmdBody(rest: string[], v: Values): CliResult {
   const file = rest[0];
   const idText = rest[1];
-  if (file == null || idText == null || rest.length !== 2 || v["body-file"] == null) {
+  const moving = v["move-evidence"] != null;
+  if (file == null || idText == null || rest.length !== 2 ||
+      (moving ? (v.append || v["body-file"] != null) : v["body-file"] == null)) {
     return err(`usage: ${COMMANDS.body.usage}\n`, 2);
   }
-  const read = readBodyFile(v["body-file"], "body");
-  if ("code" in read) return read;
+  let incoming: string[] = [];
+  let originalIncoming: string[] = [];
+  if (!moving) {
+    const read = readBodyFile(v["body-file"]!, "body");
+    if ("code" in read) return read;
+    originalIncoming = read.lines;
+    incoming = trimBlank(read.lines);
+  }
   const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors, warnings } = opened;
@@ -2208,9 +2220,24 @@ function cmdBody(rest: string[], v: Values): CliResult {
   if (found.table === "closed") {
     return err(`issuemd body: #${idText} is closed; a closed issue has no body (reopen it first)\n`, 2);
   }
+  if (moving) {
+    const built = buildMoveEvidence(ledger, idText, v["move-evidence"]!);
+    if ("error" in built) return err(`issuemd body --move-evidence: ${built.error}\n`, built.code);
+    let remaining: Diagnostic | undefined;
+    const result = commit(file, loaded, errors, built.move.lines, !!v["dry-run"], {
+      receipt: `#${idText} evidence moved to ${built.move.anchor}`,
+      observeCheck(report) { remaining = report.warnings.find(({ code, id }) => code === "W201" && id === idText); },
+      validateCandidate(candidate) {
+        const refusal = validateMoveEvidence(ledger, candidate, built.move);
+        return refusal ? err(`issuemd body --move-evidence: ${refusal}; nothing written\n`, 3) : undefined;
+      },
+    });
+    if (result.code !== 0) return result;
+    const state = remaining ? `W201 remains active for #${idText}: ${remaining.message}` : `W201 cleared for #${idText}`;
+    return { ...result, stderr: `${result.stderr}${state}\n` };
+  }
   const block = bodyBlocks(ledger).find((candidate) => `${candidate.id.start}${candidate.id.suffix}` === idText);
   let lines = loaded.lines;
-  const incoming = trimBlank(read.lines);
   if (incoming.length === 0) {
     return commit(file, loaded, errors, lines, !!v["dry-run"]);
   }
@@ -2259,7 +2286,7 @@ function cmdBody(rest: string[], v: Values): CliResult {
     const section = ledger.sections.find((candidate) => candidate.level === 2 && candidate.title === "正文");
     if (!section) return err("issuemd body: the 正文 section is missing\n", 3);
     const at = bodyInsertAt(ledger, found.span, section.line_end);
-    lines = insertBlock(lines, at, [`### Issue ${idText}: ${found.row.summary}`, "", ...read.lines]);
+    lines = insertBlock(lines, at, [`### Issue ${idText}: ${found.row.summary}`, "", ...originalIncoming]);
   }
   const bytes = Buffer.byteLength(incoming.join("\n"));
   const receipt = v.append ? `#${idText} body appended, ${bytes} bytes` : `#${idText} body replaced, ${bytes} bytes`;

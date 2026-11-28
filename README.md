@@ -17,7 +17,7 @@ issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | -
 issuemd reopen  FILE ID [--status S] [--allow-duplicate-title]
 issuemd status  FILE ID NEW_STATUS
 issuemd rename  FILE ID "NEW TITLE" [--allow-duplicate-title]
-issuemd body    FILE ID --body-file PATH|- [--append]
+issuemd body    FILE ID (--body-file PATH|- [--append] | --move-evidence LABEL)
 issuemd priority FILE ID P0|P1|P2|P3|""
 issuemd split   FILE ID
 issuemd prune   FILE ID (--dry-run | --confirm --if-unchanged SNAPSHOT)

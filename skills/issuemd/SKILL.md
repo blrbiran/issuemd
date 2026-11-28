@@ -132,6 +132,8 @@ Exit code **3** means structural errors. Fix them before reporting anything as d
 
 ### 5. Fix drift mechanically
 
+Preview moving a unique evidence label out of an open issue with `issuemd body FILE ID --move-evidence LABEL --dry-run`. Apply the reviewed diff with `--if-unchanged SNAPSHOT`. The source stays in the same ledger under `## 附录`; the active body retains a link. This can clear W201 by shortening the active body.
+
 ```bash
 issuemd sync FILE --titles --prefer=body --move-progress --dry-run
 issuemd sync FILE --fix-tables --dry-run

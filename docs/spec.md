@@ -474,6 +474,8 @@ error: #56 当前 观察（open），目标 已修（closed）跨分类，请用
 - `reopen` 的摘要与某个开放项规范化后相同（例如以 `并入` 关闭的重复项被重开）时 exit 2、不写，点名已有编号并给出 `issuemd rename`；确需重开加 `--allow-duplicate-title`，之后由 W212 持续报出。
 - 所有 per-id 命令（close/reopen/status/rename/body/priority）对多号行、区间行用同一句话拒绝，并给出 `issuemd split FILE <id>`；`close`/`reopen` 先判行形状、再判开关状态。
 
+- `body FILE ID --move-evidence LABEL` 把一个唯一可见的证据块移进同文件的附录，并在正文留下链接。用 `--dry-run` 审阅搬移范围和目标，再用 `--if-unchanged` 应用。移动减少活动正文体积，`check` 仍报告整份文件的大小。命令保护判据、编号引用和现有归档。
+
 ### 7.6 `counts`
 
 ```bash
@@ -481,6 +483,10 @@ issuemd counts FILE [--json]
 ```
 
 输出每个状态与整表的**编号数**。不写盘（canonical 里没有计数可修）。
+
+### 7.6a `find`
+
+`find FILE PATTERN [--json]` 按大小写敏感的字面字符串匹配开放和已关闭摘要、开放正文以及唯一归属的可读归档。结果按源文件行序输出，每个字段的匹配行只输出一次。若行内命中可见的编号引用，`where` 为 `reference`，`id` 仍是引用所在的条目。JSON 顶层含 `file`、`snapshot`、`diagnostics` 和 `matches`。空结果 exit 0。以 `-` 开头的模式用 `issuemd find FILE --json -- PATTERN`。
 
 ### 7.7 `sync`
 

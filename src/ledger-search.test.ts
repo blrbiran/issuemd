@@ -87,6 +87,14 @@ test("find classifies a line as a reference even when an earlier match is ordina
   expect(found.matches).toContainEqual(expect.objectContaining({ where: "reference", id: "2" }));
 });
 
+test("closed batch read finds an archive owned by a non-first ID", async () => {
+  const file = temporary(`${canonical.trimEnd().replace("| 7–20 |", "| 7–20, 21 |")}\n\n### #21 无记录（已关闭，正文保留）\n\nHistorical evidence\n`);
+  const listed = JSON.parse((await run(["list", file, "--closed", "--json", "--with-body"])).stdout);
+  const row = listed.issues.find(({ id }: { id: string }) => id === "7–20, 21");
+  expect(row.body.id).toBe("21");
+  expect(row.body.text).toBe((await run(["show", file, "21", "--body-only"])).stdout);
+});
+
 test("find returns source owners and source order across summaries, bodies and archives", async () => {
   const file = await bodyFile("**现象**：侧栏宽度不可调，在重启时。\n\n**验收判据**：可用。\n\n关联 #1。\n");
   const original = readFileSync(file, "utf8");
