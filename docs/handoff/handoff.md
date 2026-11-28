@@ -76,12 +76,14 @@
 - **#107**：`--version` 输出 `0.1.0 (build: <dir>)`；`counts --markdown` 输出一条可直接粘进头注的 bullet。
 - **#114**：close 缺判据文案写明 `--no-criteria` 文件变小、`--keep-body` 文件变大且之后可 prune。
 - **文档**：`docs/spec.md` 的 W201/W264/W268/W271 行、读视图 `criteriaItems`、`skills/issuemd/SKILL.md` 的 strict 说明与命令示例、`README.md` 的命令表均已同步。
-- **验证**：`npm run typecheck`、`npm test` 1068 pass / 0 fail、`npm run build` 成功。只读复测：dogfood 0 errors / 2 warnings（W201×1、W271×1），`--strict` exit 3（仅剩 W271）；cafe 0/10（W250×8、W264×2），`--strict` exit 0；两份 `criteria` 与 `main` 构建逐条相同，SHA-256 未变（dogfood `75bb00da…`、cafe `17cbcb54…`）。Orca 台账原路径仍不存在，未复测。
+- **验证**：`npm run typecheck`、`npm test` 1074 pass / 0 fail、`npm run build` 成功。只读复测：dogfood 0 errors / 2 warnings（W201×1、W271×1），`--strict` exit 3（仅剩 W271）；cafe 0/10（W250×8、W264×2），`--strict` exit 0；两份 `criteria` 与 `main` 构建逐条相同，SHA-256 未变（dogfood `75bb00da…`、cafe `17cbcb54…`）。Orca 台账原路径仍不存在，未复测。
 - **等待后续裁定 / 测试者复测**：
   - 裸写 `#149`（cafe 引用）仍在 high-water 内，按设计继续报 W271；测试者若要清零可加 `cafe 台账` 前缀。
   - #103 的「列表续接」规则会缩短部分 `criteria`（只去掉被误吞的叙述）；若测试者认为某条真实判据被截断，需带样本反馈。
   - 仍未做：#115 的归档占比 warning、#138 的 `criteria --drop-block/--merge` 机械出口、#108/#144 的归档归一化视图（契约已写死，需测试者改判据）、#140 的通用 review 动词、#107 的 git sha 粒度。
-- **集成**：本轮改动逐阶段提交在 `feat/round28-strictness-refs-verbs`，全部完成后 fast-forward 合入 `main`、build，并按用户本轮临时授权 push 一次。已合并分支删除。下一轮从干净 `main` 开始；用 `git status --short --branch` 与 `git rev-list --left-right --count origin/main...main` 现查。
+  - **必须等人**：无。若测试者复测后认为 `--strict` 的 advisory 集合需要扩/缩，或 `high-water + 1` 上限要与「高水位防复用」再权衡，需要一条新的 owner 裁定。
+- **实现后独立复审（第二轮）**：无 blocker；4 条 should-fix 与 4 条 nit 已全部修复并加回归：嵌套子列表不再截断外层判据（只有最外层 marker 决定续接）、`criteriaItems` 不再把裸 marker 当条目且块内只有散文时退回 `[block.text]`、指针块永不作改名候选、W261 写入提示对单行块给 `--criteria-labels --force`、`narrow` 按 code 计数比较新增 warning、`counts --markdown` 不再依赖固定三空格、`narrow` 回执报判据行而非标题行。
+- **集成**：本轮改动逐阶段提交在 `feat/round28-strictness-refs-verbs`，全部完成后 fast-forward 合入本地 `main`、build，并按用户本轮临时授权 push 到 `origin main`（共 17 个提交，含复审修复）。已合并分支删除。下一轮从干净 `main` 开始；用 `git status --short --branch` 与 `git rev-list --left-right --count origin/main...main` 现查。
 
 ## 第二十七轮（2026-11-28）
 
