@@ -132,7 +132,7 @@ const OPTION_HELP: Record<string, string> = {
   strict: "--strict                  check: fail on warnings except W201, W202, W250 and W264",
   "verify-commits": "--verify-commits          check: verify commit references in the ledger directory (W240)",
   status:
-    "--status <S>              list: filter; new/reopen: open status (未决); close: closed status (已修)",
+    "--status <S>              list: filter; new/reopen/narrow: open status (未决); close: closed status (已修)",
   priority:
     "--priority <P>            list: filter by priority; new: P0–P3 or \"\" (default P2); change later: issuemd priority FILE ID P",
   "body-bytes": "--body-bytes <N>          limits: W201 byte limit for one issue body (UTF-8; default 20480)",
@@ -157,7 +157,7 @@ const OPTION_HELP: Record<string, string> = {
     "                            Pass '-' to read from stdin",
   append: "--append                  body: add text at the end of the existing issue body",
   "move-evidence": "--move-evidence <LABEL>   body: move one visible evidence block into 附录 and link it from the body",
-  criteria: "--criteria <TEXT>         criteria: replace the open body's acceptance criteria with one Markdown line\n" +
+  criteria: "--criteria <TEXT>         criteria/narrow: body text, one Markdown line\n" +
     "                            close: table-cell text; on an open id, requires --status and removes the body unless --keep-body\n" +
     "                            close: on a closed id, correct the criteria cell only; \\| spells a literal pipe",
   "criteria-from-body":
