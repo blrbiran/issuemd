@@ -1,11 +1,11 @@
 import { IdSet, idText, parseId, type IdSpan } from "./issue-id.js";
-import { archiveInventory, bodyBlocks, htmlBlockLines, locateArchivePayload, type parseLedger, type TableKind } from "./ledger.js";
+import { archiveInventory, bodyBlocks, highWaterRecords, htmlBlockLines, locateArchivePayload, maxIssueId, type parseLedger, type TableKind } from "./ledger.js";
 import { hashRepairContextSkipReason, hashRepairRanges, hashRepairSkipReason } from "./hash-scan.js";
 import { inlineCodeRanges, isEscapedMarkdownChar, multilineInlineCodeRanges } from "./scan.js";
 
 type Ledger = ReturnType<typeof parseLedger>;
 type SourceRange = { start: number; end: number; id?: string; table?: TableKind; where: "body" | "archive" };
-export type ProseReference = { id: string; line: number; start: number; end: number; external?: string };
+export type ProseReference = { id: string; line: number; start: number; end: number; external?: string; local?: true };
 export type SearchMatch = { id: string; table: TableKind; line: number; where: "summary" | "body" | "archive" | "reference"; text: string };
 
 function coverage(spans: IdSpan[]): (id: IdSpan) => number {
@@ -70,33 +70,49 @@ function sourceRanges(ledger: Ledger): SourceRange[] {
   return ranges;
 }
 
-const SELF_LEDGER = /^(?:本|该|这|此|同一|当前|本文|本文件|this|the current)$/iu;
+const SELF_LEDGER = /^(?:本|该|这|此|同一|当前|current|本文|本文件|本文档|本份|这份|该份|当前这份|this)$/iu;
+const REFERENCE_PREFIX = /^(?:请|另|参|详|关于|根据|依据|参考|记载在|记录在|记在|登记在|写在|列在|见|据|按|如|在)/u;
 const LEDGER_MENTION = /([\p{L}\p{N}_./-]+)[ \t]*(?:台账|ledger)/giu;
 const LEDGER_FILE = /[^\s`]*?(?:dogfood|ledger|issue-\d{8})[^\s`]*?\.md/giu;
 
+/** `见本`、`登记在本`、`the current` all name this ledger; `日本` does not. */
+function selfLedgerName(name: string): boolean {
+  let rest = name;
+  for (;;) {
+    const next = rest.replace(REFERENCE_PREFIX, "");
+    if (next === rest) break;
+    rest = next;
+  }
+  return SELF_LEDGER.test(rest);
+}
+
+type LedgerContext = { kind: "external"; name?: string } | { kind: "local" };
+
 /** Whether the nearest ledger mention before `column` belongs to another file. */
-function externalLedgerContext(text: string, column: number): string | undefined {
+function externalLedgerContext(text: string, column: number): LedgerContext | undefined {
   const before = text.slice(0, column);
   let last: { kind: "external" | "local"; index: number; name?: string } | undefined;
   for (const match of before.matchAll(LEDGER_MENTION)) {
     const name = match[1]!;
     const end = match.index! + match[0].length;
-    if (!last || end > last.index) last = { kind: SELF_LEDGER.test(name) ? "local" : "external", index: end, name };
+    if (!last || end > last.index) last = { kind: selfLedgerName(name) ? "local" : "external", index: end, name };
   }
   for (const match of before.matchAll(LEDGER_FILE)) {
     const end = match.index! + match[0].length;
     if (!last || end > last.index) last = { kind: "external", index: end, name: match[0] };
   }
-  if (!last && /(?:^|[ \t])ledger[ \t]*[:：]?[ \t]*$/iu.test(before) &&
-      !/(?:this|the current)[ \t]+ledger[ \t]*[:：]?[ \t]*$/iu.test(before)) {
-    return "another ledger";
+  if (!last) {
+    if (/(?:^|[ \t])ledger[ \t]*[:：]?[ \t]*$/iu.test(before) &&
+        !/(?:this|the current)[ \t]+ledger[ \t]*[:：]?[ \t]*$/iu.test(before)) {
+      return { kind: "external", name: "another ledger" };
+    }
+    return undefined;
   }
-  if (last?.kind !== "external") return undefined;
-  // The external marker's scope ends at a sentence break, or at a semicolon
-  // followed by prose rather than another `#N` in the same list.
+  // The mention's scope ends at a sentence break, or at a semicolon followed
+  // by prose rather than another `#N` in the same list.
   const rest = before.slice(last.index);
   if (/[。]/u.test(rest) || /[；;][ \t]*(?:另|其他|另外|参见|见|also|see|cf\.)/iu.test(rest) || /[.!?](?=\s)/u.test(rest)) return undefined;
-  return last.name ?? "another ledger";
+  return last.kind === "local" ? { kind: "local" } : { kind: "external", name: last.name ?? "another ledger" };
 }
 
 export function proseReferences(ledger: Ledger, ranges = sourceRanges(ledger)): ProseReference[] {
@@ -112,8 +128,11 @@ export function proseReferences(ledger: Ledger, ranges = sourceRanges(ledger)): 
         const end = column + match[0].length;
         if (!parseId(match[0].slice(1)) || /[a-zA-Z0-9_#]/.test(text[end] ?? "") ||
             /[a-zA-Z0-9_#]/.test(text[column - 1] ?? "") || isEscapedMarkdownChar(text, column)) continue;
-        const external = externalLedgerContext(text, column);
-        candidates.push({ id: match[0].slice(1), line, start: column, end, ...(external ? { external } : {}) });
+        const context = externalLedgerContext(text, column);
+        candidates.push({
+          id: match[0].slice(1), line, start: column, end,
+          ...(context?.kind === "external" ? { external: context.name ?? "another ledger" } : context?.kind === "local" ? { local: true } : {}),
+        });
       }
     }
   }
@@ -140,14 +159,34 @@ export function proseReferences(ledger: Ledger, ranges = sourceRanges(ledger)): 
   }).sort((a, b) => a.line - b.line || a.start - b.start);
 }
 
+/** The highest number this ledger can plausibly own: a bare `#N` above it is historical/foreign. */
+export function referenceCeiling(ledger: Ledger): number {
+  const highWater = highWaterRecords(ledger).reduce((top, record) => record.value == null ? top : Math.max(top, record.value), 0);
+  return Math.max(maxIssueId(ledger.rows, ledger.unreadable), highWater) + 1;
+}
+
+/**
+ * Prose references that reserve an id: explicit self-ledger mentions always
+ * do; a bare `#N` only while it is plausibly local (≤ high-water + 1).
+ * Explicit external mentions never do.
+ */
+export function reservedProseReferences(ledger: Ledger): ProseReference[] {
+  const ceiling = referenceCeiling(ledger);
+  return proseReferences(ledger).filter((reference) => {
+    if (reference.external) return false;
+    if (reference.local) return true;
+    const parsed = parseId(reference.id);
+    return parsed != null && parsed.start <= ceiling;
+  });
+}
+
 export function missingProseReferences(ledger: Ledger): ProseReference[] {
   const known = new IdSet([
     ...ledger.rows.open.flatMap(({ ids }) => ids), ...ledger.rows.closed.flatMap(({ ids }) => ids),
     ...ledger.unreadable.flatMap(({ ids }) => ids ?? []), ...ledger.cited.flatMap(({ ids }) => ids ?? []),
   ]);
   const seen = new Set<string>();
-  return proseReferences(ledger).filter(({ id, external }) => {
-    if (external) return false;
+  return reservedProseReferences(ledger).filter(({ id }) => {
     if (seen.has(id) || known.has(parseId(id)!)) return false;
     seen.add(id);
     return true;

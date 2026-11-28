@@ -25,11 +25,13 @@ async function bodyFile(body: string): Promise<string> {
 }
 
 test("prose references reserve exact missing issue IDs during new", async () => {
-  const file = await bodyFile("**验收判据**：可用。\n\n参见#5，另见 #7a。\n");
+  // `#5a` is within the bare-reference ceiling (max 4 → 5); `#7a` would be
+  // above it and is treated as a historical/foreign reference (dogfood #150).
+  const file = await bodyFile("**验收判据**：可用。\n\n参见#5，另见 #5a。\n");
   const before = readFileSync(file, "utf8");
   const checked = JSON.parse((await run(["check", file, "--json"])).stdout);
-  expect(checked.warnings.filter(({ code }: { code: string }) => code === "W271").map(({ id }: { id: string }) => id)).toEqual(["5", "7a"]);
-  const refused = await run(["new", file, "--title", "新问题", "--id", "7a"]);
+  expect(checked.warnings.filter(({ code }: { code: string }) => code === "W271").map(({ id }: { id: string }) => id)).toEqual(["5", "5a"]);
+  const refused = await run(["new", file, "--title", "新问题", "--id", "5a"]);
   expect(refused.code).toBe(2);
   expect(refused.stderr).toMatch(/L\d+/);
   expect(readFileSync(file, "utf8")).toBe(before);

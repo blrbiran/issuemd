@@ -37,7 +37,7 @@ import { decodeDocument, joinDocument, readRaw, writeAtomically, type Document }
 import { parseId, parseIds, compareIds, IdSet, type IdSpan } from "./issue-id.js";
 import { archiveInventory as discoverArchives, archivePayloadRange, archivePayloadSnapshot, archiveFramingSnapshot, hiddenArchiveRefusal, locateArchivePayload, validateSerializedArchive, bodyBlocks, countSuffix, DEFAULT_LIMITS, effectiveLimits, highWaterRecords, HIGH_WATER_MARKER, htmlBlockLines, LIMITS_MARKER, limitsRecords, maxIssueId, parseLedger, prunableArchive, type Diagnostic } from "./ledger.js";
 import { checkLedger, checkParsedLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
-import { findLedgerText, proseReferences } from "./ledger-search.js";
+import { findLedgerText, reservedProseReferences } from "./ledger-search.js";
 import { buildMoveEvidence, validateMoveEvidence } from "./move-evidence.js";
 import {
   bodySkeleton,
@@ -1487,7 +1487,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   // Ids cited by W225 tables are reserved but not issues: skip them one by
   // one instead of jumping past the largest (an error-code table citing 500
   // must not move the next issue to 501).
-  const proseReservations = new Map(proseReferences(ledger).filter(({ external }) => !external).reverse().map((reference) => [reference.id, reference]));
+  const proseReservations = new Map(reservedProseReferences(ledger).reverse().map((reference) => [reference.id, reference]));
   let next = max + 1;
   if (v.id == null) while (Number.isSafeInteger(next)) {
     const cited = unreadableHolding(ledger, String(next), ledger.cited);
@@ -1565,7 +1565,7 @@ function cmdNew(rest: string[], v: Values): CliResult {
   const committed = commit(file, loaded, errors, lines, !!v["dry-run"], {
     receipt: `#${idText} new`,
     validateCandidate(candidate) {
-      const reference = proseReferences(candidate).find(({ id, external }) => id === idText && !external);
+      const reference = reservedProseReferences(candidate).find(({ id }) => id === idText);
       if (reference) {
         return err(`issuemd new: id ${idText} is reserved by a prose reference in the proposed ledger at L${reference.line}; pick another --id or edit the incoming text\n`, 2);
       }

@@ -48,11 +48,11 @@ test("this ledger references remain local as well", async () => {
 
 test("a later local clause ends the external scope", async () => {
   const path = highLedger();
-  const body = fixture("**现象**：见 Orca 台账 #558；另见 #559。\n\n**验收判据**：works\n");
+  const body = fixture("**现象**：见 Orca 台账 #558；另见 #21。\n\n**验收判据**：works\n");
   expect((await run(["body", path, "2", "--body-file", body])).code).toBe(0);
   const checked = JSON.parse((await run(["check", path, "--json"])).stdout);
   expect(checked.warnings).not.toContainEqual(expect.objectContaining({ code: "W271", id: "558" }));
-  expect(checked.warnings).toContainEqual(expect.objectContaining({ code: "W271", id: "559" }));
+  expect(checked.warnings).toContainEqual(expect.objectContaining({ code: "W271", id: "21" }));
   const created = await run(["new", path, "--title", "next issue"]);
   expect(created.stdout.trim()).toBe("558");
 });
