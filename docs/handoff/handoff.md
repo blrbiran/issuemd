@@ -64,6 +64,7 @@
 - **#103/#124/#131/#133/#138/#142**：W268 从判据解析复用边界，指出可能连接两个判据条目的粗体分隔或列表间散文。保留有歧义的读视图，自动关闭前须审阅。显式括注复核标签可明确结束判据块。`body --append` 拒绝可见判据标签，验证候选判据和 W268，并在需要时插入独立复测记录标签。原文与提升结果都相同的补充判据保留在 `criteriaBlocks`，免报 W264。
 - **#127/#121/#128**：`find FILE PATTERN [--json]` 按行检索两张表的摘要、开放正文和可验证归档，返回 `id/table/line/where/text`。W271 保护可见 `#N`/`#Na` 引用，分配器只跳过碰到的精确编号。W270 指向正文或可见附录末尾未闭合围栏的起始行。两个 warning 都参与 `--strict`。
 - **#106**：`body FILE ID --move-evidence LABEL` 将一个开放单号项的唯一证据块逐行移入同文件附录，正文留链接。支持快照预演及应用，保护判据、编号引用、旧归档及已有证据链接，写入后提示活动正文是否仍有 W201。设计见 `2026-11-28-move-evidence-design.md`。
+- **集成**：本轮改动已快进合入本地 `main`，合并后复跑 typecheck、923 项测试与 build 均通过。用户临时授权了本轮 push，但会话的自动审批拒绝 `git push origin main`，理由是向公开 GitHub 仓库发布内容。推送仍待用户在终端执行。用 `git rev-list --left-right --count origin/main...main` 确认当前差异。
 - **验证**：`npm run typecheck && npm test` 为 923 pass / 0 fail，`npm run build` 成功。包版本 `0.1.0`。
 - **#139/#143**：W260 与 `sync --titles` 共用进展词识别，定位表格摘要中的匹配文本。`sync --fix-hashes` 输出候选的 wrapped/skipped/remaining，`--require-complete` 在候选仍有 W202 时以 exit 3 拒绝写入。
 - **已复核的旧项**：#113、#126、#135 已达成主要判据。#114 的 `prune --dry-run` 与快照确认可用。归档 v2/v3/legacy 兼容策略沿用第二十四轮。
