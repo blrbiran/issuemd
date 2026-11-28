@@ -307,7 +307,7 @@ Ledger
 
 | 码 | 规则 |
 |---|---|
-| W201 | 单条正文或归档 payload 超过生效阈值。默认 20 KiB（20,480 UTF-8 字节）或 300 行。消息列出实测值及超限维度。按 LF 计量正文，排除标题及归档封装。手写附录内容不计。 |
+| W201 | 单条正文或归档 payload 超过生效阈值。默认 20 KiB（20,480 UTF-8 字节）或 300 行。消息列出实测值及超限维度。按 LF 计量正文，排除标题及归档封装。手写附录内容不计。**advisory，不参与 `--strict`**；用 `body --move-evidence LABEL` 外移证据或调整 `limits`。 |
 | W202 | 正文/附录可见内容（包括 raw HTML 标记与属性）中出现疑似写死的短哈希（每个出现处单独报告，带 1-based 行号和列号；位于开放 issue 正文时带完整 id）。不报 UUID、7–39 位纯数字、行内代码（含跨行 code span）、fence（含列表内缩进 fence）、已关闭表判据，以及有效 keep-body 归档 payload。`--fix-hashes` 还将链接目标/标题、裸 URL、www/email autolink、raw HTML 标签属性与 block、无法安全闭合的 inline-code 视为只读并报告跳过原因；这些位置的 hash 仍可能被 `check` 报告以便人工处理。保留 W240 的独立验证资格与锚点规则：`--verify-commits` 仍验证闭表判据、inline-code、归档和列表 fence 中出现的 hash。 |
 | W203 | guide 里点名的标题在文档中不存在（**只查存在性**） |
 | W205 | 单元格含未转义 `\|` 或换行 |
@@ -326,13 +326,13 @@ Ledger
 | W252 | 归档对应的 issue 已重新开放（`reopen` 正常会收回归档，手改才会出现） |
 | W253 | 同一 issue 的正文在附录里还有另一份（转义的 `\### Issue N:` 副本，或重复归档）；旧版 `adopt` 会把表格小节里的正文存两份 |
 | W260 | 索引摘要含进展词（`已落地/仍缺/仍无/仍逐/仍走`），应移入正文 |
-| W261 | 开放项的正文没有非空的 `**验收判据**` 块（`new` 不带 `--body-file` 写出的空骨架、判据被删掉的正文都算）。`close` 用 `--criteria-from-body` 时本来就会拒绝它，但空壳会一直留在 `list` 里（dogfood #62）。warning 级、`--strict` 失败；已关闭项不判（判据在表格列），正文缺失另有 E102。整块只有 HTML 注释（渲染后什么也没有；注释外的可见文字、fence 里的字面内容都算）不算非空，`close --criteria-from-body` 同样拒绝（第十四轮）。如果正文有近似标签，提示会列出其位置；当一个非空、无歧义的近邻标签可由 `sync --criteria-labels` 修复时，`new` / `body` 会在写入回执后给出该命令。闭表的 `判据` 列对应正文中的精确标签 `**验收判据**`。
+| W261 | 开放项的正文没有非空的 `**验收判据**` 块（`new` 不带 `--body-file` 写出的空骨架、判据被删掉的正文都算）。`close` 用 `--criteria-from-body` 时本来就会拒绝它，但空壳会一直留在 `list` 里（dogfood #62）。warning 级、`--strict` 失败；已关闭项不判（判据在表格列），正文缺失另有 E102。整块只有 HTML 注释（渲染后什么也没有；注释外的可见文字、fence 里的字面内容都算）不算非空，`close --criteria-from-body` 同样拒绝（第十四轮）。如果正文有近似标签，提示会列出其位置；当一个非空、无歧义的近邻标签可由 `sync --criteria-labels` 修复时，`new` / `body` 会在写入回执后给出该命令。默认 `sync --criteria-labels` 只改带列表项的候选块，非列表单行需 `--force`，以免把状态句升级成判据。闭表的 `判据` 列对应正文中的精确标签 `**验收判据**`。
 | W262 | 报告未闭合 HTML 注释的起始行。围栏、管道表格行和同一行配对反引号中的字面分隔符不参与扫描。多行注释以 `-->` 开头的可见文本行收尾。H1/H2、受管理的 issue 或归档标题以及归档结束标记构成注释边界。正确闭合的注释隐藏其示例表，未闭合范围内的自由格式 issue 形表仍进入 `citedRows` 并保留编号。`--strict` 因 W262 失败。 |
 | W263 | `--verify-commits` 在非 Git worktree 中跳过：列出首个待验证 hash 的行号与说明。普通 `check` 可成功，`--strict` 失败；有效 Git worktree 中缺少 commit 仍报 W240。 |
-| W264 | 正文已有可提升的 `**验收判据**`，其后另有未计入的非空判据块。候选标签包括已有判据别名、以「判据」结尾的标签（可带括注）及 `判定标准`、`完成标准`、`验收标准`、`必须满足`，每块各报行号，`--strict` 失败。排除正式判据之前的描述性标签、`关闭时判据`、空块和仅注释块。`sync --criteria-labels` 仍用较窄的别名规则。默认 close 与 `--criteria-from-body` 拒绝移除正文。`--keep-body` 保留原文。审阅后可以用显式 `--criteria` 或 `--no-criteria` 选定判据列的值并关闭。 |
-| W268 | 判据列表后出现可能分隔判据条目的独立粗体标签，仅当后续列表延续判据原有列表类型/编号时报警；复核、边界、非目标、复测记录等小节标题不报。无缩进段落后还有列表或 fence 时仍报告可能歧义。保留已有判据读取结果并指出歧义行，`--strict` 失败。用 `**复核记录**：` 写复核内容可明确边界。默认 close 与 `--criteria-from-body` 拒绝删正文，可用审阅后的 `--status S --criteria TEXT`、`--no-criteria` 或 `--keep-body`。 |
+| W264 | 正文已有可提升的 `**验收判据**`，其后另有未计入的非空判据块。候选标签包括已有判据别名、以「判据」结尾的标签（可带括注）及 `判定标准`、`完成标准`、`验收标准`、`必须满足`，每块各报行号，**advisory，不参与 `--strict`**。排除正式判据之前的描述性标签、`关闭时判据`、空块和仅注释块；内容与正式判据逐字相同或来源键一致的块不报。纯指针块（`**判据（不变）**` / `**判据（同 #N）**` 且无列表项、文本为无变化断言）也不报，但引入新条件的指针或任何含列表的块仍报。`sync --criteria-labels` 仍用较窄的别名规则，且默认只改带列表项的候选。默认 close 与 `--criteria-from-body` 拒绝移除正文；文案说明改名会产生重复标签。`--keep-body` 保留原文。审阅后可以用显式 `--criteria` 或 `--no-criteria` 选定判据列的值并关闭。 |
+| W268 | 判据列表后出现可能分隔判据条目的独立粗体标签，仅当后续列表延续判据原有列表类型/编号时报警；复核、边界、非目标、复测记录等小节标题不报。**判据块终点规则**：列表后的空行 + 普通叙述结束块，除非后续列表续接同一列表（有序编号递增，或同为无序列表）；类型不同或从 `1.` 重新开始视为新节，不报 W268。缩进续行与围栏属于判据，仍报可能歧义。保留已有判据读取结果并指出歧义行，`--strict` 失败。用 `**复核记录**：` 写复核内容可明确边界。默认 close 与 `--criteria-from-body` 拒绝删正文，可用审阅后的 `--status S --criteria TEXT`、`--no-criteria` 或 `--keep-body`。 |
 | W270 | 正文或可见附录以未闭合代码围栏收尾，指出起始行。修复围栏后再写入；否则 `close --keep-body` 与 `reopen` 拒绝操作。`--strict` 失败。 |
-| W271 | 正文或附录中的可见 `#N` / `#Na` 引用了本台账未登记的编号。显式跨台账引用（如 `Orca 台账 #558`、`ledger #12`）豁免；`本台账 #N` 仍按本台账引用。带编号和首次引用的位置，`--strict` 失败。`new` 顺序跳过本台账引用，显式 `--id` 拒绝占用，也会复核将要写入的正文。持久化高水位继续独立追踪已分配号码。 |
+| W271 | 正文或附录中的可见 `#N` / `#Na` 引用了本台账未登记的编号。显式跨台账引用（如 `Orca 台账 #558`、`ledger #12`、`…/issue-*.md #N`）豁免；`本台账 #N`、`this ledger #N` 及动词前缀形式（`见本台账 #N`、`登记在本台账 #N`）仍按本台账引用。**裸写**引用只有当编号 ≤ high-water + 1（无标记时为表格最大号 + 1）才保留；更高的裸写视为历史或外部引用，不报、不占号。带编号和首次引用的位置，`--strict` 失败。`new` 顺序跳过本地引用，显式 `--id` 拒绝占用，也会复核将要写入的正文。持久化高水位继续独立追踪已分配号码。 |
 | W265 | 前言里的 `issuemd:high-water` 标记重复/格式错误，或它高于当前表格最大编号（可能有历史行被删）；`new` 使用该高水位避免重新分配编号。 |
 | W266 | 存在多个 `## 附录`，`check` 每个标题各报一条，`--strict` 失败。归档写入、恢复和 `read FILE 附录` 都报 W266、列出所有候选行号并拒绝猜选。 |
 | W267 | 台账前言的 `issuemd:limits` 格式无效或重复。使用默认值，`--strict` 失败。 |
@@ -584,7 +584,7 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 
 **正文归属（dogfood #69）**：`show` 先找本号自己的 `### Issue N:` 块；找不到时沿用「同一行只在首号写一段正文」的历史写法，借同一行其他号的正文——逗号行任一 id、区间行任一被覆盖的 id（`5–7` 的正文挂在 `6` 也算）——但某个 id 自己有独立行时（重复编号，E103）不借它的正文，`show` 与 `list --with-body` 同口径（第十四轮复审）；`--json` 的 `body` 带 `id`（正文真正属于哪个号）与 `inherited: true`，`criteria` 另带 `criteriaFrom`，文本模式在 stderr 写 `note: the body shown belongs to #N`、stdout 写明「正文属于 #N」。`check` 仍对没有自己正文的号报 E102。
 
-**`list --json --with-body`（dogfood #67；lossless labels #125；criteria structure #120/#123）**：每项附 `labels` 的单行摘要及 `labelBlocks` 的原始 Markdown 行；含判据标签时，另附 `criteriaBlocks: [{ line, label, kind, lines }]`，保留每次 canonical 判据与首个 canonical 块之后的非空别名块。`line` 是台账中的 1-based 绝对行号；`lines` 含标签行及其正文，仅去掉块尾空行；`kind` 为 `canonical` 或 `supplement`。空 canonical 块和重复 canonical 块保留，历史标签 `关闭时判据` 不算补充判据。开放项带 `body.content`（不含正文标题，可回灌 `body --body-file -`），`criteria` / `criteriaSource: "body"`；已关闭项的 `criteria` 带 `criteriaSource: "table"`，且唯一 keep-body 归档会附 `body.archived: true`、payload 与从同一 payload 计算的 `criteriaBlocks`。未展开的闭合区间行仅在其中有唯一可用归档时附带正文结构；多归档保持歧义并省略。正文来自同行兄弟号时附 `bodyFrom`。`show --json` 同样附 `labelBlocks`、`body.content` 与 `criteriaBlocks`，`body.text` 保持原有含标题语义；`show --json --label` 另附 `paragraphLines`。原有扁平 `labels` / `paragraph` / `criteria` 保持兼容。所有条目来自同一次解析，顶层 `snapshot` 一份，批量分析不必逐条 `show`。`--with-body` 必须配 `--json`（否则 exit 2）。
+**`list --json --with-body`（dogfood #67；lossless labels #125；criteria structure #120/#123）**：每项附 `labels` 的单行摘要及 `labelBlocks` 的原始 Markdown 行；含判据标签时，另附 `criteriaBlocks: [{ line, label, kind, lines }]`，保留每次 canonical 判据与首个 canonical 块之后的非空别名块。**新增可选 `criteriaItems: string[]`**：按 canonical 块的原始列表项切分，条目内保留分号；`criteria` 与 `criteriaBlocks` 不变。无法从扁平单元格恢复条目时，`criteriaItems` 为 `[criteria]` 并带 `criteriaJoined: true`；有唯一归档且提取文本与单元格逐字一致时，用归档恢复真条目。`line` 是台账中的 1-based 绝对行号；`lines` 含标签行及其正文，仅去掉块尾空行；`kind` 为 `canonical` 或 `supplement`。空 canonical 块和重复 canonical 块保留，历史标签 `关闭时判据` 不算补充判据。开放项带 `body.content`（不含正文标题，可回灌 `body --body-file -`），`criteria` / `criteriaSource: "body"`；已关闭项的 `criteria` 带 `criteriaSource: "table"`，且唯一 keep-body 归档会附 `body.archived: true`、payload 与从同一 payload 计算的 `criteriaBlocks`。未展开的闭合区间行仅在其中有唯一可用归档时附带正文结构；多归档保持歧义并省略。正文来自同行兄弟号时附 `bodyFrom`。`show --json` 同样附 `labelBlocks`、`body.content`、`criteriaItems` 与 `criteriaBlocks`，`body.text` 保持原有含标题语义；`show --json --label` 另附 `paragraphLines`。原有扁平 `labels` / `paragraph` / `criteria` 保持兼容。所有条目来自同一次解析，顶层 `snapshot` 一份，批量分析不必逐条 `show`。`--with-body` 必须配 `--json`（否则 exit 2）。
 
 ### 9.1 不要把这些命令加回来
 

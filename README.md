@@ -9,7 +9,7 @@ issuemd check   FILE [--json] [--strict] [--verify-commits]
 issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]
 issuemd show    FILE ID [--body-only | [--json] [--label 验收判据]]
 issuemd find    FILE PATTERN [--json]
-issuemd counts  FILE [--json]
+issuemd counts  FILE [--json | --markdown]
 issuemd read    FILE <H2 heading>
 
 issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-] [--allow-duplicate-title]
@@ -17,8 +17,9 @@ issuemd close   FILE ID [--status S] [--criteria TEXT | --criteria-from-body | -
 issuemd reopen  FILE ID [--status S] [--allow-duplicate-title]
 issuemd status  FILE ID NEW_STATUS
 issuemd rename  FILE ID "NEW TITLE" [--allow-duplicate-title]
-issuemd body    FILE ID (--body-file PATH|- [--append] | --move-evidence LABEL)
+issuemd body    FILE ID (--body-file PATH|- [--append [--before LABEL]] | --move-evidence LABEL)
 issuemd criteria FILE ID --criteria TEXT
+issuemd narrow  FILE ID --criteria TEXT [--status S] [--note TEXT | --note-file PATH]
 issuemd priority FILE ID P0|P1|P2|P3|""
 issuemd split   FILE ID
 issuemd prune   FILE ID (--dry-run | --confirm --if-unchanged SNAPSHOT)
@@ -31,9 +32,9 @@ Use `criteria FILE ID --criteria TEXT` to replace an open issue’s acceptance c
 
 Every write verb is atomic, keeps the file's BOM, line endings, trailing newline and mode bits, and validates the result before replacing the file: a change that would introduce a new `check` error is refused with exit `3` and nothing is written. `--dry-run` prints a unified diff instead (one hunk per changed region) and a `snapshot` on stderr; `--if-unchanged SNAPSHOT` then applies the write only if nobody changed the file since. `new` prints the id it filed; a write that would leave the bytes identical prints `(no changes)` and exits `0`. A file that is not valid UTF-8, or that mixes LF and CRLF, is refused with exit `2` rather than being silently re-encoded. `close` never drops criteria silently: it promotes the body's `**验收判据**` when the boundary is unambiguous and refuses when there is nothing to record or when multiple criteria blocks, later criteria aliases, or W268 could make it lose criteria. Review and pass complete `--status S --criteria TEXT`, choose `--no-criteria` intentionally, or retain the body with `--keep-body`. `close` also refuses if it would make any existing check error disappear (except the selected issue's own missing-body E102). `sync --titles` requires an explicit preference; choosing the body title also requires `--move-progress` or `--drop-progress` so table wording is preserved or deliberately discarded. `sync --fix-hashes` offers a previewed, atomic way to wrap safe W202 prose occurrences; it skips tables, markup-sensitive spans (including link titles and email autolinks), raw HTML, inline code, and archives. `close --keep-body`/`adopt` write a counted v3 archive so blank lines and literal marker text can be restored exactly; v2 and legacy archives remain readable, and malformed boundaries fail closed with W269.
 
-Use `issuemd body FILE ID --append --body-file PATH|-` to add a note without reading and rewriting the existing body. `issuemd show FILE ID --body-only` extracts that issue’s own body for editing and passing back to `--body-file`. Successful `rename` runs and previews report each replaced title on stderr. If a new body’s reference table reserves the ID selected by `new`, the command reports the conflicting row and exits `2` before writing.
+Use `issuemd body FILE ID --append --body-file PATH|-` to add a note without reading and rewriting the existing body; add `--before LABEL` to insert it before a unique visible label (for example `--before 验收判据`, keeping the criteria unchanged). `issuemd narrow FILE ID --criteria TEXT` replaces the criteria and can move the issue to another open status and insert a dated `**复核记录**` note in one atomic write. `issuemd show FILE ID --body-only` extracts that issue’s own body for editing and passing back to `--body-file`. Successful `rename` runs and previews report each replaced title on stderr. If a new body’s reference table reserves the ID selected by `new`, the command reports the conflicting row and exits `2` before writing.
 
-Each command accepts only its own options (`issuemd <command> --help`); anything else is exit `2`. The exit code is `0` on success, `1` for an unknown issue or empty result, `2` for usage or I/O errors, `3` for validation failures, and `4` when the file changed between read and write (`E130`; re-read and retry). Add `--strict` to fail on warnings (`W250`, the "body kept in the appendix" hint, is informational and never fails strict) or `--verify-commits` to look up referenced commits in the ledger's Git repository (outside a Git worktree, it warns W263 and skips verification).
+Each command accepts only its own options (`issuemd <command> --help`); anything else is exit `2`. The exit code is `0` on success, `1` for an unknown issue or empty result, `2` for usage or I/O errors, `3` for validation failures, and `4` when the file changed between read and write (`E130`; re-read and retry). Add `--strict` to fail on warnings; `W201`, `W202`, `W250` and `W264` are advisory and never fail strict (their fixes are mechanical or guarded separately). `--verify-commits` looks up referenced commits in the ledger's Git repository (outside a Git worktree, it warns W263 and skips verification). `issuemd --version` prints the package version and the running build directory.
 
 ## Why
 
