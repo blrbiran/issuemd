@@ -230,7 +230,7 @@
 
   Confirm dogfood/cafe/Orca archive checks and before/after SHA-256 values. Do not modify those files.
 
-- [ ] **Step 4: Review and commit the current branch**
+- [x] **Step 4: Review and commit the current branch**
 
   Stage the reviewed working tree, inspect the staged diff, get a fresh code review and commit review, then commit with a Conventional Commit message and Claude attribution.
 
