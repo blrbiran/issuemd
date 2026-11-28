@@ -674,6 +674,49 @@ export function criteriaTextFromOccurrences(occurrences: CriteriaOccurrence[]): 
   return texts.length > 0 ? joinClauses(texts) : undefined;
 }
 
+/** Split one criteria block into list items; markers are stripped, semicolons stay inside. */
+export function criteriaItemsFromBlock(lines: string[]): string[] {
+  const fenced = fencedLines(lines, true);
+  const visibility = bodyVisibility(lines, fenced);
+  const first = parseLabelLine(visibility.text[0] ?? "");
+  const items: string[] = [];
+  let current = first?.rest.trim() ?? "";
+  const flush = () => {
+    const text = current.replace(/\s+/g, " ").trim();
+    if (text) items.push(text);
+    current = "";
+  };
+  for (let index = 1; index < lines.length; index++) {
+    if (visibility.hidden[index]) continue;
+    const text = visibility.text[index]!;
+    if (fenced[index] && /^[ \t]*(?:`{3,}|~{3,})/.test(text)) continue;
+    if (text.trim() === "") continue;
+    if (!fenced[index]) {
+      const marker = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(\S.*)$/.exec(text);
+      if (marker) {
+        flush();
+        current = marker[1]!;
+        continue;
+      }
+    }
+    current += (current ? " " : "") + text.trim();
+  }
+  flush();
+  return items;
+}
+
+/** Items for every distinct canonical block, in source order (additive JSON view). */
+export function criteriaItemsFromOccurrences(occurrences: CriteriaOccurrence[]): string[] | undefined {
+  const seen = new Set<string>();
+  const items: string[] = [];
+  for (const occurrence of occurrences) {
+    if (occurrence.kind !== "canonical" || occurrence.text === "" || seen.has(occurrence.text)) continue;
+    seen.add(occurrence.text);
+    items.push(...criteriaItemsFromBlock(occurrence.lines));
+  }
+  return items.length ? items : undefined;
+}
+
 // Automatic rename is deliberately stricter than the set of blocks that
 // require review before deleting a body.
 function isCriteriaSupplement(label: string): boolean {

@@ -9,7 +9,7 @@
 import { parseId, type IdSpan } from "./issue-id.js";
 import { archiveInventory, archivePayloadRange, bodyBlocks, parseLedger, type BodyBlock, type LedgerRow, type TableKind } from "./ledger.js";
 import { fencedLines } from "./scan.js";
-import { bodyLabels, bodyVisibility, type BodyVisibility, labelBlock, labelBlocksIn, type LabelBlock, criteriaOccurrences, criteriaOccurrencesFromLabelBlocks, criteriaTextFromOccurrences } from "./ledger-edit.js";
+import { bodyLabels, bodyVisibility, type BodyVisibility, labelBlock, labelBlocksIn, type LabelBlock, criteriaOccurrences, criteriaOccurrencesFromLabelBlocks, criteriaItemsFromOccurrences, criteriaTextFromOccurrences } from "./ledger-edit.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
 
 export type ListedIssue = {
@@ -23,6 +23,10 @@ export type ListedIssue = {
   priority: string;
   summary: string;
   criteria?: string;
+  /** Item boundaries when they can be recovered from a body/archive block. */
+  criteriaItems?: string[];
+  /** The criteria came from a flat table cell; `；` item boundaries are lost. */
+  criteriaJoined?: true;
   /** `--with-body`: where `criteria` came from (open: the body; closed: the column). */
   criteriaSource?: "body" | "table";
   /** `--with-body`: the id whose body supplied labels/criteria when it is a sibling's. */
@@ -77,6 +81,12 @@ function bodyContent(lines: string[], headingLine: number, endLine: number): str
 
 function criteriaBlockViews(occurrences: ReturnType<typeof criteriaOccurrences>) {
   return occurrences.map(({ line, label, kind, lines }) => ({ line, label, kind, lines }));
+}
+
+/** A flat closed-table cell cannot be split non-destructively; flag that. */
+function criteriaItemsFallback(criteria: string | undefined): { criteriaItems?: string[]; criteriaJoined?: true } {
+  if (criteria == null || criteria === "") return {};
+  return { criteriaItems: [criteria], ...(criteria.includes("；") ? { criteriaJoined: true as const } : {}) };
 }
 
 type ArchivedBody = NonNullable<ListedIssue["body"]>;
@@ -367,14 +377,18 @@ export function withBody(
     const first = issue.ids[0] ?? issue.id;
     const row = index.rowsById.get(first);
     const archived = row ? indexedArchiveForRow(index, row.row, first) : index.archiveBodiesById.get(first) ?? undefined;
-    if (!archived) return { ...issue, criteriaSource: "table" };
+    if (!archived) return { ...issue, criteriaSource: "table", ...criteriaItemsFallback(issue.criteria) };
     const bodyLines = ledger.lines.slice(archived.line - 1, archived.end);
     const occurrences = criteriaOccurrences(bodyLines, archived.line - 1);
+    const items = criteriaTextFromOccurrences(occurrences) === issue.criteria
+      ? criteriaItemsFromOccurrences(occurrences)
+      : undefined;
     return {
       ...issue,
       criteriaSource: "table",
       body: archived,
       criteriaBlocks: criteriaBlockViews(occurrences),
+      ...(items ? { criteriaItems: items } : criteriaItemsFallback(issue.criteria)),
     };
   }
   const first = issue.ids[0];
@@ -418,6 +432,8 @@ export function withBody(
   if (criteria) {
     out.criteria = criteria;
     out.criteriaSource = "body";
+    const items = criteriaItemsFromOccurrences(occurrences);
+    if (items) out.criteriaItems = items;
   }
   return out;
 }
@@ -549,6 +565,10 @@ export type IssueView = {
   priority: string;
   summary: string;
   criteria?: string;
+  /** Item boundaries when they can be recovered from a body/archive block. */
+  criteriaItems?: string[];
+  /** The criteria came from a flat table cell; `；` item boundaries are lost. */
+  criteriaJoined?: true;
   /** Where `criteria` came from: the closed table's column, or the open body's **验收判据**. */
   criteriaSource?: "table" | "body";
   /** The id whose body supplied `criteria`, when that body is a row sibling's. */
@@ -644,7 +664,14 @@ export function viewIssue(
       view.criteria = promoted;
       view.criteriaSource = "body";
       if (owner !== found.id) view.criteriaFrom = owner;
+      const items = criteriaItemsFromOccurrences(occurrences);
+      if (items) view.criteriaItems = items;
+    }
+    if (found.table === "closed" && archived && criteriaTextFromOccurrences(occurrences) === found.row.criteria) {
+      const items = criteriaItemsFromOccurrences(occurrences);
+      if (items) view.criteriaItems = items;
     }
   }
+  if (found.table === "closed" && view.criteriaItems == null) Object.assign(view, criteriaItemsFallback(view.criteria));
   return view;
 }
