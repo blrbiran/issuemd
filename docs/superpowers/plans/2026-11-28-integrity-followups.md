@@ -234,7 +234,7 @@
 
   Stage the reviewed working tree, inspect the staged diff, get a fresh code review and commit review, then commit with a Conventional Commit message and Claude attribution.
 
-- [ ] **Step 5: Fast-forward merge to `main` and build**
+- [x] **Step 5: Fast-forward merge to `main` and build**
 
   Confirm the feature branch is a direct descendant, switch to `main`, `git merge --ff-only`, then run `npm run build`. Do not push.
 

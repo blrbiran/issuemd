@@ -17,8 +17,8 @@
 
 `issuemd` P0–P5 已完成。包版本仍为 `0.1.0`。外部 dogfooding 台账由测试者维护，目前反馈至 #137。
 
-- 第二十四轮（收尾中）在 `fix/dogfooding-feedback` 上完成 v3 counted archive envelope、共享 archive inventory、v2/v3 reopen/prune/W201 一致化，以及 hash/Markdown 边界修复；详细设计与计划见下方「第二十四轮」小节。
-- `npm run typecheck && npm test` 通过 857 项；`npm run build` 成功，`dist/bin/issuemd.js` 为 755、版本 `0.1.0`。本轮实现已提交，本地 `main` 以 fast-forward 合入；push 由用户处理。
+- 第二十四轮已完成：v3 counted archive envelope、共享 archive inventory、v2/v3 reopen/prune/W201 一致化，以及 hash/Markdown 边界修复；详细设计与计划见下方「第二十四轮」小节。
+- `npm run typecheck && npm test` 通过 857 项；`npm run build` 成功，`dist/bin/issuemd.js` 为 755、版本 `0.1.0`。本轮实现已提交、fast-forward 合入 `main`，并由用户 push；已合并的 `fix/dogfooding-feedback` 分支已清理。
 - 外部台账只读复测均 0 errors；dogfood 0 warnings、cafe 12 warnings（W250 ×6、W268 ×6）、Orca archive 42 warnings（W201 ×10、W250 ×16、W264 ×16）。dogfood 与 Orca 的 SHA-256 未变；cafe 在本轮中途被外部修改，详见第二十四轮。
 
 ## 工作流约定（用户明确要求）
@@ -33,7 +33,7 @@
 
 ## 等待用户决策 / 动作
 
-1. **push 由用户手动执行**。待推送提交数用 `git rev-list --count origin/main..main` 现查。
+1. **push 由用户手动执行**。当前 `main` 已与 `origin/main` 同步；后续待推送提交数用 `git rev-list --count origin/main..main` 现查。
 2. **发版（用户决定时机，2026-11-25 明确「暂不发版」）**：`npm version minor` → `npm publish`（`prepack` 会自动 build `dist/`）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`、`.dist-test`。
 3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。#53 建议把已达标条目与「owner 裁定不做」的判据在台账里标注出来，这同样留给测试者。
 4. `.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。其他 clone 拉到那次提交时，git 会删掉它们工作区里的 `.cafe`，需从上一提交恢复（`git show <移出前的提交>:.cafe > .cafe`）。
@@ -63,14 +63,26 @@
 
 本轮承接第二十三轮未提交的 `fix/dogfooding-feedback` 分支：先修复对该 diff 的独立审查发现，再把 kept-body archive 升级为 **v3 计数信封**，并完成共享 archive inventory、reopen/prune/W201 一致化，以及 hash/Markdown 边界修复。v3 设计与计划：`docs/superpowers/specs/2026-11-28-archive-envelope-v3-design.md`、`docs/superpowers/plans/2026-11-28-integrity-followups.md`；设计经独立 subagent 多轮 review 后批准，实施按 TDD 分任务推进。外部台账仍只读；用户在会话中途允许阶段性 commit，本轮实现已提交。
 
+接手基线：`main` 工作树干净，本轮提交已在 `main` 且已 push；没有遗留的暂存区或未提交实现。`git log --oneline` 现查本轮提交即可，不要依赖本文档写死的 HEAD。
+
 - **#136 / #137**：v3 用 `<!-- issuemd:kept-body:v3 -->` + `<!-- issuemd:kept-body:lines:N -->` 声明精确 payload 行数；N 条记录后必须有一个独立空 frame，再是 end marker。空行、空白行和 marker-shaped payload 文本都能无损保存；`close --keep-body` 与 `adopt` 在写前验证序列化候选。W201 只按 N 条 LF-join payload 计字节，排除 frame/metadata。旧 v2 的 exact marker 语法与 pre-commit positional separator 兼容；v2 marker 保留既有 trim 容错。malformed v2/v3 报 W269，show/list 隐去 payload，reopen/prune fail closed。
 - **#103 / #133 / #124 的剩余边界**：共享 archive inventory 用 fence/comment/raw-HTML masks 过滤伪 `## 附录` 与伪 archive H3；`read FILE 附录` 仍沿用原始 H2 扫描（既有行为）。hash 修复新增 link/reference/email/HTML attribute/multiline code 的保护与测试；`body --append` 的剩余“判据在最后”风险仍待独立处理（本轮没有改变 append 的行为）。
 - **#114 / #113 / #127 的读取面**：`show`、`show --body-only`、closed `list --json --with-body`、W201/W202 和 `prune` 共用 v3/v2/legacy locator；archive JSON 增 `body.lineCount`。`prune` 只删除唯一 closed singleton 的 verified v2/v3 archive，保留 closed row、判据和其他附录字节；end marker 后的非空尾注使 prune 拒绝。旧 legacy 仍可 read/reopen，prune 需人工处理。
 - **#104 / #117 / #120 / #123**：保留第二十三轮的 criteria 边界守卫和 `criteriaBlocks`；W206 列出所有重复 canonical 行；`sync --criteria-labels` 只对唯一非空安全别名自动改名。闭表判据中的字面 `；` 仍无法从旧格式反推条目边界。
 - **W202 / Markdown 扫描**：`sync --fix-hashes` 对 bare URL、Markdown link destination/title、reference definition、email autolink、raw HTML block/attribute、跨行 inline code 和 literal marker 均跳过并报告原因；`check` 的 W202 仍报告可见 raw HTML 中的 hash 供人工处理。新增 escaped backtick、multiline span、list/heading 边界和 performance 回归。
 - **验证**：本轮最后一次为 `npm run typecheck && npm test` **857 pass / 0 fail**，`npm run build` 成功，`dist/bin/issuemd.js` 权限 755、版本 0.1.0。外部只读检查均 0 errors：dogfood 0 warnings（snapshot `862c39435e6cfde7`），cafe 12 warnings（W250 ×6、W268 ×6，snapshot `0dcc7db8d40a7b6f`），Orca archive 42 warnings（W201 ×10、W250 ×16、W264 ×16，snapshot `14b5fc09c6958452`）。dogfood/Orca SHA-256 与本轮起点一致；cafe 在本轮中途被外部修改（`7328211d…` → `0dcc7db8…`，兄弟 repo `git status` 显示 M），我们未写该文件。
-- **提交与交接**：实现与测试已提交到 `fix/dogfooding-feedback`，本地 `main` 以 fast-forward 合入；`push` 仍由用户处理。下一分支的 dogfooding 工作（#131/#133 的 append 边界、#127 `find`、#135 多号归档、#128 fence 诊断、#106 体积出口、#121 引用号复用等）留在后续分支。
+- **提交与交接**：实现、测试与 handoff 已提交到 `fix/dogfooding-feedback`，fast-forward 合入 `main` 并由用户 push；已合并分支已清理。下一轮从 `main` 新开分支即可，不需要恢复工作树或暂存区（当前工作树干净）。
 - **最终独立复审与修复**：补测并修复了 reopen 后隐藏其他归档、CDATA 伪归档、raw-text 中注释遮蔽真实归档、v3 version 行丢失被降级为 legacy、shortcut/collapsed reference label 被改写；最终全量 857 pass。
+- **剩余工作（按建议优先级）**：
+  1. **#131 / #133**：`body --append` 仍可能把复测段并入最后一个判据块；应改为显式安全落点（正文末尾/新标签），并在追加内容含判据标签时拒绝或包块。
+  2. **#127**：新增只读 `find FILE PATTERN`（返回 `id/table/line/where`，区分 summary/body/archive/reference）。
+  3. **#135**：`list --closed --json --with-body` 对多 id 行的归档只认首号；需按整行唯一归档解析。
+  4. **#128**：`check` 对附录/正文以未闭合 fence 收尾仍全绿；应加带行号的 warning/strict 失败。
+  5. **#106**：W201 缺机械出口（拆分正文/移证据/清理归档）；先定“写时提示 + 安全移动”最小方案。
+  6. **#121**：正文引用过、表中已删的编号仍可能被 `new` 复用；需引用号扫描或持久高水位补强。
+  7. **#124 / #103 残余**：独立粗体行仍可能剪断判据；判据列表后叙述+再列表的边界仍未完全定义。
+  8. **低优先**：#27 裸 8 位 hash、#115 W202 格式化总体积提示、#120 闭表字面分号可逆编码、#125 批量 JSON parity、legacy archive 的 prune。
+
 
 ## 第二十三轮（2026-11-28）
 
