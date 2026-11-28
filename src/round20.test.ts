@@ -23,6 +23,12 @@ async function closeWithArchive(name: string): Promise<{ file: string; source: s
   return { file, source, archive: archive! };
 }
 
+function v3ArchiveAsLegacy(archive: string, prefix: string[] = []): string {
+  const lines = archive.split("\n");
+  const count = Number(/lines:(\d+)/.exec(lines[3] ?? "")?.[1]);
+  return [lines[0]!, ...prefix, ...lines.slice(4, 4 + count)].join("\n");
+}
+
 function appendDuplicateArchive(source: string, archive: string): string {
   return `${source.trimEnd()}\n\n## 附录\n\n${archive}\n`;
 }
@@ -83,10 +89,10 @@ for (const [label, malformed] of [
   ["NBSP before closing hashes", "closing"],
 ] as const) {
   test(`archive commands ignore non-ATX Unicode spacing: ${label}`, async () => {
-    const { file, source, archive } = await closeWithArchive(`unicode-space-${label}.md`);
+    const { file, source } = await closeWithArchive(`unicode-space-${label}.md`);
     const literal = malformed === "heading"
-      ? archive.replace("### #2 ", "### #2 ")
-      : archive.replace("（已关闭，正文保留）", "（已关闭，正文保留） ##");
+      ? "### #2 侧栏宽度不可调（已关闭，正文保留）\nnot an archive heading"
+      : "### #2 侧栏宽度不可调（已关闭，正文保留） ##\nnot an archive heading";
     writeFileSync(file, `${source.trimEnd()}\n\n${literal}\n`);
 
     const checked = await run(["check", file, "--json"]);
@@ -172,18 +178,19 @@ test("close ignores archive-shaped headings outside appendix sections", async ()
   expect(readFileSync(file, "utf8")).toContain("### #2 示例（已关闭，正文保留）");
 });
 
-test("close refuses unescaped archive boundary markers in a body", async () => {
+test("close preserves unfenced archive marker text in a v3 payload", async () => {
   for (const [name, marker] of [
     ["start", "<!-- issuemd:kept-body:start -->"],
     ["end", "<!-- issuemd:kept-body:end -->"],
   ] as const) {
     const source = canonical.replace("**根因**：宽度写死在 CSS 变量。", `**根因**：宽度写死在 CSS 变量。\n\n${marker}`);
     const file = fixture(`body-archive-${name}-marker.md`, source);
-    const before = readFileSync(file, "utf8");
-    const closed = await run(["close", file, "2", "--keep-body"]);
-    expect(closed.code).toBe(3);
-    expect(closed.stderr).toContain(marker);
-    expect(readFileSync(file, "utf8")).toBe(before);
+    expect((await run(["close", file, "2", "--keep-body"])).code).toBe(0);
+    const shown = JSON.parse((await run(["show", file, "2", "--json"])).stdout);
+    expect(shown.body?.lineCount).toBeGreaterThan(0);
+    expect(shown.body.content).toContain(marker);
+    expect((await run(["reopen", file, "2"])).code).toBe(0);
+    expect(readFileSync(file, "utf8")).toBe(source);
   }
 });
 
@@ -368,8 +375,9 @@ for (const [label, noteLike] of [
 test("new archives use explicit payload boundaries without a provenance line", async () => {
   const { file, archive } = await closeWithArchive("explicit-archive-payload-boundaries.md");
   const lines = archive.split("\n");
-  expect(lines[1]).toBe("<!-- issuemd:kept-body:v2 -->");
+  expect(lines[1]).toBe("<!-- issuemd:kept-body:v3 -->");
   expect(lines[2]).toBe("<!-- issuemd:kept-body:start -->");
+  expect(lines[3]).toMatch(/^<!-- issuemd:kept-body:lines:\d+ -->$/);
   expect(lines).toContain("<!-- issuemd:kept-body:end -->");
   expect(archive).not.toContain("> 关闭时以 --keep-body");
 
@@ -403,11 +411,8 @@ test("reopen handles a legacy archive heading at EOF", async () => {
 test("reopen preserves a start-marker literal inside a legacy payload", async () => {
   const { file, source, archive } = await closeWithArchive("legacy-payload-marker-collision.md");
   const note = "> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。";
-  const markerAsPayload = archive.replace(
-    "<!-- issuemd:kept-body:v2 -->\n<!-- issuemd:kept-body:start -->\n",
-    `\n\n${note}\n\n<!-- issuemd:kept-body:start -->\n`,
-  );
-  writeFileSync(file, source.replace(archive, markerAsPayload));
+  const legacy = v3ArchiveAsLegacy(archive, [note, "", "<!-- issuemd:kept-body:start -->"]);
+  writeFileSync(file, source.replace(archive, legacy));
 
   expect((await run(["reopen", file, "2"])).code).toBe(0);
   expect((await run(["show", file, "2", "--body-only"])).stdout)
@@ -416,13 +421,14 @@ test("reopen preserves a start-marker literal inside a legacy payload", async ()
 
 test("reopen does not truncate a legacy payload at a literal end marker", async () => {
   const { file, source, archive } = await closeWithArchive("legacy-literal-end-marker.md");
-  const start = source.indexOf(archive);
-  const end = source.indexOf("<!-- issuemd:kept-body:end -->", start) + "<!-- issuemd:kept-body:end -->".length;
-  const literal = archive.replace(
-    "<!-- issuemd:kept-body:v2 -->\n<!-- issuemd:kept-body:start -->\n",
-    "**现象**：旧归档正文前段。\n<!-- issuemd:kept-body:end -->\n**备注**：这是正文里的字面标记。\n",
-  );
-  writeFileSync(file, `${source.slice(0, start)}${literal}${source.slice(end)}`);
+  const legacy = [
+    ...v3ArchiveAsLegacy(archive).split("\n"),
+    "**现象**：旧归档正文前段。",
+    "<!-- issuemd:kept-body:end -->",
+    "**备注**：这是正文里的字面标记。",
+    "<!-- issuemd:kept-body:end -->",
+  ].join("\n");
+  writeFileSync(file, source.replace(archive, legacy));
 
   expect((await run(["reopen", file, "2"])).code).toBe(0);
   const body = (await run(["show", file, "2", "--body-only"])).stdout;
@@ -440,8 +446,9 @@ test("reopen preserves edge whitespace from a legacy markerless archive", async 
   const file = fixture("legacy-markerless-body-edge-whitespace.md", source);
   expect((await run(["close", file, "2", "--keep-body"])).code).toBe(0);
   let closed = readFileSync(file, "utf8");
-  closed = closed.replace("<!-- issuemd:kept-body:v2 -->\n<!-- issuemd:kept-body:start -->\n", "");
-  closed = closed.replace("\n<!-- issuemd:kept-body:end -->", "\n### 2026-11-21 legacy boundary\n\nkept appendix prose");
+  const archive = closed.match(/^### #2 .*（已关闭，正文保留）[\s\S]*?^<!-- issuemd:kept-body:end -->$/m)?.[0];
+  expect(archive).toBeDefined();
+  closed = closed.replace(archive!, `${v3ArchiveAsLegacy(archive!)}\n### 2026-11-21 legacy boundary\n\nkept appendix prose`);
   writeFileSync(file, closed);
 
   expect((await run(["reopen", file, "2"])).code).toBe(0);
@@ -458,8 +465,9 @@ test("reopen keeps a whitespace-only separator before a legacy markerless archiv
   expect((await run(["close", file, "2", "--keep-body"])).code).toBe(0);
   const archiveHeading = "### #2 侧栏宽度不可调（已关闭，正文保留）";
   let closed = readFileSync(file, "utf8").replace(`\n\n${archiveHeading}`, `\n \t\n${archiveHeading}`);
-  closed = closed.replace("\n<!-- issuemd:kept-body:v2 -->\n<!-- issuemd:kept-body:start -->", "\n\n> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。\n");
-  closed = closed.replace("\n<!-- issuemd:kept-body:end -->", "\n");
+  const archive = closed.match(/^### #2 .*（已关闭，正文保留）[\s\S]*?^<!-- issuemd:kept-body:end -->$/m)?.[0];
+  expect(archive).toBeDefined();
+  closed = closed.replace(archive!, v3ArchiveAsLegacy(archive!, ["> 关闭时以 --keep-body 保留了原正文；状态见「已关闭」表。"]));
   writeFileSync(file, closed);
 
   expect((await run(["reopen", file, "2"])).code).toBe(0);

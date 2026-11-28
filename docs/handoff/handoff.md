@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-27（第二十二轮，台账内 W201 阈值、写入回执和附录维护）。写给下一位接手者。
+更新于 2026-11-28（第二十四轮进行中，v3 archive envelope、共享 archive inventory 与 W202/hash 边界）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -15,10 +15,11 @@
 
 ## 一句话现状
 
-`issuemd` P0–P5 已完成。包版本仍为 `0.1.0`。外部 dogfooding 台账由测试者维护，目前反馈至 #127。
+`issuemd` P0–P5 已完成。包版本仍为 `0.1.0`。外部 dogfooding 台账由测试者维护，目前反馈至 #137。
 
-- 第二十二轮新增台账内 `limits`、W201 实测数据与归档正文检查、写后快照回执、错误分类，以及附录写入守卫和自动回收。
-- `npm run typecheck && npm test` 通过 765 项。三份外部台账只读复测，详见第二十二轮。push 与 npm 发布由用户处理。
+- 第二十四轮（进行中）在 `fix/dogfooding-feedback` 上完成 v3 counted archive envelope、共享 archive inventory、v2/v3 reopen/prune/W201 一致化，以及 hash/Markdown 边界修复；详细设计与计划见下方「第二十四轮」小节。
+- `npm run typecheck && npm test` 通过 857 项；`npm run build` 成功，`dist/bin/issuemd.js` 为 755、版本 `0.1.0`。本轮改动仍在工作树，尚未提交、未合入 main、未 push。
+- 外部台账只读复测均 0 errors；dogfood 0 warnings、cafe 12 warnings（W250 ×6、W268 ×6）、Orca archive 42 warnings（W201 ×10、W250 ×16、W264 ×16）。dogfood 与 Orca 的 SHA-256 未变；cafe 在本轮中途被外部修改，详见第二十四轮。
 
 ## 工作流约定（用户明确要求）
 
@@ -57,6 +58,36 @@
    - **接受不改的 4 项**见「第十四轮」小节（`--expand` 行序、snapshot 原始字节、`--with-body` 省键、close 选项互斥）。若想让 `list --expand` 按编号排序，或让 snapshot 跨编码相等，说一声即可——都只影响输出顺序/口径，改动很小。
 
 9. **第十一轮报审（备查）**：Q1 W225 编号占用（已执行，第十二轮维持）；Q2 更多「台账表小节」词（未做，推荐暂不做：改成 E124 会把 `## 已完成` 的行当开放项）；Q3 年份标题（第十二轮已做）；Q4 `list --json` 暴露被占用编号（第十二轮已做，`citedRows`）；Q5 台账复测留给测试者。
+
+## 第二十四轮（2026-11-28，进行中）
+
+本轮承接第二十三轮未提交的 `fix/dogfooding-feedback` 分支：先修复对该 diff 的独立审查发现，再把 kept-body archive 升级为 **v3 计数信封**，并完成共享 archive inventory、reopen/prune/W201 一致化，以及 hash/Markdown 边界修复。v3 设计与计划：`docs/superpowers/specs/2026-11-28-archive-envelope-v3-design.md`、`docs/superpowers/plans/2026-11-28-integrity-followups.md`；设计经独立 subagent 多轮 review 后批准，实施按 TDD 分任务推进。外部台账仍只读；用户在会话中途允许阶段性 commit，但本轮尚未提交。
+
+- **#136 / #137**：v3 用 `<!-- issuemd:kept-body:v3 -->` + `<!-- issuemd:kept-body:lines:N -->` 声明精确 payload 行数；N 条记录后必须有一个独立空 frame，再是 end marker。空行、空白行和 marker-shaped payload 文本都能无损保存；`close --keep-body` 与 `adopt` 在写前验证序列化候选。W201 只按 N 条 LF-join payload 计字节，排除 frame/metadata。旧 v2 的 exact marker 语法与 pre-commit positional separator 兼容；v2 marker 保留既有 trim 容错。malformed v2/v3 报 W269，show/list 隐去 payload，reopen/prune fail closed。
+- **#103 / #133 / #124 的剩余边界**：共享 archive inventory 用 fence/comment/raw-HTML masks 过滤伪 `## 附录` 与伪 archive H3；`read FILE 附录` 仍沿用原始 H2 扫描（既有行为）。hash 修复新增 link/reference/email/HTML attribute/multiline code 的保护与测试；`body --append` 的剩余“判据在最后”风险仍待独立处理（本轮没有改变 append 的行为）。
+- **#114 / #113 / #127 的读取面**：`show`、`show --body-only`、closed `list --json --with-body`、W201/W202 和 `prune` 共用 v3/v2/legacy locator；archive JSON 增 `body.lineCount`。`prune` 只删除唯一 closed singleton 的 verified v2/v3 archive，保留 closed row、判据和其他附录字节；end marker 后的非空尾注使 prune 拒绝。旧 legacy 仍可 read/reopen，prune 需人工处理。
+- **#104 / #117 / #120 / #123**：保留第二十三轮的 criteria 边界守卫和 `criteriaBlocks`；W206 列出所有重复 canonical 行；`sync --criteria-labels` 只对唯一非空安全别名自动改名。闭表判据中的字面 `；` 仍无法从旧格式反推条目边界。
+- **W202 / Markdown 扫描**：`sync --fix-hashes` 对 bare URL、Markdown link destination/title、reference definition、email autolink、raw HTML block/attribute、跨行 inline code 和 literal marker 均跳过并报告原因；`check` 的 W202 仍报告可见 raw HTML 中的 hash 供人工处理。新增 escaped backtick、multiline span、list/heading 边界和 performance 回归。
+- **验证**：本轮最后一次为 `npm run typecheck && npm test` **857 pass / 0 fail**，`npm run build` 成功，`dist/bin/issuemd.js` 权限 755、版本 0.1.0。外部只读检查均 0 errors：dogfood 0 warnings（snapshot `862c39435e6cfde7`），cafe 12 warnings（W250 ×6、W268 ×6，snapshot `0dcc7db8d40a7b6f`），Orca archive 42 warnings（W201 ×10、W250 ×16、W264 ×16，snapshot `14b5fc09c6958452`）。dogfood/Orca SHA-256 与本轮起点一致；cafe 在本轮中途被外部修改（`7328211d…` → `0dcc7db8…`，兄弟 repo `git status` 显示 M），我们未写该文件。
+- **提交与交接**：本轮改动与 handoff 尚在工作树；完成最终提交前需按用户要求先 review。`push` 仍由用户处理。下一分支的 dogfooding 工作（#131/#133 的 append 边界、#127 `find`、#135 多号归档、#128 fence 诊断、#106 体积出口、#121 引用号复用等）留在后续分支。
+
+## 第二十三轮（2026-11-28）
+
+本轮针对 dogfooding 反馈先只读复核当前实现，再处理会让判据被静默截断或关闭时丢失的边界；同时补齐 W202 的逐处诊断和安全批量修复。criteria 设计和计划：`docs/superpowers/specs/2026-11-27-criteria-integrity-design.md`、`docs/superpowers/plans/2026-11-27-criteria-integrity.md`。W202 设计和计划：`docs/superpowers/specs/2026-11-28-w202-occurrence-actions-design.md`、`docs/superpowers/plans/2026-11-28-w202-occurrence-actions.md`；两个 spec 都经独立 subagent review 后修正边界。工作在 `fix/dogfooding-feedback` 分支；未提交、未 push、未写外部台账。
+
+- **#124**：保留现有 standalone bold 标签语法；新增 W268，定位句末标点的独立粗体边界。若 close 将因此自动删正文，默认与 `--criteria-from-body` 均 exit 2、不写；提供 `--criteria TEXT`、`--no-criteria` 或 `--keep-body` 作为显式选择。合法自定义标签位于判据列表之后也可能触发 W268，这是保守守卫的代价。HTML 注释中的标签不再切块；raw body 仍保留注释原文。
+- **#104**：`new` / `body` 在近邻标签会导致 W261/W264 时提供候选标签行号与修复建议；只有单个非空别名、且无 canonical 标签时才建议 `sync --criteria-labels`，其他情况说明需要人工合并/修改。sync 预演与写入回执均补绝对行号。文档解释闭表 `判据` 列对应正文 `**验收判据**`。
+- **#117/#123**：W264 对 canonical 之后每个非空判据别名分别报行号；W206 消息列出重复 canonical 标签全部行号。若关闭会删除正文，多个非空 canonical 块、后续非空判据别名或 W268 均阻止自动提升。`--keep-body` 保留正文归档；显式 `--criteria` 可提交审阅后的合并值。
+- **#120**：新增 `criteriaBlocks` 到 `show --json` 与 `list --json --with-body`，保留 canonical 块和后续非空别名的原始行、类型、绝对行号；空/重复 canonical 块不去重。唯一归档的读取视图使用 payload 与归档 owner；未展开闭区间仅在找到唯一归档时提供。旧的扁平 `criteria` 与闭表格式兼容保留，历史闭表中单条判据包含字面 `；` 时无法恢复条目边界，仍是单独的数据格式决策。
+- **#103**：反馈中的「判据列表后空行+普通状态段落」与追加复测污染在第二十一轮已修；本轮保持该行为，相关 round21 测试继续覆盖。
+- **#126**：`read FILE 附录` 遇到重复附录标题时的报错补 W266 与所有候选行号，避免与 `check` / archive write 的诊断口径不一致。
+- **W201 limits parser**：修复 marker-like comment 被前言 raw HTML block（如 `<div>…</div>`）包住时仍被当成生效配置、可能被 `limits --clear` 删除的问题。只识别可见且独立成行的有效前言 marker；`<div>` 示例保持 user text。
+- **#114 / prune**：新增两步式 `issuemd prune FILE ID --dry-run` → `--confirm --if-unchanged SNAPSHOT`，只删除唯一的、可验证 v2 归档。已关闭表行、判据、`## 附录` 标题、相邻文字和其他归档保持不变；重复附录、重复/legacy/坏 v2 归档、fence/raw HTML/多行注释里的伪标题、开放区间或不可读行占用同一 id 都拒绝。删除前复核既有 error 多重集合与其他归档 payload 不变；有尾换行保留空行，无尾换行 EOF 只去掉变成末尾的空行。spec / plan：`docs/superpowers/specs/2026-11-28-archive-prune-design.md`、`docs/superpowers/plans/2026-11-28-archive-prune.md`。
+- **写入读取一致性**：`loadWritable` 现在用一次稳定的 `readRaw()` 同时完成 UTF-8 / EOL 校验、解析、snapshot 与预期 stat。此前校验和解析是两次读取，CRLF↔混合行尾的竞态可能让预览 snapshot 仍匹配却重写未审阅的字节。所有写命令共享此保证。
+- **#113 / W202**：每个命中位置各报一条，附绝对行号、列号和开放正文 id；text `check` 不再截断 W202 清单。`sync FILE --fix-hashes [--dry-run]` 一次处理开放正文与普通附录文本中的安全位置。table cells、fences、链接目标、raw HTML 属性、不完整 inline-code 行、标题、归档正文均不自动改；会报告跳过原因。只有唯一有效 v2 payload 不触发 W202；duplicate-end/malformed v2 payload 保留 W202，整个归档 H3 子树只读。`--verify-commits` 仍验证归档里的 hash，W240 去重与首个 pinned anchor 规则保持。包装 hash 会增加文件体积，修复后应复查 W201/size。
+- **验证**：`npm run typecheck && npm test` 为 800 pass / 0 fail；`npm run build` 成功，`dist/bin/issuemd.js` 为 755、版本 0.1.0。三份外部台账只读检查均为 0 errors，文件修改前后 SHA-256 相同：dogfood 0 warnings（snapshot `8c804812408296c8`）；cafe 8 warnings（W268 ×6、W264 ×2，snapshot `48cc2306eca0cb0d`）；Orca archive 38 warnings（W201 ×10、W250 ×12、W264 ×16，snapshot `bda916ce01be1c57`）。
+- **独立整分支复审**：无 Critical。Important（重复 v2 end marker 仍被当作有效归档，导致 W202 漏报且 `--fix-hashes` 可改后续文本）已修：`archivePayloadRange` 要求恰好一个可见 end marker；重复时整个 H3 子树保留 W202 并禁止修复，新增 round24 回归。Minor（只有注释/空的重复 canonical criteria 块也会拒绝 close）已修：close 只对多个**非空** canonical 块报歧义，新增 round25 回归。最终全量 800 pass。
+- **尚待后续评估**：#27 的裸 8 位十六进制与 thread ID 歧义（维持真实短 commit 的默认检查）；#115 W202 格式化带来的总体积变化提示；#120 闭表中可逆保存字面分号的编码；#127 全文 `find` 命令。#125 批量 JSON 的所有标签重复 occurrence / closed `labelBlocks` parity 尚未完整覆盖。prune 目前只支持 v2 归档；legacy 归档仍需手工处理。外部 dogfooding ledger 状态继续留给测试者。
 
 ## 第二十二轮（2026-11-27）
 

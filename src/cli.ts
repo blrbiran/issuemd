@@ -30,28 +30,27 @@ import { TextDecoder } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { inlineCodeRanges, scan } from "./scan.js";
+import { hashRepairContextSkipReason, hashRepairRanges, hashRepairSkipReason, hashSpans } from "./hash-scan.js";
 import { buildSections, countLines } from "./sections.js";
-import { joinDocument, readDocument, writeAtomically, type Document } from "./io.js";
-import { parseId, parseIds, compareIds, type IdSpan } from "./issue-id.js";
-import { bodyBlocks, countSuffix, DEFAULT_LIMITS, effectiveLimits, highWaterRecords, HIGH_WATER_MARKER, LIMITS_MARKER, limitsRecords, maxIssueId, parseLedger, type Diagnostic } from "./ledger.js";
+import { decodeDocument, joinDocument, readRaw, writeAtomically, type Document } from "./io.js";
+import { parseId, parseIds, compareIds, IdSet, type IdSpan } from "./issue-id.js";
+import { archiveInventory as discoverArchives, archivePayloadRange, archivePayloadSnapshot, locateArchivePayload, validateSerializedArchive, bodyBlocks, countSuffix, DEFAULT_LIMITS, effectiveLimits, highWaterRecords, HIGH_WATER_MARKER, htmlBlockLines, LIMITS_MARKER, limitsRecords, maxIssueId, parseLedger, prunableArchive, type Diagnostic } from "./ledger.js";
 import { checkLedger, checkParsedLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
 import {
   bodySkeleton,
+  bodyVisibility,
   escapeCell,
   criteriaLabelHint,
-  criteriaSupplementHint,
+  criteriaAliasRepair,
+  criteriaOccurrences,
   extractCriteria,
   bodyLabels,
-  labelBlock,
-  isCriteriaAlias,
   unescapeCell,
   formatRow,
   guideBlockLines,
   archiveHeading,
+  serializeKeptBodyV3,
   ARCHIVE_HEADING,
-  KEPT_BODY_VERSION,
-  KEPT_BODY_START,
-  KEPT_BODY_END,
   insertBlock,
   insertLines,
   labelName,
@@ -108,7 +107,8 @@ const COMMANDS = {
   body: { usage: "issuemd body    FILE ID --body-file PATH|- [--append]", options: ["body-file", "append", "dry-run", "if-unchanged"] },
   priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run", "if-unchanged"] },
   split: { usage: "issuemd split   FILE ID", options: ["dry-run", "if-unchanged"] },
-  sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress] | --criteria-labels]", options: ["guide", "fix-tables", "titles", "criteria-labels", "prefer", "move-progress", "drop-progress", "dry-run", "if-unchanged"] },
+  prune: { usage: "issuemd prune   FILE ID (--dry-run | --confirm --if-unchanged SNAPSHOT)", options: ["confirm", "dry-run", "if-unchanged"] },
+  sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress] | --criteria-labels | --fix-hashes]", options: ["guide", "fix-tables", "titles", "criteria-labels", "fix-hashes", "prefer", "move-progress", "drop-progress", "dry-run", "if-unchanged"] },
   adopt: { usage: "issuemd adopt   FILE [--dry-run] [--report PATH]", options: ["dry-run", "report", "if-unchanged"] },
 } as const satisfies Record<string, { usage: string; options: readonly string[] }>;
 type Command = keyof typeof COMMANDS;
@@ -149,6 +149,8 @@ const OPTION_HELP: Record<string, string> = {
   "fix-tables": "--fix-tables              sync: add missing table separator rows",
   titles: "--titles                  sync: align body headings with index summaries",
   "criteria-labels": "--criteria-labels         sync: rename one unambiguous nearby criteria label per issue",
+  "fix-hashes": "--fix-hashes              sync: wrap W202 literal hashes in safe body/appendix prose spans",
+  confirm: "--confirm                 prune: delete the reviewed archive (requires --if-unchanged snapshot)",
   prefer: "--prefer <body|table>     sync --titles: which side wins (default body)",
   "move-progress": "--move-progress           sync --titles: move progress text into the body",
   "drop-progress": "--drop-progress           sync --titles: discard progress text",
@@ -247,6 +249,7 @@ const OPTIONS = {
   "body-bytes": { type: "string" },
   "body-lines": { type: "string" },
   clear: { type: "boolean" },
+  confirm: { type: "boolean" },
   // list
   status: { type: "string" },
   priority: { type: "string" },
@@ -273,6 +276,7 @@ const OPTIONS = {
   "fix-tables": { type: "boolean" },
   titles: { type: "boolean" },
   "criteria-labels": { type: "boolean" },
+  "fix-hashes": { type: "boolean" },
   prefer: { type: "string" },
   "move-progress": { type: "boolean" },
   "drop-progress": { type: "boolean" },
@@ -355,6 +359,8 @@ export async function run(argv: string[]): Promise<CliResult> {
       return cmdPriority(positionals.slice(1), values);
     case "split":
       return cmdSplit(positionals.slice(1), values);
+    case "prune":
+      return cmdPrune(positionals.slice(1), values);
     case "sync":
       return cmdSync(positionals.slice(1), values);
     case "adopt":
@@ -443,13 +449,14 @@ function cmdCheck(rest: string[], v: Values): CliResult {
       }
       for (const [groupCode, group] of groups) {
         lines.push(`${severity} ${groupCode} x${group.length}`);
-        for (const { line, id, message, expected, actual } of group.slice(0, 3)) {
+        const displayed = groupCode === "W202" ? group : group.slice(0, 3);
+        for (const { line, column, id, message, expected, actual } of displayed) {
           const details = expected === undefined
             ? ""
             : ` (expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)})`;
-          lines.push(`  L${line}${id ? ` #${id}` : ""}: ${message}${details}`);
+          lines.push(`  L${line}${column == null ? "" : `:${column}`}${id ? ` #${id}` : ""}: ${message}${details}`);
         }
-        if (group.length > 3) lines.push(`  … (${group.length - 3} more, use --json for all)`);
+        if (groupCode !== "W202" && group.length > 3) lines.push(`  … (${group.length - 3} more, use --json for all)`);
       }
     }
     const size = ledgerSize(ledger, loaded.src);
@@ -746,7 +753,8 @@ function cmdRead(rest: string[]): CliResult {
   }
   if (matches.length > 1) {
     const listed = matches.map(({ line_start }) => `  L${line_start}  ## ${title}`).join("\n");
-    return err(`issuemd read: '${title}' matches ${matches.length} headings; nothing printed\n${listed}\n`, 2);
+    const code = title === "附录" ? "W266 " : "";
+    return err(`issuemd read: ${code}'${title}' matches ${matches.length} headings; nothing printed\n${listed}\n`, 2);
   }
   const section = matches[0]!;
   const lines = src.replace(/^﻿/, "").split(/\r?\n/);
@@ -787,13 +795,7 @@ function snapshotNote(loaded: Loaded): string {
  * CRLF line would come back with every line converted to CRLF. Refuse both
  * rather than silently rewriting bytes the user did not ask to touch.
  */
-function writeBlockReason(file: string): "utf8" | "eol" | undefined {
-  let raw: Buffer;
-  try {
-    raw = readFileSync(file);
-  } catch {
-    return undefined; // let readDocument report the real open error
-  }
+function writeBlockReason(raw: Buffer): "utf8" | "eol" | undefined {
   try {
     new TextDecoder("utf-8", { fatal: true }).decode(raw);
   } catch (error) {
@@ -812,7 +814,9 @@ function loadWritable(file: string, expected?: string): Loaded | CliResult {
   try {
     const path = lstatSync(file).isSymbolicLink() ? realpathSync(file) : file;
     const links = statSync(path).nlink;
-    const blocked = writeBlockReason(path);
+    // Validation, parsing and the snapshot come from one stable byte read.
+    const { raw, stat } = readRaw(path);
+    const blocked = writeBlockReason(raw);
     if (blocked === "utf8") {
       return err(
         `issuemd: refusing to write '${file}': it is not valid UTF-8, and rewriting it would corrupt the bytes. ` +
@@ -827,7 +831,7 @@ function loadWritable(file: string, expected?: string): Loaded | CliResult {
         2,
       );
     }
-    const doc = readDocument(path);
+    const doc: Document = { ...decodeDocument(raw), stat };
     // Split without the trailing sentinel: `joinDocument` adds the final
     // newline back, so keeping the "" would double it on every rewrite.
     const lines = doc.text === ""
@@ -1268,18 +1272,6 @@ function readBodyFile(spec: string, verb = "new"): { lines: string[] } | CliResu
         2,
       );
     }
-    // Archive boundary markers in a body could split the saved payload. Inside
-    // a fence they are examples and remain ordinary user content.
-    const marker = lines.findIndex((line, index) => !fenced[index] &&
-      (line.trim() === KEPT_BODY_VERSION || line.trim() === KEPT_BODY_START || line.trim() === KEPT_BODY_END));
-    if (marker !== -1) {
-      const value = lines[marker]!.trim();
-      return err(
-        `issuemd ${verb}: --body-file may not contain the archive marker '${value}' outside a code fence\n` +
-          "(these markers delimit a kept-body archive)\n",
-        2,
-      );
-    }
     return { lines };
   } catch (e) {
     return err(`issuemd: cannot read --body-file: ${(e as Error).message}\n`, 2);
@@ -1367,6 +1359,23 @@ function cmdLimits(rest: string[], v: Values): CliResult {
   if (values.bodyLines !== current.bodyLines) change.push(`body-lines ${current.bodyLines} → ${values.bodyLines}`);
   const receipt = v.clear ? "limits cleared" : `limits ${change.join(", ") || "marker updated"}`;
   return commit(file, loaded, errors, lines, !!v["dry-run"], { receipt });
+}
+
+function criteriaAliasWriteHint(file: string, lines: string[], id: string): string {
+  const candidate = parseLedger(lines.join("\n"));
+  const block = bodyBlocks(candidate).find((entry) => `${entry.id.start}${entry.id.suffix}` === id);
+  if (!block) return "";
+  const bodyLines = candidate.lines.slice(block.line - 1, block.end);
+  const repair = criteriaAliasRepair(bodyLines, block.line - 1);
+  if (!repair) return "";
+  const locations = repair.candidates.map(({ label, line }) => `L${line} **${label}**`).join(", ");
+  const mapping = "闭表判据列只从正文 **验收判据** 标签提升";
+  if (repair.eligible) {
+    const quotedFile = `'${file.replace(/'/g, "'\\''")}'`;
+    return `W261: #${id} has a nearby criteria label at ${locations}; ${mapping}. Rename it with issuemd sync ${quotedFile} --criteria-labels\n`;
+  }
+  return `W261/W264: #${id} has nearby criteria labels at ${locations}; ${mapping}; ` +
+    `automatic label repair is unavailable because ${repair.reason}; review or edit the body manually\n`;
 }
 
 function cmdNew(rest: string[], v: Values): CliResult {
@@ -1513,6 +1522,10 @@ function cmdNew(rest: string[], v: Values): CliResult {
   if (title.includes("|")) {
     warnings.push("W205: the title contains a pipe; it was escaped in the table cell\n");
   }
+  if (result.code === 0) {
+    const aliasHint = criteriaAliasWriteHint(file, lines, idText);
+    if (aliasHint) warnings.push(aliasHint);
+  }
   return result.code === 0 && warnings.length > 0 ? { ...result, stderr: result.stderr + warnings.join("") } : result;
 }
 
@@ -1545,7 +1558,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
   }
   const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
-  const { loaded, ledger, errors } = opened;
+  const { loaded, ledger, errors, warnings: baselineWarnings } = opened;
 
   const found = findRow(ledger, idText);
   if (!found) return missingIssue("close", idText);
@@ -1586,17 +1599,11 @@ function cmdClose(rest: string[], v: Values): CliResult {
   const preserveTrailingBlanks = keepBody && bodySection != null && h2Sections.at(-1) === bodySection &&
     block?.end === bodySection.line_end;
   if (keepBody) {
-    const appendices = ledger.sections.filter(
-      (section) => section.level === 2 && section.title === "附录",
-    );
+    const archiveIndex = discoverArchives(ledger);
+    const appendices = archiveIndex.appendices;
     const ambiguity = duplicateAppendixRefusal("close", appendices);
     if (ambiguity) return ambiguity;
-    const existing = ledger.sections.find((section) => {
-      if (section.level !== 3 || !ledger.visible.has(section.line_start)) return false;
-      const match = ARCHIVE_HEADING.exec(loaded.lines[section.line_start - 1] ?? "");
-      return match?.[1] === idText &&
-        appendices.some((appendix) => section.line_start > appendix.line_start && section.line_start <= appendix.line_end);
-    });
+    const existing = archiveIndex.archives.find(({ id }) => id === idText)?.section;
     if (existing) {
       return err(
         `issuemd close: 附录 already has an archive for #${idText} (L${existing.line_start}); ` +
@@ -1609,12 +1616,17 @@ function cmdClose(rest: string[], v: Values): CliResult {
   // body is deleted by close, so whatever it says has to land somewhere.
   const fromBody = extractCriteria(bodyText);
   const labelHint = block ? criteriaLabelHint(bodyText, block.line - 1) : undefined;
-  const supplementHint = block ? criteriaSupplementHint(bodyText, block.line - 1) : undefined;
   const hintText = labelHint ? `${labelHint.message}; ` : "";
-  if (fromBody != null && supplementHint && !keepBody && v.criteria == null && !v["no-criteria"]) {
+  const multipleCanonical = block && criteriaOccurrences(bodyText, block.line - 1)
+    .filter((occurrence) => occurrence.kind === "canonical" && occurrence.text.trim() !== "").length > 1;
+  const criteriaRisks = baselineWarnings.filter((warning) => warning.id === idText &&
+    (warning.code === "W268" || warning.code === "W264" ||
+      (multipleCanonical && warning.code === "W206" && warning.message.startsWith("Duplicate body label: 验收判据;"))));
+  if (block && criteriaRisks.length > 0 && !keepBody && v.criteria == null && !v["no-criteria"]) {
+    const details = [...new Set(criteriaRisks.map(({ code, message }) => `${code} ${message}`))].join("; ");
     return err(
-      `issuemd close: #${idText} has another possible criteria block. ${supplementHint.message}; ` +
-        "it would be discarded when the body is removed. Rename or merge it, pass --criteria TEXT after reviewing both blocks, or use --keep-body\n",
+      `issuemd close: #${idText} has ambiguous criteria boundaries (${details}); ` +
+        "review and merge with --criteria TEXT, use --no-criteria intentionally, or preserve the body with --keep-body\n",
       2,
     );
   }
@@ -1678,6 +1690,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
   // The archived heading is deliberately not an `Issue N:` heading: 附录
   // must not contain issue headings (E123), so the id moves into the text.
   let archive: string[] | undefined;
+  let archivedPayloadLines: string[] | undefined;
   if (block) {
     if (keepBody) {
       // Preserve the source block's lines exactly after its heading. The first
@@ -1690,26 +1703,8 @@ function cmdClose(rest: string[], v: Values): CliResult {
           3,
         );
       }
-      const keptFenced = fencedLines(kept, true);
-      const marker = kept.findIndex((line, index) => !keptFenced[index] &&
-        (line.trim() === KEPT_BODY_VERSION || line.trim() === KEPT_BODY_START || line.trim() === KEPT_BODY_END));
-      if (marker !== -1) {
-        const value = kept[marker]!.trim();
-        return err(
-          `issuemd close: the body of #${idText} contains '${value}' outside a code fence; ` +
-            "reopen would misread the body boundary. Fence it or remove it first (issuemd body)\n",
-          3,
-        );
-      }
-      archive = [
-        archiveHeading(idText, found.row.summary),
-        KEPT_BODY_VERSION,
-        KEPT_BODY_START,
-        ...kept,
-        // An explicit end: text appended to 附录 later would otherwise belong
-        // to this H3, and `reopen` would pull it into the issue body.
-        KEPT_BODY_END,
-      ];
+      archivedPayloadLines = kept;
+      archive = serializeKeptBodyV3(idText, found.row.summary, kept);
     }
     lines = removeLines(lines, block.line, block.end - block.line + 1);
   }
@@ -1717,7 +1712,17 @@ function cmdClose(rest: string[], v: Values): CliResult {
     // Locate 附录 *after* the body removal: it may sit before 正文, in which
     // case inserting first would shift the block we then delete.
     const afterRemoval = parseLedger(joinDocument(lines, loaded.doc));
-    const target = afterRemoval.sections.find((section) => section.level === 2 && section.title === "附录");
+    const archiveIndex = discoverArchives(afterRemoval);
+    const appendixHeadings = afterRemoval.sections.filter((section) => section.level === 2 && section.title === "附录");
+    const hiddenAppendices = appendixHeadings.filter((section) =>
+      !archiveIndex.appendices.some((visible) => visible.line_start === section.line_start));
+    if (hiddenAppendices.length > 0) {
+      return err(`issuemd close: ## 附录 at L${hiddenAppendices[0]!.line_start} is inside an HTML/comment/fence block; move it outside before archiving\n`, 3);
+    }
+    if (archiveIndex.appendices.length > 1) {
+      return err(`issuemd close: duplicate ## 附录 headings (W266); resolve them before archiving\n`, 3);
+    }
+    const target = archiveIndex.appendices[0];
     // Place the archive before the appendix's existing trailing blank lines so
     // `reopen` can later restore those bytes instead of `terminate` discarding
     // them when the archive is removed.
@@ -1753,6 +1758,12 @@ function cmdClose(rest: string[], v: Values): CliResult {
   lines = insertLines(lines, closedAt.end + 1, [
     formatRow([idText, status, found.row.priority, found.row.summary, criteria]),
   ]);
+
+  if (archive && archivedPayloadLines) {
+    const candidate = parseLedger(joinDocument(lines, loaded.doc));
+    const invalid = validateSerializedArchive(candidate, idText, archivedPayloadLines);
+    if (invalid) return err(`issuemd close: refusing to write v3 archive for #${idText}: ${invalid}\n`, 3);
+  }
 
   let overLimit: Diagnostic | undefined;
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
@@ -1857,85 +1868,50 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   // `close --keep-body` archived the body in 附录 precisely so it could be
   // recovered. Restore it instead of leaving an empty skeleton and a W250
   // heading that claims the (now open) issue still has a kept body.
-  const appendices = ledger.sections.filter(
-    (section) => section.level === 2 && section.title === "附录",
-  );
+  const archiveIndex = discoverArchives(ledger);
+  const appendices = archiveIndex.appendices;
   const ambiguity = duplicateAppendixRefusal("reopen", appendices);
   if (ambiguity) return ambiguity;
-  const archivedCandidates = ledger.sections.filter((section) => {
-    if (section.level !== 3 || !ledger.visible.has(section.line_start)) return false;
-    const match = ARCHIVE_HEADING.exec(loaded.lines[section.line_start - 1] ?? "");
-    return match?.[1] === idText &&
-      appendices.some((appendix) => section.line_start > appendix.line_start && section.line_start <= appendix.line_end);
-  });
+  const archivedCandidates = archiveIndex.archives.filter(({ id }) => id === idText);
   if (archivedCandidates.length > 1) {
-    const locations = archivedCandidates.map(({ line_start }) => `L${line_start}`).join(", ");
+    const locations = archivedCandidates.map(({ section }) => `L${section.line_start}`).join(", ");
     return err(
       `issuemd reopen: multiple archives for #${idText} in 附录 (${locations}); merge or remove duplicates first\n`,
       3,
     );
   }
-  const archived = archivedCandidates[0];
+  const archived = archivedCandidates[0]?.section;
   // The archive spans heading → end marker. Archives written before the
   // marker existed fall back to the H3's extent, minus trailing blank lines
   // (those separate it from whatever follows and must stay).
   let archiveSpan: { start: number; end: number } | undefined;
   let restored: string[] | undefined;
+  let archivedPayloadLines: string[] | undefined;
   if (archived) {
-    const fenced = fencedLines(loaded.lines, true);
-    const versionLine = archived.line_start + 1;
-    const isVersioned = loaded.lines[versionLine - 1]?.trim() === KEPT_BODY_VERSION;
-    let end = archived.line_end;
-    for (let line = archived.line_start + 1; line <= archived.line_end; line++) {
-      if (!fenced[line - 1] && loaded.lines[line - 1]!.trim() === KEPT_BODY_END) {
-        end = line;
-        if (isVersioned) break;
-      }
+    const located = locateArchivePayload(ledger, archived, archiveIndex.masks);
+    if (!located.range) {
+      const reason = located.refusal?.reason ?? "the payload boundary is invalid";
+      return err(`issuemd reopen: archive for #${idText} cannot be restored: ${reason}; repair it first\n`, 3);
     }
-    const markerAt = !fenced[end - 1] && loaded.lines[end - 1]!.trim() === KEPT_BODY_END ? end : undefined;
-    // The version marker distinguishes current archives from legacy payloads
-    // that may contain the new start-marker text literally.
-    const startMarkerLine = versionLine + 1;
-    const startMarkerText = loaded.lines[startMarkerLine - 1];
-    if (isVersioned && (fenced[startMarkerLine - 1] || startMarkerText?.trim() !== KEPT_BODY_START)) {
-      return err(
-        `issuemd reopen: archive for #${idText} is missing its payload start marker; repair the archive first\\n`,
-        3,
-      );
-    }
-    if (isVersioned && markerAt == null) {
-      return err(
-        `issuemd reopen: archive for #${idText} is missing its visible end marker; restore it or repair the archive first\\n`,
-        3,
-      );
-    }
-    const payloadStart = isVersioned ? startMarkerLine : undefined;
-    if (payloadStart != null) {
-      restored = loaded.lines.slice(payloadStart, end - 1);
+    const range = located.range;
+    if (range.version === "v2" || range.version === "v3") {
+      restored = loaded.lines.slice(range.start - 1, range.end);
+      archivedPayloadLines = [...restored];
     } else {
-      const content = loaded.lines.slice(archived.line_start, markerAt ? end - 1 : end);
-      if (markerAt) {
-        // Legacy archives have no payload-start marker. Preserve every line
-        // between the heading and end marker, including the old provenance note.
-        restored = content;
-      } else {
-        // Markerless legacy archives end at the H3 boundary. Preserve all
-        // content in that extent; trimming would silently discard edge lines.
-        restored = content;
-      }
+      // Legacy keeps its original H3 and provenance note as restored body text.
+      restored = loaded.lines.slice(archived.line_start, range.end);
     }
-    // The closed row's criteria may have been given on the command line and
-    // exist nowhere in the archived text; preserve it as a labeled history value.
+    // A table-only close criterion remains history separate from the archived
+    // payload, preserving the existing reopen contract.
     const archivedCriteria = extractCriteria(restored);
     const archivedHistory = findLabel(restored, 1, restored.length, "关闭时判据")?.text.trim();
     if (criteria !== "" && archivedCriteria !== criteria && archivedHistory !== criteria) {
       restored.push("", `**关闭时判据**：${criterionEvidence}`);
     }
-    // `close` inserted one blank line before the archive; take it back.
     const start = archived.line_start > 1 && loaded.lines[archived.line_start - 2] === ""
       ? archived.line_start - 1
       : archived.line_start;
-    archiveSpan = { start, end };
+    archiveSpan = { start, end: range.framingEnd };
   }
 
   // Reclaim only the exact generated section, and only if every remaining
@@ -2008,6 +1984,23 @@ function cmdReopen(rest: string[], v: Values): CliResult {
   lines = hasRestoredBody
     ? insertLines(lines, bodyAt, restoredBlock)
     : insertBlock(lines, bodyAt, bodyLines);
+
+  if (archivedPayloadLines) {
+    const candidateLines = terminate(lines, loaded.doc, loaded.lines, restoreAtEof);
+    const candidateLedger = parseLedger(joinDocument(candidateLines, loaded.doc));
+    const restoredBlock = bodyBlocks(candidateLedger).find((candidate) =>
+      `${candidate.id.start}${candidate.id.suffix}` === idText);
+    const actual = restoredBlock
+      ? candidateLedger.lines.slice(restoredBlock.line, restoredBlock.line + archivedPayloadLines.length)
+      : [];
+    if (!restoredBlock || actual.length !== archivedPayloadLines.length ||
+        actual.some((line, index) => line !== archivedPayloadLines![index])) {
+      return err(`issuemd reopen: refusing to write; restored v2/v3 payload for #${idText} would change line records\n`, 3);
+    }
+    if (archivePayloadSnapshot(candidateLedger, idText) !== archivePayloadSnapshot(ledger, idText)) {
+      return err(`issuemd reopen: refusing to write; reopening #${idText} would hide or alter another archive\n`, 3);
+    }
+  }
 
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
     preserveTrailingBlanks: restoreAtEof,
@@ -2114,21 +2107,14 @@ function cmdRename(rest: string[], v: Values): CliResult {
   // step, or it silently disagrees with the table forever (dogfood #40).
   // Only archives inside a canonical 附录 section are managed; multiple
   // appendix sections form one logical archive area.
-  const appendices = ledger.sections.filter((section) => section.level === 2 && section.title === "附录");
-  const archiveLines = new Set(
-    ledger.sections.filter((section) => section.level === 3 && ledger.visible.has(section.line_start) &&
-      appendices.some((appendix) => section.line_start > appendix.line_start && section.line_start <= appendix.line_end))
-      .map((section) => section.line_start),
-  );
-  const fenced = fencedLines(lines);
-  for (const appendix of appendices) {
-    for (let line = appendix.line_start + 1; line <= appendix.line_end; line++) {
-      const index = line - 1;
-      const match = !archiveLines.has(line) || fenced[index] ? null : ARCHIVE_HEADING.exec(lines[index]!);
-      if (match && match[1] === idText && unescapeCell(match[2]!) !== next) {
-        lines[index] = archiveHeading(idText, next);
-        reportTitle("archive title", unescapeCell(match[2]!));
-      }
+  const archiveIndex = discoverArchives(ledger);
+  for (const { section, id } of archiveIndex.archives) {
+    if (id !== idText) continue;
+    const index = section.line_start - 1;
+    const match = ARCHIVE_HEADING.exec(lines[index]!);
+    if (match && unescapeCell(match[2]!) !== next) {
+      lines[index] = archiveHeading(idText, next);
+      reportTitle("archive title", unescapeCell(match[2]!));
     }
   }
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], { receipt: `#${idText} renamed` });
@@ -2203,8 +2189,13 @@ function cmdBody(rest: string[], v: Values): CliResult {
     receipt,
     observeCheck(report) { overLimit = report.warnings.find(({ code, id }) => code === "W201" && id === idText); },
   });
-  if (result.code !== 0 || !overLimit || warnings.some(({ code, id }) => code === "W201" && id === idText)) return result;
-  return { ...result, stderr: result.stderr + `W201: #${idText} ${overLimit.message}; move older evidence to a linked file\n` };
+  if (result.code !== 0) return result;
+  const aliasHint = criteriaAliasWriteHint(file, lines, idText);
+  const overLimitNote = overLimit && !warnings.some(({ code, id }) => code === "W201" && id === idText)
+    ? `W201: #${idText} ${overLimit.message}; move older evidence to a linked file\n`
+    : "";
+  const notes = `${aliasHint}${overLimitNote}`;
+  return notes ? { ...result, stderr: result.stderr + notes } : result;
 }
 
 /** Change one row's priority; the only row field that had no verb (dogfood #30). */
@@ -2336,6 +2327,11 @@ function cmdAdopt(rest: string[], v: Values): CliResult {
     throw error;
   }
   const target = joinDocument(result.lines, loaded.doc);
+  const convertedLedger = parseLedger(target);
+  for (const { id, lines: payloadLines } of result.archivePayloads ?? []) {
+    const invalid = validateSerializedArchive(convertedLedger, id, payloadLines);
+    if (invalid) return err(`issuemd adopt: refusing v3 archive for #${id}: ${invalid}\n`, 3);
+  }
   const checked = checkLedger(target, file);
   const after = checked.errors;
   // Tables adopt keeps as text although they look like issue tables (W225):
@@ -2477,13 +2473,164 @@ function renderAdoptReport(file: string, changes: string[], decisions: Decision[
   return out.join("\n") + "\n";
 }
 
+function syncFixHashes(
+  file: string,
+  loaded: Loaded,
+  ledger: ReturnType<typeof parseLedger>,
+  errors: Diagnostic[],
+  warnings: Diagnostic[],
+  v: Values,
+): CliResult {
+  const lines = [...loaded.lines];
+  const hashWarnings = warnings.filter(({ code }) => code === "W202");
+  if (hashWarnings.length === 0) return commit(file, loaded, errors, lines, !!v["dry-run"]);
+  const fenced = fencedLines(lines, true);
+  const visibility = bodyVisibility(lines, fenced);
+  const rawHtml = htmlBlockLines(lines, fenced);
+  const repairRanges = hashRepairRanges(lines, fenced);
+  const tableLines = new Set<number>();
+  for (const block of ledger.blocks) {
+    for (let offset = 0; offset < block.rows.length; offset++) tableLines.add(block.line + offset);
+  }
+  const openIds = new IdSet(ledger.rows.open.flatMap((row) => row.ids));
+  const closedIds = new IdSet(ledger.rows.closed.flatMap((row) => row.ids));
+  const allBodyLines = new Set<number>();
+  const editableBodyLines = new Set<number>();
+  const headings = new Set<number>(ledger.sections.map(({ line_start }) => line_start));
+  for (const block of bodyBlocks(ledger)) {
+    for (let line = block.line; line <= block.end; line++) allBodyLines.add(line);
+    if (!openIds.has(block.id) || closedIds.has(block.id)) continue;
+    for (let line = block.line + 1; line <= block.end; line++) editableBodyLines.add(line);
+  }
+  const appendixLines = new Set<number>();
+  const archivePayloadLines = new Set<number>();
+  const malformedArchiveLines = new Set<number>();
+  const archiveIndex = discoverArchives(ledger);
+  for (const appendix of archiveIndex.appendices) {
+    for (let line = appendix.line_start + 1; line <= appendix.line_end; line++) appendixLines.add(line);
+  }
+  for (const { section: archive } of archiveIndex.archives) {
+    headings.add(archive.line_start);
+    const range = archivePayloadRange(ledger, archive, fenced);
+    if (!range) {
+      for (let line = archive.line_start; line <= archive.line_end; line++) malformedArchiveLines.add(line);
+    } else {
+      for (let line = range.start; line <= range.end; line++) archivePayloadLines.add(line);
+    }
+  }
+
+  const edits: { line: number; column: number; hash: string; id?: string; start: number; end: number }[] = [];
+  const skipped: { line: number; column?: number; reason: string }[] = [];
+  for (const warning of hashWarnings) {
+    const line = lines[warning.line - 1] ?? "";
+    const hash = /Possible pinned commit hash: ([0-9a-f]{7,40})/.exec(warning.message)?.[1];
+    const span = hashSpans(line).find((candidate) => candidate.hash === hash &&
+      Array.from(line.slice(0, candidate.start)).length + 1 === warning.column);
+    if (!span) {
+      skipped.push({ line: warning.line, column: warning.column, reason: "source span could not be resolved" });
+      continue;
+    }
+    let reason: string | undefined;
+    if (tableLines.has(warning.line)) reason = "parsed table cell; preserve table ids and syntax";
+    else if (headings.has(warning.line)) reason = "managed or structural heading";
+    else if (malformedArchiveLines.has(warning.line)) reason = "malformed archive subtree is read-only";
+    else if (archivePayloadLines.has(warning.line)) reason = "frozen archive payload";
+    else if (hashRepairContextSkipReason(line, warning.line - 1, span, repairRanges) != null) {
+      reason = hashRepairContextSkipReason(line, warning.line - 1, span, repairRanges);
+    }
+    else if (rawHtml[warning.line - 1]) reason = "raw HTML block";
+    else if (fenced[warning.line - 1]) reason = "fenced code";
+    else if (visibility.hidden[warning.line - 1] || line.includes("<!--") || line.includes("-->")) reason = "HTML comment text";
+    else if (!editableBodyLines.has(warning.line) && !appendixLines.has(warning.line)) {
+      reason = allBodyLines.has(warning.line) ? "body is not open" : "outside open bodies and appendix prose";
+    } else {
+      reason = hashRepairContextSkipReason(line, warning.line - 1, span, repairRanges) ?? hashRepairSkipReason(line, span);
+    }    if (reason) skipped.push({ line: warning.line, column: warning.column, reason });
+    else edits.push({ line: warning.line, column: warning.column!, hash: span.hash, ...(warning.id ? { id: warning.id } : {}), start: span.start, end: span.end });
+  }
+
+  const editsByLine = new Map<number, typeof edits>();
+  for (const edit of edits) {
+    const group = editsByLine.get(edit.line) ?? [];
+    group.push(edit);
+    editsByLine.set(edit.line, group);
+  }
+  for (const [lineNo, group] of editsByLine) {
+    let text = lines[lineNo - 1]!;
+    for (const edit of group.sort((a, b) => b.start - a.start)) {
+      text = `${text.slice(0, edit.start)}\`${text.slice(edit.start, edit.end)}\`${text.slice(edit.end)}`;
+    }
+    lines[lineNo - 1] = text;
+  }
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"], edits.length ? { receipt: "sync --fix-hashes" } : undefined);
+  if (result.code !== 0) return result;
+  const notes = [
+    ...edits.map(({ line, column, id, hash }) => `wrapped W202${id ? ` #${id}` : ""} at L${line}:${column}: ${hash}`),
+    ...skipped.map(({ line, column, reason }) => `skipped W202 at L${line}${column == null ? "" : `:${column}`}: ${reason}`),
+  ];
+  return notes.length ? { ...result, stderr: `${result.stderr}${notes.join("\n")}\n` } : result;
+}
+
+const errorIdentity = (diagnostics: Diagnostic[]) => diagnostics
+  .map(({ code, id, message, expected, actual }) => `${code}|${id ?? ""}|${message}|${expected ?? ""}|${actual ?? ""}`)
+  .sort()
+  .join("\n");
+
+function archiveByteInventory(ledger: ReturnType<typeof parseLedger>, excludeLine?: number): string[] {
+  return discoverArchives(ledger).archives
+    .filter(({ section }) => section.line_start !== excludeLine)
+    .map(({ id, section }) => `${id}\n${ledger.lines.slice(section.line_start - 1, section.line_end).join("\n")}`)
+    .sort();
+}
+
+/** Delete one explicitly confirmed kept-body archive; the closed row stays. */
+function cmdPrune(rest: string[], v: Values): CliResult {
+  const [file, idText] = rest;
+  if (file == null || idText == null || rest.length !== 2) return err(`usage: ${COMMANDS.prune.usage}\n`, 2);
+  const dry = !!v["dry-run"];
+  const confirm = !!v.confirm;
+  if (dry === confirm) return err("issuemd prune: choose exactly one of --dry-run or --confirm\n", 2);
+  if (confirm && v["if-unchanged"] == null) {
+    return err("issuemd prune: --confirm requires --if-unchanged SNAPSHOT from the preview\n", 2);
+  }
+  if (!confirm && v["if-unchanged"] != null) {
+    return err("issuemd prune: --if-unchanged belongs with --confirm\n", 2);
+  }
+  const opened = openLedger(file, confirm ? v["if-unchanged"] : undefined);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
+  const found = prunableArchive(ledger, idText);
+  if (found.refusal) {
+    const locations = found.refusal.lines.map((line) => `L${line}`).join(", ");
+    const where = locations ? ` (${locations})` : "";
+    return err(`issuemd prune: #${idText}: ${found.refusal.reason}${where}; nothing written\n`, found.refusal.code);
+  }
+  const { start, section, end } = found.target;
+  const candidate = loaded.lines.slice();
+  candidate.splice(start - 1, end - start + 1);
+  const candidateLines = terminate(candidate, loaded.doc, loaded.lines, true);
+  const candidateDoc = parseLedger(joinDocument(candidateLines, loaded.doc));
+  const afterErrors = checkParsedLedger(candidateDoc, file).errors;
+  if (errorIdentity(errors) !== errorIdentity(afterErrors)) {
+    return err("issuemd prune: refusing to write; the deletion would change existing check errors\n", 3);
+  }
+  if (JSON.stringify(archiveByteInventory(ledger, section.line_start)) !== JSON.stringify(archiveByteInventory(candidateDoc))) {
+    return err("issuemd prune: refusing to write; another archive's bytes or boundary would change\n", 3);
+  }
+  return commit(file, loaded, errors, candidateLines, dry, {
+    preserveTrailingBlanks: true,
+    report: `pruned #${idText} archive at L${start}-L${end}\n`,
+    receipt: `#${idText} archive pruned`,
+  });
+}
+
 function cmdSync(rest: string[], v: Values): CliResult {
   const file = rest[0];
   if (file == null || rest.length !== 1) {
     return err(`usage: ${COMMANDS.sync.usage}\n`, 2);
   }
-  const modes = [!!v.guide, !!v["fix-tables"], !!v.titles, !!v["criteria-labels"]].filter(Boolean).length;
-  if (modes === 0) return err("issuemd sync: choose --guide, --fix-tables, --titles or --criteria-labels\n", 2);
+  const modes = [!!v.guide, !!v["fix-tables"], !!v.titles, !!v["criteria-labels"], !!v["fix-hashes"]].filter(Boolean).length;
+  if (modes === 0) return err("issuemd sync: choose --guide, --fix-tables, --titles, --criteria-labels or --fix-hashes\n", 2);
   if (modes > 1) return err("issuemd sync: run one mode at a time\n", 2);
   if ((v["move-progress"] || v["drop-progress"]) && !v.titles) {
     return err("issuemd sync: --move-progress/--drop-progress require --titles\n", 2);
@@ -2505,6 +2652,7 @@ function cmdSync(rest: string[], v: Values): CliResult {
   const opened = openLedger(file, v["if-unchanged"]);
   if ("code" in opened) return opened;
   const { loaded, ledger, errors } = opened;
+  if (v["fix-hashes"]) return syncFixHashes(file, loaded, ledger, errors, opened.warnings, v);
   let lines = loaded.lines;
 
   if (v.guide) {
@@ -2557,27 +2705,19 @@ function syncCriteriaLabels(
     const body = bodies.get(id);
     if (!body) continue;
     const bodyLines = loaded.lines.slice(body.line - 1, body.end);
-    const labels = [...bodyLabels(bodyLines, 1, bodyLines.length)];
-    if (labels.some(({ label }) => label === "验收判据")) continue;
-    const candidates = labels.filter(({ label }) => label !== "验收判据" && isCriteriaAlias(label));
-    if (candidates.length === 0) continue;
-    if (candidates.length !== 1) {
-      skipped.push(`#${id}: multiple nearby criteria labels`);
+    const repair = criteriaAliasRepair(bodyLines, body.line - 1);
+    if (!repair) continue;
+    if (!repair.eligible) {
+      skipped.push(`#${id}: ${repair.reason ?? "nearby criteria labels need review"}`);
       continue;
     }
-    const candidate = candidates[0]!;
-    const block = labelBlock(bodyLines, 1, bodyLines.length, candidate.label);
-    if (!block?.text.trim()) {
-      skipped.push(`#${id}: nearby criteria label is empty`);
-      continue;
-    }
-    const line = body.line + candidate.line - 1;
-    const source = loaded.lines[line - 1]!;
+    const candidate = repair.eligible;
+    const source = loaded.lines[candidate.line - 1]!;
     const parsed = /^([ \t]{0,3})\*\*([^*]+)\*\*(.*)$/.exec(source);
     if (!parsed) continue;
     const colonInside = /[:：]\s*$/.test(parsed[2]!);
     const newLine = `${parsed[1]}**验收判据${colonInside ? "：" : ""}**${parsed[3]}`;
-    changes.push({ id, line, oldLabel: candidate.label, newLine });
+    changes.push({ id, line: candidate.line, oldLabel: candidate.label, newLine });
   }
   const skippedNote = skipped.length ? `issuemd sync --criteria-labels: skipped ${skipped.join("; ")}\n` : "";
   if (changes.length === 0) {
@@ -2588,8 +2728,8 @@ function syncCriteriaLabels(
   for (const change of changes.sort((a, b) => b.line - a.line)) lines[change.line - 1] = change.newLine;
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], { receipt: "sync --criteria-labels" });
   if (result.code !== 0) return result;
-  const receipt = changes.map(({ id, oldLabel }) =>
-    `updated #${id} criteria label: ${JSON.stringify(oldLabel)} → "验收判据"`).join("\n");
+  const receipt = changes.map(({ id, line, oldLabel }) =>
+    `updated #${id} criteria label at L${line}: ${JSON.stringify(oldLabel)} → "验收判据"`).join("\n");
   return { ...result, stderr: `${result.stderr}${receipt}\n${skippedNote}` };
 }
 

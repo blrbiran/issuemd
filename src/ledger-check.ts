@@ -1,9 +1,10 @@
-import { inlineCodeRanges } from "./scan.js";
+import { inlineCodeRanges, multilineInlineCodeRanges } from "./scan.js";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
-import { archivePayloadRange, countSuffix, effectiveLimits, type EffectiveLimits, highWaterRecords, limitsRecords, maxIssueId, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
-import { ARCHIVE_HEADING, bodyLabels, criteriaLabelHint, criteriaSupplementHint, extractCriteria, fencedLines, unescapeCell } from "./ledger-edit.js";
+import { archiveInventory, locateArchivePayload, archivePayloadRange, bodyBlocks, countSuffix, effectiveLimits, type EffectiveLimits, highWaterRecords, limitsRecords, maxIssueId, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
+import { hashSpans } from "./hash-scan.js";
+import { ARCHIVE_HEADING, bodyLabels, criteriaBoundaryHints, criteriaLabelHint, criteriaOccurrences, extractCriteria, fencedLines, unescapeCell } from "./ledger-edit.js";
 
 import { STATUS_CLASSES } from "./statuses.js";
 export { STATUS_CLASSES };
@@ -152,13 +153,27 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
     }
     const bodyLines = lines.slice(line - 1, end);
     const fenced = fencedLines(bodyLines, true);
-    const labels = new Set<string>();
+    const labelLines = new Map<string, number[]>();
     for (const { label: name, line: current } of bodyLabels(bodyLines, 2, bodyLines.length, fenced)) {
       // Bold Q/A dialogue is readable through show --label but is not a field
       // schema; repeated turns are not duplicate ledger labels.
       if (name === "Q" || name === "A") continue;
-      if (labels.has(name)) warnings.push({ code: "W206", line: line + current - 1, id, message: `Duplicate body label: ${name}` });
-      labels.add(name);
+      const positions = labelLines.get(name) ?? [];
+      positions.push(current);
+      labelLines.set(name, positions);
+    }
+    for (const [name, positions] of labelLines) {
+      if (positions.length < 2) continue;
+      const locations = positions.map((current) => `L${line + current - 1}`).join(", ");
+      for (const current of positions.slice(1)) {
+        warnings.push({ code: "W206", line: line + current - 1, id, message: `Duplicate body label: ${name}; occurrences at ${locations}` });
+      }
+    }
+    for (const hint of criteriaBoundaryHints(bodyLines, line - 1, fenced)) {
+      warnings.push({
+        code: "W268", line: hint.line, id,
+        message: `L${hint.line}: standalone bold sentence **${hint.label}** interrupts the criteria list; if it is prose, bold only the emphasized word; otherwise close with reviewed --criteria or --keep-body`,
+      });
     }
     checkBodySize(lines, line, end, limits, id, warnings);
     // An open issue whose body has no non-empty 验收判据 can never be closed
@@ -175,11 +190,11 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
           (hint ? `. ${hint.message}` : ""),
       });
     } else if (ids.open.has(span)) {
-      const hint = criteriaSupplementHint(bodyLines, line - 1, fenced);
-      if (hint) {
+      for (const occurrence of criteriaOccurrences(bodyLines, line - 1, fenced)) {
+        if (occurrence.kind !== "supplement") continue;
         warnings.push({
-          code: "W264", line: hint.line, id,
-          message: `Possible additional criteria block is not included in the canonical criteria: ${hint.message}`,
+          code: "W264", line: occurrence.line, id,
+          message: `Possible additional criteria block is not included in the canonical criteria: L${occurrence.line}: review **${occurrence.label}**`,
         });
       }
     }
@@ -253,25 +268,19 @@ function checkRows(ledger: Ledger, ids: Record<TableKind, IdSet>) {
  * is what W250 keys on. Fenced lookalikes are not data.
  */
 function checkAppendix(ledger: Ledger, limits: EffectiveLimits) {
-  const { lines, visible, sections, warnings, rows } = ledger;
-  const appendices = sections.filter((section) => section.level === 2 && section.title === "附录");
+  const { lines, warnings, rows } = ledger;
+  const inventory = archiveInventory(ledger);
+  const { appendices, archives, masks } = inventory;
+  const isVisible = (line: number) => ledger.visible.has(line) && !masks.rawHtml[line - 1] && !masks.comments[line - 1];
   if (appendices.length > 1) {
     for (const appendix of appendices) warnings.push({
       code: "W266", line: appendix.line_start,
       message: `Duplicate ## 附录 heading (${appendices.length} found); resolve the ambiguity before reading the section or writing archives`,
     });
   }
-  const archiveLines = new Map(
-    sections.filter((section) => section.level === 3 && visible.has(section.line_start) &&
-      appendices.some((appendix) => section.line_start > appendix.line_start && section.line_start <= appendix.line_end))
-      .map((section) => [section.line_start, section] as const),
-  );
-  const fenced = archiveLines.size ? fencedLines(lines, true) : [];
+  const archiveByLine = new Map(archives.map((archive) => [archive.section.line_start, archive] as const));
   const single = (kind: TableKind, id: string) =>
     rows[kind].find((row) => row.ids.length === 1 && idText(row.ids[0]) === id);
-  // A second copy of one issue's body in 附录: an escaped `\### Issue N:`
-  // (older adopt copied table-section bodies twice, dogfood #50) or a repeated
-  // archive. The first archive of an open issue is W252's business.
   const seen = new Map<string, number>();
   const duplicate = (line: number, id: string, archive: boolean) => {
     const copies = (seen.get(id) ?? 0) + 1;
@@ -283,17 +292,26 @@ function checkAppendix(ledger: Ledger, limits: EffectiveLimits) {
   };
   for (const appendix of appendices) {
     for (let line = appendix.line_start + 1; line <= appendix.line_end; line++) {
-      if (!visible.has(line)) continue;
+      if (!isVisible(line)) continue;
       const escaped = /^\\#{1,6}[ \t]+Issue[ \t]+(\d+[a-z]?)[ \t]*:/.exec(lines[line - 1]);
       if (escaped) duplicate(line, escaped[1], false);
-      if (!archiveLines.has(line)) continue;
+      const archive = archiveByLine.get(line);
+      if (!archive) continue;
       const match = ARCHIVE_HEADING.exec(lines[line - 1]);
       if (!match) continue;
-      duplicate(line, match[1], true);
-      const [, id, summary] = match;
+      const id = archive.id;
+      const summary = match[2]!;
+      duplicate(line, id, true);
       warnings.push({ code: "W250", line, id, message: "Issue body kept in 附录 by close --keep-body" });
-      const range = archivePayloadRange(ledger, archiveLines.get(line)!, fenced);
-      if (range) checkBodySize(lines, range.start - 1, range.end, limits, id, warnings, line, "Archived body", range.finalNewline);
+      const located = locateArchivePayload(ledger, archive.section, masks);
+      if (located.refusal?.recognized) warnings.push({
+        code: "W269", line: located.refusal.line, id,
+        message: `Malformed kept-body archive: ${located.refusal.reason}`,
+      });
+      if (located.range) {
+        const range = located.range;
+        checkBodySize(lines, range.start - 1, range.end, limits, id, warnings, line, "Archived body", range.finalNewline);
+      }
       const closedRow = single("closed", id);
       if (closedRow && foldWhitespace(closedRow.summary) !== foldWhitespace(unescapeCell(summary))) {
         warnings.push({
@@ -307,6 +325,7 @@ function checkAppendix(ledger: Ledger, limits: EffectiveLimits) {
     }
   }
 }
+
 
 function checkGuide(ledger: Ledger) {
   const { lines, visible, sections, warnings } = ledger;
@@ -356,53 +375,67 @@ function checkDuplicateSummaries(ledger: Ledger) {
   }
 }
 
-const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
-
 function checkHashes(ledger: Ledger, file: string, verify: boolean) {
   // Where a hash is *meant* to be: the closed table's 判据 column records the
   // commit that closed an issue (GLOSSARY: "a test count, a commit, …").
   // Those are verified by --verify-commits but are not "pinned" (W202).
   const closedLines = new Set(ledger.rows.closed.map((row) => row.line));
-  // The last cell, raw (escaped pipes intact), so it can be cut out exactly.
-  const lastCell = (line: string): [string, string] => {
+  const lastCellRange = (line: string): [number, number] => {
     const trimmed = line.trimEnd();
     const end = trimmed.endsWith("|") ? trimmed.length - 1 : trimmed.length;
     let start = end - 1;
     while (start >= 0 && !(trimmed[start] === "|" && trimmed[start - 1] !== "\\")) start--;
-    return [trimmed.slice(start + 1, end), trimmed.slice(0, start + 1)];
+    return [start + 1, end];
   };
-  const hashes = new Map<string, { line: number; pinned: boolean }>();
-  const collect = (text: string, line: number, pinned: boolean) => {
-    const codeRanges = inlineCodeRanges(text);
-    for (const match of text.replace(UUID, (uuid) => " ".repeat(uuid.length)).matchAll(/\b[0-9a-f]{7,40}\b/g)) {
-      // Dates, millisecond timestamps and other plain numbers are not pinned
-      // hashes. An all-digit run is only treated as a commit at full SHA-1
-      // length; in between, `20261124` and `1732406400000` are far more
-      // common than an all-numeric short hash.
-      if (!/[a-f]/.test(match[0]) && match[0].length !== 40) continue;
-      const inCode = codeRanges.some(([start, end]) => match.index! > start && match.index! < end);
-      const isPinned = pinned && !inCode;
-      const known = hashes.get(match[0]);
-      if (!known) hashes.set(match[0], { line, pinned: isPinned });
-      else if (isPinned && !known.pinned) hashes.set(match[0], { line, pinned: true });
-    }
-  };
+  const verification = new Map<string, { line: number; pinned: boolean }>();
+  const w202: { line: number; column: number; id?: string; hash: string }[] = [];
+  const fullFences = fencedLines(ledger.lines, true);
+  const multilineCode = multilineInlineCodeRanges(ledger.lines, fullFences);
+  const archivePayloadLines = new Set<number>();
+  for (const { section } of archiveInventory(ledger).archives) {
+    const range = archivePayloadRange(ledger, section, fullFences);
+    if (!range) continue;
+    for (let line = range.start; line <= range.end; line++) archivePayloadLines.add(line);
+  }
+  const openIds = new IdSet(ledger.rows.open.flatMap((row) => row.ids));
+  const closedIds = new IdSet(ledger.rows.closed.flatMap((row) => row.ids));
+  const bodyOwners: { start: number; end: number; id: string }[] = [];
+  for (const block of bodyBlocks(ledger)) {
+    const id = `${block.id.start}${block.id.suffix}`;
+    if (!openIds.has(block.id) || closedIds.has(block.id)) continue;
+    bodyOwners.push({ start: block.line, end: block.end, id });
+  }
+  let bodyOwnerIndex = 0;
   ledger.lines.forEach((line, index) => {
-    if (!ledger.visible.has(index + 1)) return;
-    if (closedLines.has(index + 1)) {
-      const [criteria, rest] = lastCell(line);
-      collect(criteria, index + 1, false);
-      collect(rest, index + 1, true);
-    } else {
-      collect(line, index + 1, true);
+    const lineNo = index + 1;
+    if (!ledger.visible.has(lineNo)) return;
+    const codeRanges = inlineCodeRanges(line);
+    const criteriaRange = closedLines.has(lineNo) ? lastCellRange(line) : undefined;
+    for (const span of hashSpans(line)) {
+      const inCode = codeRanges.some(([start, end]) => span.start > start && span.start < end) ||
+        (multilineCode.get(index) ?? []).some(([start, end]) => span.start >= start && span.end <= end);
+      const inClosedCriteria = criteriaRange != null && span.start >= criteriaRange[0] && span.end <= criteriaRange[1];
+      const pinned = !inCode && !inClosedCriteria;
+      const known = verification.get(span.hash);
+      if (!known) verification.set(span.hash, { line: lineNo, pinned });
+      else if (pinned && !known.pinned) verification.set(span.hash, { line: lineNo, pinned: true });
+      if (!pinned || inCode || fullFences[index] || archivePayloadLines.has(lineNo)) continue;
+      const column = Array.from(line.slice(0, span.start)).length + 1;
+      while (bodyOwnerIndex < bodyOwners.length && lineNo > bodyOwners[bodyOwnerIndex]!.end) bodyOwnerIndex++;
+      const bodyOwner = bodyOwners[bodyOwnerIndex];
+      const id = bodyOwner && lineNo > bodyOwner.start && lineNo <= bodyOwner.end ? bodyOwner.id : undefined;
+      w202.push({ line: lineNo, column, ...(id ? { id } : {}), hash: span.hash });
     }
   });
-  if (hashes.size === 0) return;
-  for (const [hash, { line, pinned }] of hashes) {
-    if (pinned) ledger.warnings.push({ code: "W202", line, message: `Possible pinned commit hash: ${hash}` });
+  for (const occurrence of w202) {
+    ledger.warnings.push({
+      code: "W202", line: occurrence.line, column: occurrence.column,
+      ...(occurrence.id ? { id: occurrence.id } : {}),
+      message: `Possible pinned commit hash: ${occurrence.hash}`,
+    });
   }
-  if (!verify) return;
-  const hashesToCheck = [...hashes.keys()];
+  if (!verify || verification.size === 0) return;
+  const hashesToCheck = [...verification.keys()];
   const cwd = file === "-" ? process.cwd() : dirname(resolve(file));
   const env = { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0" };
   const repository = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
@@ -413,7 +446,7 @@ function checkHashes(ledger: Ledger, file: string, verify: boolean) {
     if (repository.status !== 0 && !/not a git repository/i.test(repository.stderr)) {
       throw new Error("git rev-parse could not determine whether the ledger directory is a Git worktree");
     }
-    const firstLine = hashes.get(hashesToCheck[0]!)!.line;
+    const firstLine = verification.get(hashesToCheck[0]!)!.line;
     ledger.warnings.push({
       code: "W263",
       line: firstLine,
@@ -430,7 +463,7 @@ function checkHashes(ledger: Ledger, file: string, verify: boolean) {
   const objects = result.stdout.split(/\r?\n/);
   for (const [index, hash] of hashesToCheck.entries()) {
     if (objects[index] !== "commit") {
-      ledger.warnings.push({ code: "W240", line: hashes.get(hash)!.line, message: `Commit not found: ${hash}` });
+      ledger.warnings.push({ code: "W240", line: verification.get(hash)!.line, message: `Commit not found: ${hash}` });
     }
   }
 }

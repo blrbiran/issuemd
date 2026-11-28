@@ -9,8 +9,9 @@
  */
 
 import type { LedgerRow, TableKind } from "./ledger.js";
+import { KEPT_BODY_VERSION_V3, KEPT_BODY_START, keptBodyLinesMarker, KEPT_BODY_END } from "./ledger.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
-import { fencedLines } from "./scan.js";
+import { inlineCodeRanges, fencedLines, isEscapedMarkdownChar, multilineInlineCodeRanges } from "./scan.js";
 export { fencedLines } from "./scan.js";
 
 // ---- cells -------------------------------------------------------------
@@ -197,8 +198,21 @@ export function endsInFence(lines: string[], inBody = false): boolean {
  * `rename`, and reported by `check` (W250/W251/W252). It is deliberately not
  * an `Issue N:` heading: 附录 must not hold issue headings (E123).
  */
-export { ARCHIVE_HEADING, KEPT_BODY_VERSION, KEPT_BODY_START, KEPT_BODY_END } from "./ledger.js";
+export { ARCHIVE_HEADING, KEPT_BODY_VERSION, KEPT_BODY_VERSION_V2, KEPT_BODY_VERSION_V3, KEPT_BODY_START, KEPT_BODY_LINES_PREFIX, keptBodyLinesMarker, KEPT_BODY_SEPARATOR, KEPT_BODY_END } from "./ledger.js";
 export const archiveHeading = (id: string, summary: string) => `### #${id} ${summary}（已关闭，正文保留）`;
+
+/** Serialize a counted v3 payload; payload records may contain marker text verbatim. */
+export function serializeKeptBodyV3(id: string, summary: string, payloadLines: string[]): string[] {
+  return [
+    archiveHeading(id, summary),
+    KEPT_BODY_VERSION_V3,
+    KEPT_BODY_START,
+    keptBodyLinesMarker(payloadLines.length),
+    ...payloadLines,
+    "",
+    KEPT_BODY_END,
+  ];
+}
 
 export function bodySkeleton(id: string, title: string, criteria = ""): string[] {
   return [
@@ -215,6 +229,68 @@ export function bodySkeleton(id: string, title: string, criteria = ""): string[]
   ];
 }
 
+/** A line-level view of comments in one issue body; raw lines are never changed. */
+export type BodyVisibility = { hidden: boolean[]; text: string[] };
+export function bodyVisibility(lines: string[], fenced: boolean[]): BodyVisibility {
+  const hidden = Array(lines.length).fill(false) as boolean[];
+  const text = [...lines];
+  const multilineCode = multilineInlineCodeRanges(lines, fenced);
+  let inComment = false;
+  for (let index = 0; index < lines.length; index++) {
+    const raw = lines[index]!;
+    // The issue heading is a structural boundary, not body prose. A literal
+    // HTML opener in its title must not hide the body's labels (dogfood #100).
+    if (index === 0 && /^ {0,3}#{1,3}[ \t]+/.test(raw)) continue;
+    if (fenced[index] || /^ {0,3}\|/.test(raw)) continue;
+    if (inComment) {
+      hidden[index] = true;
+      const closeAt = raw.indexOf("-->");
+      if (closeAt >= 0) {
+        inComment = false;
+        text[index] = raw.slice(closeAt + 3);
+        hidden[index] = text[index]!.trim() === "";
+      }
+      continue;
+    }
+    if (!raw.includes("<!--")) continue;
+    const code = inlineCodeRanges(raw);
+    const crossLineCode = multilineCode.get(index) ?? [];
+    let cursor = 0;
+    let rendered = "";
+    for (;;) {
+      const open = raw.indexOf("<!--", cursor);
+      if (open < 0) {
+        rendered += raw.slice(cursor);
+        break;
+      }
+      const codeRange = code.find(([start, end]) => start <= open && open < end) ??
+        crossLineCode.find(([start, end]) => start <= open && open < end);
+      if (codeRange) {
+        rendered += raw.slice(cursor, codeRange[1]);
+        cursor = codeRange[1];
+        continue;
+      }
+      if (isEscapedMarkdownChar(raw, open)) {
+        rendered += raw.slice(cursor, open + 4);
+        cursor = open + 4;
+        continue;
+      }
+      const close = raw.indexOf("-->", open + 4);
+      rendered += raw.slice(cursor, open);
+      if (close < 0) {
+        inComment = true;
+        hidden[index] = true;
+        cursor = raw.length;
+        break;
+      }
+      cursor = close + 3;
+    }
+    text[index] = rendered;
+    if (raw.includes("<!--") && rendered.trim() === "") hidden[index] = true;
+  }
+  return { hidden, text };
+}
+
 /** A bold label is standalone, colon-separated, or has its colon inside bold. */
 const LABEL_LINE = /^ {0,3}\*\*(?:([^*]+[:：])\*\*(?:\s*(.*))|([^*]+)\*\*(?:\s*[:：]\s*(.*)|[ \t]*))$/;
 function parseLabelLine(line: string): { label: string; rest: string } | undefined {
@@ -227,10 +303,10 @@ function parseLabelLine(line: string): { label: string; rest: string } | undefin
 
 /** `**验收判据：**` and `**验收判据**：` name the same label. */
 export const labelName = (raw: string) => raw.trim().replace(/[:：]\s*$/, "").trim();
-export function* bodyLabels(lines: string[], start: number, end: number, fenced = fencedLines(lines, true)) {
+export function* bodyLabels(lines: string[], start: number, end: number, fenced = fencedLines(lines, true), visibility = bodyVisibility(lines, fenced)) {
   for (let line = start; line <= end && line <= lines.length; line++) {
-    if (fenced[line - 1]) continue;
-    const match = parseLabelLine(lines[line - 1]!);
+    if (fenced[line - 1] || visibility.hidden[line - 1]) continue;
+    const match = parseLabelLine(visibility.text[line - 1]!);
     if (match) yield { label: labelName(match.label), line };
   }
 }
@@ -248,16 +324,39 @@ export function isCriteriaAlias(label: string): boolean {
   return label === "判据" || label.endsWith("的判据") || ["验收判据", "追加判据", "修复判据", "判据（"].some((prefix) => label.startsWith(prefix));
 }
 
-/** A second acceptance-named label after the canonical block may hold criteria not promoted. */
-export function criteriaSupplementHint(lines: string[], offset = 0, fenced?: boolean[]) {
+export type CriteriaAliasRepair = {
+  candidates: { label: string; line: number }[];
+  eligible?: { label: string; line: number };
+  reason?: string;
+};
+
+/** Share the exact automatic-rename eligibility used by `sync --criteria-labels`. */
+export function criteriaAliasRepair(lines: string[], offset = 0, fenced = fencedLines(lines, true)): CriteriaAliasRepair | undefined {
   const labels = [...bodyLabels(lines, 1, lines.length, fenced)];
   const canonical = labels.find(({ label }) => label === "验收判据");
-  if (!canonical) return undefined;
-  for (const { label, line } of labels) {
-    if (line > canonical.line && label !== "验收判据" && isCriteriaAlias(label)) {
-      return { line: line + offset, label, message: `L${line + offset}: review **${label}**; it is not included in the canonical criteria` };
-    }
-  }
+  const aliases = labels.filter(({ label }) => label !== "验收判据" && isCriteriaAlias(label));
+  const relevant = canonical ? aliases.filter(({ line }) => line > canonical.line) : aliases;
+  if (relevant.length === 0) return undefined;
+  const candidates = relevant.map(({ label, line }) => ({ label, line: line + offset }));
+  if (canonical) return { candidates, reason: "a canonical **验收判据** label already exists" };
+  const nonEmpty = relevant.filter(({ label, line }) => {
+    const block = labelBlock(lines, line, lines.length, label, fenced);
+    return !!block && blockHasVisibleContent(block.lines) && !!block.text.trim();
+  });
+  if (nonEmpty.length > 1) return { candidates, reason: "multiple nearby criteria labels need review" };
+  if (nonEmpty.length === 0) return { candidates, reason: "all nearby criteria labels are empty" };
+  const eligible = nonEmpty[0]!;
+  return { candidates, eligible: { label: eligible.label, line: eligible.line + offset } };
+}
+
+/** Every non-empty recognized supplement after the canonical block may hold unpromoted criteria. */
+export function criteriaSupplementHints(lines: string[], offset = 0, fenced?: boolean[]) {
+  return criteriaOccurrences(lines, offset, fenced)
+    .filter((occurrence) => occurrence.kind === "supplement")
+    .map(({ label, line }) => ({ line, label, message: `L${line}: review **${label}**; it is not included in the canonical criteria` }));
+}
+export function criteriaSupplementHint(lines: string[], offset = 0, fenced?: boolean[]) {
+  return criteriaSupplementHints(lines, offset, fenced)[0];
 }
 
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
@@ -308,24 +407,26 @@ export function labelBlock(
   end: number,
   label: string,
   fenced = fencedLines(lines, true),
+  visibility = bodyVisibility(lines, fenced),
 ): LabelBlock | undefined {
   const last = Math.min(end, lines.length);
   for (let line = start; line <= last; line++) {
-    if (fenced[line - 1]) continue;
-    const match = parseLabelLine(lines[line - 1]!);
+    if (fenced[line - 1] || visibility.hidden[line - 1]) continue;
+    const match = parseLabelLine(visibility.text[line - 1]!);
     if (!match || labelName(match.label) !== label) continue;
     let stop = line + 1;
     const listMargins: ListMargins[] = [];
     while (stop <= last) {
-      const text = lines[stop - 1]!;
-      if (!fenced[stop - 1] && (parseLabelLine(text) != null || /^ {0,3}#{1,6}(?:\s|$)/.test(text))) break;
-      if (label === "验收判据" && listMargins.length > 0 && text.trim() === "") {
+      const text = visibility.text[stop - 1]!;
+      if (!fenced[stop - 1] && !visibility.hidden[stop - 1] && (parseLabelLine(text) != null || /^ {0,3}#{1,6}(?:\s|$)/.test(text))) break;
+      if (label === "验收判据" && listMargins.length > 0 && !visibility.hidden[stop - 1] && text.trim() === "") {
         let look = stop + 1;
-        while (look <= last && lines[look - 1]!.trim() === "") look++;
-        if (look <= last && !fenced[look - 1] && !LIST_ITEM.test(lines[look - 1]!) && !isListContinuation(lines[look - 1]!, listMargins)) {
+        while (look <= last && (visibility.hidden[look - 1] || visibility.text[look - 1]!.trim() === "")) look++;
+        if (look <= last && !fenced[look - 1] && !LIST_ITEM.test(visibility.text[look - 1]!) && !isListContinuation(visibility.text[look - 1]!, listMargins)) {
           let laterList = false;
           for (; look <= last; look++) {
-            const candidate = lines[look - 1]!;
+            const candidate = visibility.text[look - 1]!;
+            if (visibility.hidden[look - 1]) continue;
             if (!fenced[look - 1] && (parseLabelLine(candidate) != null || /^ {0,3}#{1,6}(?:\s|$)/.test(candidate))) break;
             if (LIST_ITEM.test(candidate) || isListContinuation(candidate, listMargins) || fenced[look - 1] || /^[ \t]*(?:`{3,}|~{3,})/.test(candidate)) {
               laterList = true;
@@ -335,7 +436,7 @@ export function labelBlock(
           if (!laterList) break;
         }
       }
-      if (!fenced[stop - 1]) {
+      if (!fenced[stop - 1] && !visibility.hidden[stop - 1]) {
         const item = listItemMargins(text);
         if (item) {
           while (listMargins.length > 0) {
@@ -365,7 +466,9 @@ export function labelBlock(
     const ownFenced = fencedLines(own, true);
     for (let index = 1; index < own.length; index++) {
       const raw = own[index]!;
-      if (raw.trim() === "") {
+      if (visibility.hidden[line + index - 1]) continue;
+      const visibleRaw = visibility.text[line + index - 1]!;
+      if (visibleRaw.trim() === "") {
         blank = true;
         continue;
       }
@@ -385,9 +488,9 @@ export function labelBlock(
         blank = false;
         continue;
       }
-      if (blank || LIST_ITEM.test(raw) || ownFenced[index]) flush();
+      if (blank || LIST_ITEM.test(visibleRaw) || ownFenced[index]) flush();
       blank = false;
-      current.push(raw.replace(UNORDERED_MARKER, "").trim());
+      current.push(visibleRaw.replace(UNORDERED_MARKER, "").trim());
       if (ownFenced[index]) flush();
     }
     flush();
@@ -395,6 +498,21 @@ export function labelBlock(
     return { label, line, lines: own, text };
   }
   return undefined;
+}
+
+export function labelBlocksIn(
+  lines: string[],
+  start = 1,
+  end = lines.length,
+  fenced = fencedLines(lines, true),
+  visibility = bodyVisibility(lines, fenced),
+): LabelBlock[] {
+  const blocks: LabelBlock[] = [];
+  for (const { label, line } of bodyLabels(lines, start, end, fenced, visibility)) {
+    const found = labelBlock(lines, line, end, label, fenced, visibility);
+    if (found) blocks.push(found);
+  }
+  return blocks;
 }
 
 /** The `**验收判据**` block of a body as one line; undefined when absent or empty. */
@@ -427,18 +545,88 @@ function blockHasVisibleContent(own: string[]): boolean {
   return plain.join("\n").replace(/<!--[\s\S]*?-->/g, "").trim() !== "";
 }
 
-export function extractCriteria(bodyLines: string[], fenced = fencedLines(bodyLines, true)): string | undefined {
-  // A body may repeat the label (W206); every distinct non-empty block counts,
-  // or close would drop the second one without a word.
+export function extractCriteria(
+  bodyLines: string[],
+  fenced = fencedLines(bodyLines, true),
+  visibility = bodyVisibility(bodyLines, fenced),
+): string | undefined {
+  return criteriaTextFromOccurrences(criteriaOccurrences(bodyLines, 0, fenced, visibility));
+}
+
+
+export type CriteriaOccurrence = {
+  line: number;
+  label: string;
+  kind: "canonical" | "supplement";
+  lines: string[];
+  text: string;
+};
+
+export function criteriaTextFromOccurrences(occurrences: CriteriaOccurrence[]): string | undefined {
   const texts: string[] = [];
-  let from = 1;
-  for (;;) {
-    const found = labelBlock(bodyLines, from, bodyLines.length, "验收判据", fenced);
-    if (!found) break;
-    if (blockHasVisibleContent(found.lines) && found.text !== "" && !texts.includes(found.text)) texts.push(found.text);
-    from = found.line + found.lines.length;
+  for (const occurrence of occurrences) {
+    if (occurrence.kind === "canonical" && occurrence.text !== "" && !texts.includes(occurrence.text)) {
+      texts.push(occurrence.text);
+    }
   }
   return texts.length > 0 ? joinClauses(texts) : undefined;
+}
+
+export function criteriaOccurrencesFromLabelBlocks(blocks: LabelBlock[], offset = 0): CriteriaOccurrence[] {
+  const firstCanonical = blocks.findIndex(({ label }) => label === "验收判据");
+  if (firstCanonical < 0) return [];
+  const occurrences: CriteriaOccurrence[] = [];
+  for (let index = firstCanonical; index < blocks.length; index++) {
+    const found = blocks[index]!;
+    const kind = found.label === "验收判据" ? "canonical" : "supplement";
+    if (kind === "supplement" && !isCriteriaAlias(found.label)) continue;
+    if (kind === "supplement" && (!blockHasVisibleContent(found.lines) || found.text === "")) continue;
+    occurrences.push({ line: found.line + offset, label: found.label, kind, lines: found.lines, text: found.text });
+  }
+  return occurrences;
+}
+
+/** Preserve every canonical and recognized later supplement block in source order. */
+export function criteriaOccurrences(
+  lines: string[],
+  offset = 0,
+  fenced = fencedLines(lines, true),
+  visibility = bodyVisibility(lines, fenced),
+): CriteriaOccurrence[] {
+  return criteriaOccurrencesFromLabelBlocks(labelBlocksIn(lines, 1, lines.length, fenced, visibility), offset);
+}
+
+export function criteriaBoundaryHints(
+  lines: string[],
+  offset = 0,
+  fenced = fencedLines(lines, true),
+): { line: number; label: string }[] {
+  const visibility = bodyVisibility(lines, fenced);
+  const hints: { line: number; label: string }[] = [];
+  let inCriteria = false;
+  let sawListItem = false;
+  for (let index = 0; index < lines.length; index++) {
+    if (fenced[index] || visibility.hidden[index]) continue;
+    const text = visibility.text[index]!;
+    const match = parseLabelLine(text);
+    if (match) {
+      const label = labelName(match.label);
+      const standalone = /^ {0,3}\*\*([^*]+)\*\*[ \t]*$/.exec(text);
+      if (inCriteria && sawListItem && standalone && /[。！？.!?]$/.test(standalone[1]!)) {
+        hints.push({ line: index + 1 + offset, label: standalone[1]! });
+      }
+      if (label === "验收判据") {
+        inCriteria = true;
+        sawListItem = false;
+      } else if (inCriteria) {
+        inCriteria = false;
+        sawListItem = false;
+      }
+      continue;
+    }
+    if (inCriteria && LIST_ITEM.test(text)) sawListItem = true;
+  }
+  return hints;
 }
 
 // ---- controlled blocks -------------------------------------------------

@@ -102,6 +102,23 @@ describe("adopt: orca layout", () => {
   });
 });
 
+test("adopt writes closed body archives as v3 and readers agree on their payload", async () => {
+  const path = copy("cafe-shaped.md");
+  const result = await run(["adopt", path]);
+  expect(result.code).toBe(0);
+
+  const text = readFileSync(path, "utf8");
+  expect(text).toContain("<!-- issuemd:kept-body:v3 -->");
+  expect(text).not.toContain("<!-- issuemd:kept-body:v2 -->");
+  const checked = JSON.parse((await run(["check", path, "--json"])).stdout);
+  expect(checked.warnings.filter(({ code }: { code: string }) => code === "W269")).toEqual([]);
+
+  const closed = JSON.parse((await run(["list", path, "--closed", "--json", "--with-body"])).stdout);
+  const archive = closed.issues.find(({ body }: { body?: { archived?: boolean } }) => body?.archived);
+  expect(archive?.body?.lineCount).toBeGreaterThan(0);
+  expect((await run(["reopen", path, archive!.id])).code).toBe(0);
+});
+
 describe("adopt: guards", () => {
   test("an already-canonical ledger needs no semantic decisions", async () => {
     const path = copy("canonical-clean.md");
@@ -336,33 +353,33 @@ describe("adopt: third review round", () => {
     expect(shown.body.text).toContain("**根因**：宽度写死在 CSS 变量。");
   });
 
-  test("no-op adopt refuses a reserved marker in an open issue body", async () => {
+  test("no-op adopt preserves a marker-shaped line in an open issue body", async () => {
     const path = copy("canonical-clean.md");
     const marker = "<!-- issuemd:kept-body:start -->";
     const source = readFileSync(path, "utf8")
       .replace("**现象**：侧栏固定 240px，无法拖拽。", `**现象**：侧栏固定 240px，无法拖拽。\n\n${marker}`);
     writeFileSync(path, source);
-    const before = readFileSync(path, "utf8");
 
     const result = await run(["adopt", path]);
-    expect(result.code).toBe(3);
-    expect(result.stderr).toContain(marker);
-    expect(readFileSync(path, "utf8")).toBe(before);
+
+    expect(result.code).toBe(0);
+    expect(readFileSync(path, "utf8")).toBe(source);
+    expect(readFileSync(path, "utf8")).toContain(marker);
   });
 
-  test("refuses to adopt an open body containing a reserved archive marker", async () => {
-    const path = copy("canonical-clean.md");
+  test("adopt preserves a marker-shaped line in a migrated open issue body", async () => {
+    const path = copy("cafe-shaped.md");
     const marker = "<!-- issuemd:kept-body:start -->";
-    const source = readFileSync(path, "utf8")
-      .replace("## 索引", "## 待处理")
-      .replace("**现象**：侧栏固定 240px，无法拖拽。", `**现象**：侧栏固定 240px，无法拖拽。\n\n${marker}`);
+    const source = readFileSync(path, "utf8").replace("预览只显示桌面尺寸。", `预览只显示桌面尺寸。\n\n${marker}`);
     writeFileSync(path, source);
-    const before = readFileSync(path, "utf8");
 
-    const result = await run(["adopt", path, "--dry-run"]);
-    expect(result.code).toBe(3);
-    expect(result.stderr).toContain(marker);
-    expect(readFileSync(path, "utf8")).toBe(before);
+    const result = await run(["adopt", path]);
+
+    expect(result.code).toBe(0);
+    expect(readFileSync(path, "utf8")).not.toBe(source);
+    const checked = JSON.parse((await run(["check", path, "--json"])).stdout);
+    expect(checked.errors).toEqual([]);
+    expect(readFileSync(path, "utf8")).toContain(marker);
   });
 
   test("2 and 2a are ordered by suffix, not only by number", async () => {
@@ -526,5 +543,22 @@ describe("adopt: third review round, part two", () => {
     expect(result.stdout).not.toMatch(/L0 #40/);
     expect(result.stdout).not.toMatch(/L0 标题/);
     expect(result.stdout).toMatch(/L\d+ #40/);
+  });
+
+  test("adopt leaves an existing v3 archive byte-for-byte readable while fixing an unrelated table", async () => {
+    const path = copy("canonical-clean.md");
+    const body = join(dir, "archive-with-table.body");
+    writeFileSync(body, "**现象**：archive evidence\n\n| evidence\n\n**验收判据**：works\n");
+    expect((await run(["body", path, "2", "--body-file", body])).code).toBe(0);
+    expect((await run(["close", path, "2", "--keep-body"])).code).toBe(0);
+    const beforePayload = JSON.parse((await run(["show", path, "2", "--json"])).stdout).body.content;
+    writeFileSync(path, readFileSync(path, "utf8").replace("## 索引", "## 待处理"));
+
+    expect((await run(["adopt", path])).code).toBe(0);
+
+    const shown = JSON.parse((await run(["show", path, "2", "--json"])).stdout);
+    expect(shown.body?.archived).toBe(true);
+    expect(shown.body.content).toBe(beforePayload);
+    expect((await run(["check", path])).code).toBe(0);
   });
 });

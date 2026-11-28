@@ -217,17 +217,79 @@ export function fencedLines(lines: string[], inBody = false): boolean[] {
   return out;
 }
 
+export function isEscapedMarkdownChar(text: string, at: number): boolean {
+  let slashes = 0;
+  for (let cursor = at - 1; cursor >= 0 && text[cursor] === "\\"; cursor--) slashes++;
+  return slashes % 2 === 1;
+}
+
 /** Same-line Markdown code spans delimited by equal backtick runs. */
 export function inlineCodeRanges(text: string): [number, number][] {
   const ticks = [...text.matchAll(/`+/g)];
   const ranges: [number, number][] = [];
   for (let at = 0; at < ticks.length; at++) {
     const opening = ticks[at]!;
+    if (isEscapedMarkdownChar(text, opening.index!)) continue;
     const closingAt = ticks.findIndex((candidate, index) => index > at && candidate[0].length === opening[0].length);
     if (closingAt < 0) continue;
     const closing = ticks[closingAt]!;
     ranges.push([opening.index!, closing.index! + closing[0].length]);
     at = closingAt;
   }
+  return ranges;
+}
+
+/** Source ranges covered by inline code spans that cross one or more lines. */
+export function multilineInlineCodeRanges(lines: string[], fenced: boolean[]): Map<number, [number, number][]> {
+  const ranges = new Map<number, [number, number][]>();
+  const add = (line: number, start: number, end: number) => {
+    const current = ranges.get(line) ?? [];
+    current.push([start, end]);
+    ranges.set(line, current);
+  };
+  let paragraph: { line: number; text: string; ticks: RegExpMatchArray[] }[] = [];
+  const flush = () => {
+    const runs = paragraph.flatMap((entry) => entry.ticks.map((tick) => ({
+      line: entry.line,
+      start: tick.index!,
+      length: tick[0].length,
+    })));
+    for (let at = 0; at < runs.length;) {
+      const opening = runs[at]!;
+      if (isEscapedMarkdownChar(lines[opening.line]!, opening.start)) {
+        at++;
+        continue;
+      }
+      let closingAt = at + 1;
+      while (closingAt < runs.length && runs[closingAt]!.length !== opening.length) closingAt++;
+      if (closingAt >= runs.length) {
+        at++;
+        continue;
+      }
+      const closing = runs[closingAt]!;
+      if (closing.line > opening.line) {
+        add(opening.line, opening.start, lines[opening.line]!.length);
+        for (let line = opening.line + 1; line < closing.line; line++) add(line, 0, lines[line]!.length);
+        add(closing.line, 0, closing.start + closing.length);
+      }
+      at = closingAt + 1;
+    }
+    paragraph = [];
+  };
+
+  for (let line = 0; line < lines.length; line++) {
+    const text = lines[line]!;
+    const heading = /^ {0,3}#{1,6}(?:[ \t]|$)/.test(text);
+    const thematicBreak = /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(text);
+    const listItem = /^ {0,3}(?:[-+*]|1[.)])[ \t]+/.test(text);
+    if (fenced[line] || text.trim() === "" || heading || thematicBreak) {
+      flush();
+      continue;
+    }
+    if (listItem) flush();
+    const ticks = [...text.matchAll(/`+/g)];
+    paragraph.push({ line, text, ticks });
+  }
+  flush();
   return ranges;
 }

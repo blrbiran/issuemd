@@ -1,12 +1,18 @@
-import { fencedLines, inlineCodeRanges, scan } from "./scan.js";
+import { fencedLines, inlineCodeRanges, isEscapedMarkdownChar, multilineInlineCodeRanges, scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
 import { idText, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { STATUS_CLASSES } from "./statuses.js";
 
 export const ARCHIVE_HEADING = /^ {0,3}###[ \t]+#([1-9]\d*[a-z]?)[ \t]+([\s\S]*?)（已关闭，正文保留）(?:[ \t]+#+)?[ \t]*$/;
 
-export const KEPT_BODY_VERSION = "<!-- issuemd:kept-body:v2 -->";
+export const KEPT_BODY_VERSION_V2 = "<!-- issuemd:kept-body:v2 -->";
+export const KEPT_BODY_VERSION_V3 = "<!-- issuemd:kept-body:v3 -->";
+/** Compatibility alias for the archive format emitted by the current writer until Task 3 switches it to v3. */
+export const KEPT_BODY_VERSION = KEPT_BODY_VERSION_V2;
 export const KEPT_BODY_START = "<!-- issuemd:kept-body:start -->";
+export const KEPT_BODY_LINES_PREFIX = "<!-- issuemd:kept-body:lines:";
+export const keptBodyLinesMarker = (count: number) => `${KEPT_BODY_LINES_PREFIX}${count} -->`;
+export const KEPT_BODY_SEPARATOR = "<!-- issuemd:kept-body:separator -->";
 export const KEPT_BODY_END = "<!-- issuemd:kept-body:end -->";
 export const HIGH_WATER_MARKER = "<!-- issuemd:high-water:";
 
@@ -16,6 +22,7 @@ export type TableKind = "open" | "closed";
 export type Diagnostic = {
   code: string;
   line: number;
+  column?: number;
   message: string;
   id?: string;
   expected?: string;
@@ -525,7 +532,10 @@ export function parseLedger(src: string) {
     rows[kind] = tables.flatMap((table) => readRows(table, kind, errors, warnings, unreadable));
   }
   const commentBoundaries = new Map<number, boolean>();
+  const masks = archiveMasks(lines);
+  const hiddenHeading = (line: number) => masks.fenced[line - 1] || masks.rawHtml[line - 1];
   for (const section of sections) {
+    if (hiddenHeading(section.line_start)) continue;
     if (section.level <= 2) commentBoundaries.set(section.line_start, false);
     if (section.level !== 3) continue;
     if (section.parent?.title === "正文" && ISSUE_HEADING.test(section.title)) {
@@ -556,45 +566,497 @@ export function highWaterRecords(ledger: { lines: string[]; sections: Section[] 
   return records;
 }
 
-/** Locate the payload as read by show, independent of surrounding commentary. */
+export type ArchiveMasks = { fenced: boolean[]; rawHtml: boolean[]; comments: boolean[] };
+const archiveMaskCache = new WeakMap<string[], ArchiveMasks>();
+
+/** One pass over Markdown blocks: comment syntax inside raw HTML stays raw text. */
+function markdownBlockMasks(lines: string[], fenced: boolean[]): { rawHtml: boolean[]; comments: boolean[] } {
+  const rawHtml = Array(lines.length).fill(false) as boolean[];
+  const comments = Array(lines.length).fill(false) as boolean[];
+  let state: { kind: "comment" } | { kind: "raw"; end: RegExp } | { kind: "blank" } | undefined;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    if (state?.kind === "comment") {
+      comments[index] = true;
+      if (line.includes("-->")) state = undefined;
+      continue;
+    }
+    if (state?.kind === "raw") {
+      rawHtml[index] = true;
+      if (state.end.test(line)) state = undefined;
+      continue;
+    }
+    if (state?.kind === "blank") {
+      if (/^[ \t]*$/.test(line)) {
+        state = undefined;
+        continue;
+      }
+      rawHtml[index] = true;
+      continue;
+    }
+    if (fenced[index]) continue;
+
+    if (/^ {0,3}<!\[CDATA\[/.test(line)) {
+      rawHtml[index] = true;
+      if (!line.includes("]]>")) state = { kind: "raw", end: /\]\]>/ };
+      continue;
+    }
+    if (/^ {0,3}<\?/.test(line)) {
+      rawHtml[index] = true;
+      if (!line.includes("?>")) state = { kind: "raw", end: /\?>/ };
+      continue;
+    }
+    if (/^ {0,3}<![A-Z]/.test(line)) {
+      rawHtml[index] = true;
+      if (!line.includes(">")) state = { kind: "raw", end: />/ };
+      continue;
+    }
+    const rawOpen = /^ {0,3}<(pre|script|style|textarea)(?=[ \t>]|$)/i.exec(line);
+    if (rawOpen) {
+      rawHtml[index] = true;
+      const close = new RegExp(`</${rawOpen[1]}\\s*>`, "i");
+      if (!close.test(line)) state = { kind: "raw", end: close };
+      continue;
+    }
+
+    const code = inlineCodeRanges(line);
+    let open = line.indexOf("<!--");
+    while (open >= 0 && code.some(([start, end]) => open >= start && open < end)) open = line.indexOf("<!--", open + 4);
+    if (open >= 0 && line.indexOf("-->", open + 4) < 0) {
+      comments[index] = true;
+      state = { kind: "comment" };
+      continue;
+    }
+
+    const match = /^ {0,3}<(\/)?([a-z][a-z0-9-]*)(?=[ \t/>]|$)/i.exec(line);
+    if (!match) continue;
+    const closing = match[1] != null;
+    const tag = match[2]!.toLowerCase();
+    rawHtml[index] = true;
+    if (!HTML_BLOCK_TAGS.has(tag)) {
+      const standaloneTag = /^ {0,3}<\/?[a-z][a-z0-9:-]*(?:[ \t]+[^<>]*)?\/?>[ \t]*$/i.test(line);
+      if (tag.includes("-") || standaloneTag) state = { kind: "blank" };
+      continue;
+    }
+    if (closing) {
+      state = { kind: "blank" };
+      continue;
+    }
+    const closingTag = new RegExp(`</${tag}\\s*>`, "i");
+    if (!closingTag.test(line)) state = { kind: "blank" };
+  }
+  return { rawHtml, comments };
+}
+
+function archiveMasks(lines: string[], fenced: boolean[] = fencedLines(lines, true)): ArchiveMasks {
+  const cached = archiveMaskCache.get(lines);
+  if (cached) return cached;
+  const { comments, rawHtml } = markdownBlockMasks(lines, fenced);
+  const masks = { fenced, comments, rawHtml };
+  archiveMaskCache.set(lines, masks);
+  return masks;
+}
+
+export type ArchiveSection = { appendix: Section; section: Section; id: string };
+export type ArchiveInventory = {
+  appendices: Section[];
+  archives: ArchiveSection[];
+  masks: ArchiveMasks;
+};
+
+/** Discover genuine appendix/archive headings after applying shared visibility masks. */
+export function archiveInventory(ledger: ReturnType<typeof parseLedger>): ArchiveInventory {
+  const lines = ledger.lines;
+  const masks = archiveMasks(lines);
+  const hidden = (line: number) => masks.fenced[line - 1] || masks.rawHtml[line - 1] || masks.comments[line - 1];
+  const headings = ledger.sections.filter((section) => !hidden(section.line_start))
+    .sort((left, right) => left.line_start - right.line_start);
+  const firstAfter = (start: number, maxLevel: number, limit: number) =>
+    headings.find((section) => section.line_start > start && section.line_start < limit && section.level <= maxLevel)?.line_start;
+  const appendices = headings
+    .filter((section) => section.level === 2 && section.title === "附录")
+    .map((section) => ({
+      ...section,
+      line_end: (firstAfter(section.line_start, 2, lines.length + 1) ?? lines.length + 1) - 1,
+    }));
+  const archives: ArchiveSection[] = [];
+  for (const appendix of appendices) {
+    const children = headings.filter((section) => section.level === 3 &&
+      section.line_start > appendix.line_start && section.line_start <= appendix.line_end);
+    for (const heading of children) {
+      const match = ARCHIVE_HEADING.exec(lines[heading.line_start - 1] ?? "");
+      if (!match) continue;
+      const end = (firstAfter(heading.line_start, 3, appendix.line_end + 1) ?? appendix.line_end + 1) - 1;
+      const section = { ...heading, line_end: end, parent: appendix };
+      archives.push({ appendix, section, id: match[1]! });
+    }
+  }
+  return { appendices, archives, masks };
+}
+
+export type ArchivePayloadVersion = "v2" | "v3" | "legacy";
+export type ArchivePayloadRange = {
+  version: ArchivePayloadVersion;
+  start: number;
+  end: number;
+  finalNewline: boolean;
+  payloadLineCount: number;
+  framingEnd: number;
+};
+export type ArchivePayloadRefusal = { line: number; reason: string; recognized: boolean };
+export type ArchivePayloadResult = { range?: ArchivePayloadRange; refusal?: ArchivePayloadRefusal };
+
+export function locateArchivePayload(
+  ledger: { lines: string[]; finalNewline: boolean },
+  section: Section,
+  masks = archiveMasks(ledger.lines),
+): ArchivePayloadResult {
+  const lines = ledger.lines;
+  const { fenced, rawHtml, comments } = masks;
+  const hidden = (line: number) => fenced[line - 1] || rawHtml[line - 1] || comments[line - 1];
+  const refusal = (line: number, reason: string, recognized = true): ArchivePayloadResult => ({
+    refusal: { line, reason, recognized },
+  });
+  const visibleLine = (line: number) => line >= 1 && line <= lines.length && !hidden(line);
+  if (hidden(section.line_start)) return refusal(section.line_start, "archive heading is hidden inside a literal block", false);
+
+  const headingLine = section.line_start;
+  const versionLine = headingLine + 1;
+  const versionText = lines[versionLine - 1] ?? "";
+  const version = versionText.trim() === KEPT_BODY_VERSION_V2 ? "v2"
+    : versionText.trim() === KEPT_BODY_VERSION_V3 ? "v3"
+      : undefined;
+  const versionish = /^\s*<!-- issuemd:kept-body:v\d+ -->\s*$/.test(versionText);
+  const displacedVersion = (() => {
+    for (let line = headingLine + 1; line <= Math.min(section.line_end, headingLine + 3); line++) {
+      if (!visibleLine(line)) continue;
+      if (/^\s*<!-- issuemd:kept-body:v\d+ -->\s*$/.test(lines[line - 1]!)) return line;
+    }
+    return undefined;
+  })();
+  if (!version) {
+    if (versionish) return refusal(versionLine, "unsupported or malformed kept-body version marker");
+    if (displacedVersion != null) return refusal(displacedVersion, "kept-body version marker is displaced from the archive header");
+    const envelopePrefix = [lines[headingLine]?.trim(), lines[headingLine + 1]?.trim()];
+    if (envelopePrefix.some((text) => text === KEPT_BODY_START || /^<!-- issuemd:kept-body:lines:(0|[1-9]\d*) -->$/.test(text ?? ""))) {
+      return refusal(headingLine + 1, "counted archive is missing its version marker");
+    }
+
+    let endMarker: number | undefined;
+    for (let line = headingLine + 1; line <= section.line_end; line++) {
+      if (visibleLine(line) && lines[line - 1]?.trim() === KEPT_BODY_END) endMarker = line;
+    }
+    const end = endMarker ?? section.line_end; // inclusive removal bound
+    const payloadEnd = endMarker == null ? section.line_end : endMarker - 1;
+    const start = headingLine + 1;
+    return { range: {
+      version: "legacy",
+      start,
+      end: payloadEnd,
+      finalNewline: endMarker != null || section.line_end < lines.length || ledger.finalNewline,
+      payloadLineCount: Math.max(0, payloadEnd - start + 1),
+      framingEnd: end,
+    } };
+  }
+  if (!visibleLine(versionLine)) return refusal(versionLine, "kept-body version marker is hidden inside a literal block");
+  const startLine = versionLine + 1;
+  if (lines[startLine - 1]?.trim() !== KEPT_BODY_START || !visibleLine(startLine)) {
+    return refusal(startLine, "archive payload start marker is missing or misplaced");
+  }
+
+  if (version === "v2") {
+    const endMarkers: number[] = [];
+    const separatorLines: number[] = [];
+    for (let line = startLine + 1; line <= section.line_end; line++) {
+      if (!visibleLine(line)) continue;
+      if (lines[line - 1]?.trim() === KEPT_BODY_END) endMarkers.push(line);
+      if (lines[line - 1]?.trim() === KEPT_BODY_SEPARATOR) separatorLines.push(line);
+    }
+    if (endMarkers.length !== 1) {
+      return refusal(endMarkers[0] ?? startLine, endMarkers.length === 0
+        ? "v2 archive has no unique visible end marker"
+        : "v2 archive has duplicate visible end markers");
+    }
+    const end = endMarkers[0]!;
+    if (end <= startLine) return refusal(end, "v2 archive end marker precedes its payload start");
+    const positionalSeparator = separatorLines.find((line) => line + 1 === end && lines[line - 2]?.trim() === "");
+    const payloadEnd = positionalSeparator == null ? end - 1 : positionalSeparator - 2;
+    return { range: {
+      version: "v2", start: startLine + 1, end: payloadEnd, finalNewline: true,
+      payloadLineCount: Math.max(0, payloadEnd - startLine), framingEnd: end,
+    } };
+  }
+
+  const linesMetaLine = startLine + 1;
+  const metaMatch = /^<!-- issuemd:kept-body:lines:(0|[1-9]\d*) -->$/.exec(lines[linesMetaLine - 1] ?? "");
+  const count = metaMatch ? Number(metaMatch[1]) : undefined;
+  if (!visibleLine(linesMetaLine) || count == null || !Number.isSafeInteger(count)) {
+    return refusal(linesMetaLine, "v3 archive has invalid payload line-count metadata");
+  }
+  const payloadStart = linesMetaLine + 1;
+  const frameLine = payloadStart + count;
+  const endLine = frameLine + 1;
+  if (endLine > section.line_end) return refusal(linesMetaLine, "v3 archive payload line count exceeds its H3 boundary");
+  if (lines[frameLine - 1] !== "" || fenced[frameLine - 1] || rawHtml[frameLine - 1]) {
+    return refusal(frameLine, "v3 archive frame must be one empty line outside fences and raw HTML blocks");
+  }
+  if (lines[endLine - 1] !== KEPT_BODY_END || fenced[endLine - 1] || rawHtml[endLine - 1]) {
+    return refusal(endLine, "v3 archive end marker is missing, hidden by a fence/raw HTML block, or misplaced");
+  }
+  return { range: {
+    version: "v3", start: payloadStart, end: payloadStart + count - 1,
+    finalNewline: false, payloadLineCount: count, framingEnd: endLine,
+  } };
+}
+
+/** Compatibility wrapper for callers that only need a usable payload range. */
 export function archivePayloadRange(
   ledger: { lines: string[]; finalNewline: boolean }, section: Section, fenced: boolean[],
-): { start: number; end: number; finalNewline: boolean } | undefined {
-  const lines = ledger.lines;
-  const versionLine = section.line_start + 1;
-  const versioned = lines[versionLine - 1]?.trim() === KEPT_BODY_VERSION;
-  let payloadStart: number;
-  let payloadEndExclusive: number;
-  let appendFinalNewline = false;
-  if (versioned) {
-    const startMarkerLine = versionLine + 1;
-    if (fenced[startMarkerLine - 1] || lines[startMarkerLine - 1]?.trim() !== KEPT_BODY_START) return undefined;
-    let endMarkerLine: number | undefined;
-    for (let line = startMarkerLine + 1; line <= section.line_end; line++) {
-      if (!fenced[line - 1] && lines[line - 1]?.trim() === KEPT_BODY_END) {
-        endMarkerLine = line;
-        break;
+): ArchivePayloadRange | undefined {
+  return locateArchivePayload(ledger, section, archiveMasks(ledger.lines, fenced)).range;
+}
+
+export function validateSerializedArchive(
+  ledger: ReturnType<typeof parseLedger>,
+  id: string,
+  expectedPayload: string[],
+): string | undefined {
+  const archives = archiveInventory(ledger).archives.filter((archive) => archive.id === id);
+  if (archives.length !== 1) return `expected one visible archive for #${id}; found ${archives.length}`;
+  const result = locateArchivePayload(ledger, archives[0]!.section);
+  if (!result.range) return result.refusal?.reason ?? `archive for #${id} has no usable payload range`;
+  if (result.range.version !== "v3") return `archive for #${id} was not serialized as v3`;
+  const actual = ledger.lines.slice(result.range.start - 1, result.range.end);
+  if (actual.length !== expectedPayload.length || actual.some((line, index) => line !== expectedPayload[index])) {
+    return `archive payload for #${id} differs from the requested source records`;
+  }
+  return undefined;
+}
+
+export function archivePayloadSnapshot(ledger: ReturnType<typeof parseLedger>, excludeId?: string): string {
+  const inventory = archiveInventory(ledger);
+  const entries: string[] = [];
+  for (const { id, section } of inventory.archives) {
+    if (id === excludeId) continue;
+    const located = locateArchivePayload(ledger, section, inventory.masks);
+    if (!located.range) {
+      entries.push(`${id}:!${located.refusal?.reason ?? "missing payload"}`);
+      continue;
+    }
+    entries.push(`${id}:${located.range.version}:${ledger.lines.slice(located.range.start - 1, located.range.end).join("\n")}`);
+  }
+  return entries.sort().join("\n---\n");
+}
+
+export function archiveEnvelopeDiagnostics(ledger: ReturnType<typeof parseLedger>): Diagnostic[] {
+  const inventory = archiveInventory(ledger);
+  const diagnostics: Diagnostic[] = [];
+  for (const { section, id } of inventory.archives) {
+    const result = locateArchivePayload(ledger, section, inventory.masks);
+    if (!result.refusal?.recognized) continue;
+    diagnostics.push({
+      code: "W269", line: result.refusal.line, id,
+      message: `Malformed kept-body archive: ${result.refusal.reason}`,
+    });
+  }
+  return diagnostics;
+}
+
+
+export type ArchivePruneRefusal = { code: 1 | 2; reason: string; lines: number[] };
+export type ArchivePruneTarget = { section: Section; start: number; end: number };
+
+/** Locate one uniquely-owned, visible v2/v3 archive eligible for explicit pruning. */
+export function prunableArchive(
+  ledger: ReturnType<typeof parseLedger>,
+  id: string,
+): { target: ArchivePruneTarget; refusal?: undefined } | { refusal: ArchivePruneRefusal; target?: undefined } {
+  const span = parseId(id);
+  if (!span) return { refusal: { code: 2, reason: `${id} is not an issue id`, lines: [] } };
+  const owners: { table: TableKind | "unreadable"; line: number; exact: boolean }[] = [];
+  for (const table of ["open", "closed"] as const) {
+    for (const row of ledger.rows[table]) {
+      for (const candidate of row.ids) {
+        if (candidate.suffix === span.suffix && candidate.start <= span.start && span.start <= candidate.end) {
+          owners.push({ table, line: row.line, exact: candidate.start === candidate.end && row.ids.length === 1 });
+        }
       }
     }
-    if (endMarkerLine == null) return undefined;
-    payloadStart = startMarkerLine + 1;
-    payloadEndExclusive = endMarkerLine;
-    appendFinalNewline = true;
-  } else {
-    let endMarkerLine: number | undefined;
-    for (let line = section.line_start + 1; line <= section.line_end; line++) {
-      if (!fenced[line - 1] && lines[line - 1]?.trim() === KEPT_BODY_END) endMarkerLine = line;
-    }
-    payloadStart = section.line_start + 1;
-    payloadEndExclusive = endMarkerLine ?? section.line_end + 1;
-    appendFinalNewline = endMarkerLine != null || section.line_end < lines.length || ledger.finalNewline;
   }
-  return { start: payloadStart, end: payloadEndExclusive - 1, finalNewline: appendFinalNewline };
+  for (const row of ledger.unreadable) {
+    for (const candidate of row.ids ?? []) {
+      if (candidate.suffix === span.suffix && candidate.start <= span.start && span.start <= candidate.end) {
+        owners.push({ table: "unreadable", line: row.line, exact: false });
+      }
+    }
+  }
+  if (owners.length === 0) return { refusal: { code: 1, reason: `no issue with id ${id}`, lines: [] } };
+  if (owners.length !== 1) {
+    return { refusal: { code: 2, reason: `id ${id} has conflicting owners`, lines: owners.map((owner) => owner.line) } };
+  }
+  const owner = owners[0]!;
+  if (owner.table === "unreadable") {
+    return { refusal: { code: 2, reason: `id ${id} also appears in an unreadable row`, lines: [owner.line] } };
+  }
+  if (owner.table !== "closed" || !owner.exact) {
+    return { refusal: { code: 2, reason: `id ${id} is not a closed singleton row`, lines: [owner.line] } };
+  }
+
+  const inventory = archiveInventory(ledger);
+  const appendices = inventory.appendices;
+  if (appendices.length > 1) {
+    return { refusal: { code: 2, reason: "multiple ## 附录 sections (W266)", lines: appendices.map((section) => section.line_start) } };
+  }
+  if (appendices.length === 0) return { refusal: { code: 1, reason: `no kept-body archive for #${id}`, lines: [] } };
+
+  const candidates = inventory.archives.filter((archive) => archive.appendix.line_start === appendices[0]!.line_start && archive.id === id);
+  if (candidates.length === 0) return { refusal: { code: 1, reason: `no kept-body archive for #${id}`, lines: [] } };
+  if (candidates.length > 1) {
+    return { refusal: { code: 2, reason: `multiple archives for #${id}`, lines: candidates.map(({ section }) => section.line_start) } };
+  }
+
+  const { section } = candidates[0]!;
+  const located = locateArchivePayload(ledger, section, inventory.masks);
+  if (!located.range || located.range.version === "legacy") {
+    return { refusal: {
+      code: 2,
+      reason: located.refusal?.reason ?? "only a verified v2/v3 archive can be pruned",
+      lines: located.refusal ? [located.refusal.line] : [section.line_start],
+    } };
+  }
+  const end = located.range.framingEnd;
+  for (let line = end + 1; line <= section.line_end; line++) {
+    if (ledger.lines[line - 1]!.trim() !== "") {
+      return { refusal: { code: 2, reason: "archive has user text after its end marker", lines: [line] } };
+    }
+  }
+  return { target: { section, start: section.line_start, end } };
 }
 
 export const LIMITS_MARKER = "<!-- issuemd:limits:";
 /** W201 defaults. Kept here so `check`, the write verbs and the docs agree. */
 export const DEFAULT_LIMITS = { bodyBytes: 20 * 1024, bodyLines: 300 } as const;
+const HTML_BLOCK_TAGS = new Set([
+  "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center", "col", "colgroup",
+  "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
+  "frame", "frameset", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hr", "html", "iframe",
+  "legend", "li", "link", "main", "menu", "menuitem", "meta", "nav", "noframes", "ol", "optgroup", "option",
+  "p", "param", "pre", "script", "search", "section", "style", "summary", "table", "tbody", "td", "textarea",
+  "tfoot", "th", "thead", "title", "tr", "track", "ul",
+]);
+
+/** Lines inside raw HTML blocks; fences are supplied by the caller. */
+export function htmlBlockLines(
+  lines: string[],
+  fenced: boolean[],
+  comments = multilineCommentLines(lines, fenced),
+): boolean[] {
+  const hidden = Array(lines.length).fill(false) as boolean[];
+  let endTag: RegExp | undefined;
+  let untilBlank = false;
+  const rawTextTags = new Set(["pre", "script", "style", "textarea"]);
+  for (let index = 0; index < lines.length; index++) {
+    if (fenced[index] || comments[index]) continue;
+    const line = lines[index]!;
+    if (endTag) {
+      if (untilBlank && /^[ \t]*$/.test(line)) {
+        endTag = undefined;
+        untilBlank = false;
+        continue;
+      }
+      hidden[index] = true;
+      if (!untilBlank && endTag.test(line)) endTag = undefined;
+      continue;
+    }
+    if (/^ {0,3}<!\[CDATA\[/.test(line)) {
+      hidden[index] = true;
+      if (!line.includes("]]>")) {
+        endTag = /\]\]>/;
+        untilBlank = false;
+      }
+      continue;
+    }
+    if (/^ {0,3}<\?/.test(line)) {
+      hidden[index] = true;
+      if (!line.includes("?>")) {
+        endTag = /\?>/;
+        untilBlank = false;
+      }
+      continue;
+    }
+    if (/^ {0,3}<![A-Z]/.test(line)) {
+      hidden[index] = true;
+      if (!line.includes(">")) {
+        endTag = />/;
+        untilBlank = false;
+      }
+      continue;
+    }
+    const match = /^ {0,3}<(\/)?([a-z][a-z0-9-]*)(?=[ \t/>]|$)/i.exec(line);
+    if (!match) continue;
+    const closing = match[1] != null;
+    const tag = match[2]!.toLowerCase();
+    hidden[index] = true;
+    if (!HTML_BLOCK_TAGS.has(tag)) {
+      const standaloneTag = /^ {0,3}<\/?[a-z][a-z0-9:-]*(?:[ \t]+[^<>]*)?\/?>[ \t]*$/i.test(line);
+      if (tag.includes("-") || standaloneTag) {
+        // Unknown custom/standalone tags are treated conservatively as raw
+        // blocks so archive-shaped examples cannot become prune targets.
+        endTag = /$a/;
+        untilBlank = true;
+      }
+      continue;
+    }
+    const closingTag = new RegExp(`</${tag}\\s*>`, "i");
+    if (closing) {
+      if (!rawTextTags.has(tag)) {
+        endTag = /$a/;
+        untilBlank = true;
+      }
+      continue;
+    }
+    if (rawTextTags.has(tag)) {
+      if (!closingTag.test(line)) endTag = closingTag;
+    } else {
+      // CommonMark's block-tag HTML forms end at a blank line, not merely at
+      // a matching closing tag. Void tags such as <hr> follow this same rule.
+      endTag = closingTag;
+      untilBlank = true;
+    }
+  }
+  return hidden;
+}
+
+/** Lines inside a multiline HTML comment; standalone markers are not hidden. */
+export function multilineCommentLines(lines: string[], fenced: boolean[]): boolean[] {
+  const hidden = Array(lines.length).fill(false) as boolean[];
+  const multilineCode = multilineInlineCodeRanges(lines, fenced);
+  let inComment = false;
+  for (let index = 0; index < lines.length; index++) {
+    if (fenced[index]) continue;
+    const line = lines[index]!;
+    if (inComment) {
+      hidden[index] = true;
+      if (line.includes("-->")) inComment = false;
+      continue;
+    }
+    const codeRanges = inlineCodeRanges(line);
+    const crossLineRanges = multilineCode.get(index) ?? [];
+    let open = line.indexOf("<!--");
+    while (open >= 0 && (
+      isEscapedMarkdownChar(line, open) ||
+      codeRanges.some(([start, end]) => open >= start && open < end) ||
+      crossLineRanges.some(([start, end]) => open >= start && open < end)
+    )) {
+      open = line.indexOf("<!--", open + 4);
+    }
+    if (open >= 0 && line.indexOf("-->", open + 4) < 0) {
+      hidden[index] = true;
+      inComment = true;
+    }
+  }
+  return hidden;
+}
 
 export type LimitsRecord = { line: number; bodyBytes?: number; bodyLines?: number; problem?: string; unsafeToRewrite?: true };
 export type EffectiveLimits = { bodyBytes: number; bodyLines: number; source: "ledger" | "default" };
@@ -607,23 +1069,18 @@ export type EffectiveLimits = { bodyBytes: number; bodyLines: number; source: "l
 export function limitsRecords(ledger: { lines: string[]; sections: Section[] }): LimitsRecord[] {
   const firstH2 = ledger.sections.find((section) => section.level === 2)?.line_start ?? ledger.lines.length + 1;
   const fenced = fencedLines(ledger.lines, true);
+  const rawHtml = htmlBlockLines(ledger.lines, fenced);
   const records: LimitsRecord[] = [];
-  let literalEnd: RegExp | undefined;
+  let commentEnd: RegExp | undefined;
   for (let index = 0; index < firstH2 - 1; index++) {
     const line = ledger.lines[index]!;
-    if (literalEnd) {
-      if (literalEnd.test(line)) literalEnd = undefined;
+    if (commentEnd) {
+      if (commentEnd.test(line)) commentEnd = undefined;
       continue;
     }
-    if (fenced[index]) continue;
-    const rawTag = /^ {0,3}<(pre|script|style|textarea)(?=[ \t/>]|$)/i.exec(line)?.[1];
-    if (rawTag) {
-      const end = new RegExp(`</${rawTag}>`, "i");
-      if (!end.test(line)) literalEnd = end;
-      continue;
-    }
+    if (fenced[index] || rawHtml[index]) continue;
     if (!/^ {0,3}<!-- issuemd:limits:/.test(line)) {
-      if (/^ {0,3}<!--(?:(?!-->).)*$/.test(line)) literalEnd = /-->/;
+      if (/^ {0,3}<!--(?:(?!-->).)*$/.test(line)) commentEnd = /-->/;
       continue;
     }
     const match = /^ {0,3}<!-- issuemd:limits:((?:(?!<!--|-->).)*)-->[ \t]*$/.exec(line);

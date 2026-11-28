@@ -1216,9 +1216,15 @@ describe("probe: write verbs (round nine)", () => {
     expect(text(path)).toBe(before);
   });
 
-  test("every non-empty 验收判据 block is promoted, not only the first", async () => {
+  test("multiple non-empty 验收判据 blocks require explicit review before close", async () => {
     const path = await withIssue("**验收判据**：A\n\n**验收判据**：B\n");
-    expect((await run(["close", path, "1"])).code).toBe(0);
+    const before = text(path);
+    const refused = await run(["close", path, "1"]);
+    expect(refused.code).toBe(2);
+    expect(refused.stderr).toContain("L");
+    expect(text(path)).toBe(before);
+
+    expect((await run(["close", path, "1", "--criteria", "A；B"])).code).toBe(0);
     expect(await closedCriteria(path)).toBe("A；B");
   });
 
@@ -1259,11 +1265,19 @@ describe("probe: kept-body marker and body round trips", () => {
     expect(text(path)).toBe(before);
   });
 
-  test("new/body refuse an unfenced end marker in the body text", async () => {
+  test("new/body preserves unfenced archive marker text as ordinary payload", async () => {
     const path = file();
-    const result = await run(["new", path, "--title", "t", "--body-file", body("a\n<!-- issuemd:kept-body:end -->\nb\n")]);
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain("kept-body:end");
+    const bodyText = "**现象**：a\n<!-- issuemd:kept-body:end -->\nb\n\n**验收判据**：works\n";
+    const created = await run(["new", path, "--title", "marker text", "--body-file", body(bodyText)]);
+    expect(created.code).toBe(0);
+    const id = created.stdout.trim();
+    const open = await run(["show", path, id, "--body-only"]);
+    expect(open.stdout).toContain("<!-- issuemd:kept-body:end -->");
+    expect((await run(["close", path, id, "--keep-body"])).code).toBe(0);
+    const archived = await run(["show", path, id, "--body-only"]);
+    expect(archived.stdout).toContain("<!-- issuemd:kept-body:end -->");
+    expect((await run(["reopen", path, id])).code).toBe(0);
+    expect((await run(["show", path, id, "--body-only"])).stdout).toContain("<!-- issuemd:kept-body:end -->");
   });
 
   test("the documented body edit recipe (show --json body.text minus heading) is a no-op", async () => {
@@ -1276,11 +1290,14 @@ describe("probe: kept-body marker and body round trips", () => {
   });
 });
 
-test("probe: close --keep-body refuses a hand-written unfenced marker in the body", async () => {
+test("probe: close --keep-body preserves a hand-written unfenced marker in the body", async () => {
   const base = await withIssue("a\n\n**验收判据**：x\n");
   const path = file(text(base).replace("\na\n", "\na\n<!-- issuemd:kept-body:end -->\n"));
   const before = text(path);
-  expect((await run(["close", path, "1", "--keep-body"])).code).toBe(3);
+  expect((await run(["close", path, "1", "--keep-body"])).code).toBe(0);
+  const archived = JSON.parse((await run(["show", path, "1", "--json"])).stdout);
+  expect(archived.body?.content).toContain("<!-- issuemd:kept-body:end -->");
+  expect((await run(["reopen", path, "1"])).code).toBe(0);
   expect(text(path)).toBe(before);
 });
 

@@ -6,10 +6,10 @@
  * module writes to disk.
  */
 
-import type { IdSpan } from "./issue-id.js";
-import { bodyBlocks, parseLedger, type BodyBlock, type LedgerRow, type TableKind, ARCHIVE_HEADING, archivePayloadRange } from "./ledger.js";
+import { parseId, type IdSpan } from "./issue-id.js";
+import { archiveInventory, archivePayloadRange, bodyBlocks, parseLedger, type BodyBlock, type LedgerRow, type TableKind } from "./ledger.js";
 import { fencedLines } from "./scan.js";
-import { bodyLabels, labelBlock, type LabelBlock, extractCriteria } from "./ledger-edit.js";
+import { bodyLabels, bodyVisibility, type BodyVisibility, labelBlock, labelBlocksIn, type LabelBlock, criteriaOccurrences, criteriaOccurrencesFromLabelBlocks, criteriaTextFromOccurrences } from "./ledger-edit.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
 
 export type ListedIssue = {
@@ -31,8 +31,10 @@ export type ListedIssue = {
   labels?: Record<string, string>;
   /** `--with-body`: original lines for each label block, including markup. */
   labelBlocks?: Record<string, string[]>;
+  /** `--with-body`: source-preserving canonical and later supplement criteria blocks. */
+  criteriaBlocks?: { line: number; label: string; kind: "canonical" | "supplement"; lines: string[] }[];
   /** `--with-body`: an editable body payload, without its issue heading. */
-  body?: { archived?: true; line: number; end: number; text: string; content: string; id: string };
+  body?: { archived?: true; line: number; end: number; lineCount?: number; text: string; content: string; id: string };
 };
 
 /** Render a span the way the table spells it: `7`, `393b`, or `7–20`. */
@@ -73,6 +75,10 @@ function bodyContent(lines: string[], headingLine: number, endLine: number): str
   return content.join("\n");
 }
 
+function criteriaBlockViews(occurrences: ReturnType<typeof criteriaOccurrences>) {
+  return occurrences.map(({ line, label, kind, lines }) => ({ line, label, kind, lines }));
+}
+
 type ArchivedBody = NonNullable<ListedIssue["body"]>;
 
 function archivePayload(
@@ -85,12 +91,14 @@ function archivePayload(
   if (!range) return undefined;
   const { start, end, finalNewline } = range;
   const payloadLines = ledger.lines.slice(start - 1, end);
-  const text = payloadLines.length ? payloadLines.join("\n") + (finalNewline ? "\n" : "") : "";
+  const textFinalNewline = range.version === "v3" ? range.payloadLineCount > 0 : finalNewline;
+  const text = payloadLines.length ? payloadLines.join("\n") + (textFinalNewline ? "\n" : "") : "";
   return {
     archived: true,
     id,
     line: start,
     end,
+    lineCount: range.payloadLineCount,
     text,
     content: text,
   };
@@ -102,14 +110,9 @@ function archiveBodies(
 ): Map<string, ArchivedBody | null> {
   const result = new Map<string, ArchivedBody | null>();
   if (requestedIds.size === 0) return result;
-  const candidates = ledger.sections.filter((section) => {
-    if (section.level !== 3 || section.parent?.level !== 2 || section.parent.title !== "附录" || !ledger.visible.has(section.line_start)) return false;
-    const id = ARCHIVE_HEADING.exec(ledger.lines[section.line_start - 1] ?? "")?.[1];
-    return id != null && requestedIds.has(id);
-  });
+  const candidates = archiveInventory(ledger).archives.filter(({ id }) => requestedIds.has(id));
   const fenced = fencedLines(ledger.lines, true);
-  for (const section of candidates) {
-    const id = ARCHIVE_HEADING.exec(ledger.lines[section.line_start - 1] ?? "")![1]!;
+  for (const { section, id } of candidates) {
     if (result.has(id)) {
       result.set(id, null);
       continue;
@@ -119,11 +122,22 @@ function archiveBodies(
   return result;
 }
 
-function archivedBody(
+function archivedBodyForRow(
   ledger: ReturnType<typeof parseLedger>,
-  id: string,
+  row: LedgerRow,
+  requestedId: string,
 ): ArchivedBody | undefined {
-  return archiveBodies(ledger, new Set([id])).get(id) ?? undefined;
+  const wanted = new Set<string>();
+  const requestedSpan = parseId(requestedId);
+  if (requestedSpan && row.ids.some((span) => covers(span, requestedSpan))) wanted.add(requestedId);
+  for (const { id } of archiveInventory(ledger).archives) {
+    const span = parseId(id);
+    if (span && row.ids.some((range) => covers(range, span))) wanted.add(id);
+  }
+  const candidates = archiveBodies(ledger, wanted);
+  if (candidates.has(requestedId)) return candidates.get(requestedId) ?? undefined;
+  const usable = [...candidates.values()].filter((body): body is ArchivedBody => body != null);
+  return usable.length === 1 ? usable[0] : undefined;
 }
 
 /** Build lookups only for IDs the current list view will request. */
@@ -197,8 +211,23 @@ export function indexWithBody(
   for (const sameSuffix of bodiesBySuffix.values()) {
     sameSuffix.sort((a, b) => a.id.start - b.id.start || a.line - b.line);
   }
-  const archivedIds = new Set(issues.filter((issue) => issue.criteria != null)
-    .map((issue) => issue.ids[0] ?? issue.id));
+  const closedRows = issues.filter((issue) => issue.criteria != null)
+    .map((issue) => rowsById.get(issue.ids[0] ?? issue.id)?.row)
+    .filter((row): row is LedgerRow => row != null);
+  const archivedIds = new Set<string>();
+  const rangedRows: LedgerRow[] = [];
+  for (const row of closedRows) {
+    for (const span of row.ids) {
+      if (span.start === span.end) archivedIds.add(`${span.start}${span.suffix}`);
+      else rangedRows.push(row);
+    }
+  }
+  if (rangedRows.length > 0) {
+    for (const { id } of archiveInventory(ledger).archives) {
+      const span = parseId(id);
+      if (span && rangedRows.some((row) => row.ids.some((range) => covers(range, span)))) archivedIds.add(id);
+    }
+  }
   const archiveBodiesById = archiveBodies(ledger, archivedIds);
   return {
     rowsById,
@@ -208,6 +237,18 @@ export function indexWithBody(
     fallbackBodiesByRowLine: new Map(),
     archiveBodiesById,
   };
+}
+
+function indexedArchiveForRow(index: WithBodyIndex, row: LedgerRow, requestedId: string): ArchivedBody | undefined {
+  if (index.archiveBodiesById.has(requestedId)) return index.archiveBodiesById.get(requestedId) ?? undefined;
+  const candidates = [...index.archiveBodiesById.entries()]
+    .filter(([id]) => {
+      const span = parseId(id);
+      return span != null && row.ids.some((range) => covers(range, span));
+    })
+    .map(([, body]) => body)
+    .filter((body): body is ArchivedBody => body != null);
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 function rangeBodies(index: WithBodyIndex, span: IdSpan): BodyBlock[] {
@@ -323,8 +364,18 @@ export function withBody(
   index = indexWithBody(ledger),
 ): ListedIssue {
   if (issue.criteria != null) {
-    const archived = index.archiveBodiesById.get(issue.ids[0] ?? issue.id) ?? undefined;
-    return { ...issue, criteriaSource: "table", ...(archived ? { body: archived } : {}) };
+    const first = issue.ids[0] ?? issue.id;
+    const row = index.rowsById.get(first);
+    const archived = row ? indexedArchiveForRow(index, row.row, first) : index.archiveBodiesById.get(first) ?? undefined;
+    if (!archived) return { ...issue, criteriaSource: "table" };
+    const bodyLines = ledger.lines.slice(archived.line - 1, archived.end);
+    const occurrences = criteriaOccurrences(bodyLines, archived.line - 1);
+    return {
+      ...issue,
+      criteriaSource: "table",
+      body: archived,
+      criteriaBlocks: criteriaBlockViews(occurrences),
+    };
   }
   const first = issue.ids[0];
   if (!first) return issue;
@@ -336,18 +387,24 @@ export function withBody(
   const block = indexedBody(index, row);
   if (!block) return issue;
   const bodyLines = ledger.lines.slice(block.line - 1, block.end);
+  const fenced = fencedLines(bodyLines, true);
+  const visibility = bodyVisibility(bodyLines, fenced);
+  const sourceBlocks = labelBlocksIn(bodyLines, 1, bodyLines.length, fenced, visibility);
   const labels: Record<string, string> = {};
   const labelBlocks: Record<string, string[]> = {};
-  for (const name of labelsIn(bodyLines, 1, bodyLines.length)) {
-    const found = labelBlock(bodyLines, 1, bodyLines.length, name);
-    labels[name] = found?.text ?? "";
-    labelBlocks[name] = found?.lines ?? [];
+  for (const found of sourceBlocks) {
+    if (!Object.hasOwn(labels, found.label)) {
+      labels[found.label] = found.text;
+      labelBlocks[found.label] = found.lines;
+    }
   }
+  const occurrences = criteriaOccurrencesFromLabelBlocks(sourceBlocks, block.line - 1);
   const owner = `${block.id.start}${block.id.suffix}`;
   const out: ListedIssue = {
     ...issue,
     labels,
     labelBlocks,
+    criteriaBlocks: criteriaBlockViews(occurrences),
     body: {
       line: block.line,
       end: block.end,
@@ -357,7 +414,7 @@ export function withBody(
     },
   };
   if (owner !== row.id) out.bodyFrom = owner;
-  const criteria = extractCriteria(bodyLines);
+  const criteria = criteriaTextFromOccurrences(occurrences);
   if (criteria) {
     out.criteria = criteria;
     out.criteriaSource = "body";
@@ -379,11 +436,10 @@ export function ledgerSize(ledger: ReturnType<typeof parseLedger>, src: string):
   const bodyLines = blocks.reduce((total, block) => total + (block.end - block.line), 0);
   let archivedLines = 0;
   let archivedBlocks = 0;
-  const archives = ledger.sections.filter((section) => section.level === 3 && section.parent?.title === "附录" &&
-    section.parent.level === 2 && ledger.visible.has(section.line_start) && ARCHIVE_HEADING.test(ledger.lines[section.line_start - 1]!));
+  const archives = archiveInventory(ledger).archives;
   if (archives.length > 0) {
     const fenced = fencedLines(ledger.lines, true);
-    for (const section of archives) {
+    for (const { section } of archives) {
       const range = archivePayloadRange(ledger, section, fenced);
       archivedBlocks++;
       if (range) archivedLines += range.end - range.start + 1;
@@ -472,9 +528,15 @@ export function findLabel(
 }
 
 /** Every distinct `**label**` in a line range, in document order. */
-export function labelsIn(lines: string[], start: number, end: number): string[] {
+export function labelsIn(
+  lines: string[],
+  start: number,
+  end: number,
+  fenced = fencedLines(lines, true),
+  visibility: BodyVisibility = bodyVisibility(lines, fenced),
+): string[] {
   const out: string[] = [];
-  for (const { label } of bodyLabels(lines, start, end)) {
+  for (const { label } of bodyLabels(lines, start, end, fenced, visibility)) {
     if (!out.includes(label)) out.push(label);
   }
   return out;
@@ -497,11 +559,13 @@ export type IssueView = {
    * The body block shown for this id. `id` names the issue the block belongs
    * to; `archived` marks a payload read from a unique kept-body archive.
    */
-  body?: { line: number; end: number; text: string; content: string; id: string; inherited?: true; archived?: true };
+  body?: { line: number; end: number; lineCount?: number; text: string; content: string; id: string; inherited?: true; archived?: true };
   /** Every `**label**` block in the body, one-line form (as `--label` and `close` read them). */
   labels?: Record<string, string>;
   /** Original lines for each label block, including Markdown fences and blank lines. */
   labelBlocks?: Record<string, string[]>;
+  /** Source-preserving canonical and later supplement criteria blocks. */
+  criteriaBlocks?: { line: number; label: string; kind: "canonical" | "supplement"; lines: string[] }[];
 };
 
 /** The full view `show` renders: table row plus the body block when one exists. */
@@ -525,7 +589,9 @@ export function viewIssue(
   const block = exact ?? blocks.find((candidate) =>
     found.row.ids.some((span) => covers(span, candidate.id)) && mayBorrow(ledger, found.row.line, candidate));
   const owner = block ? key(block.id) : undefined;
-  const archived = found.table === "closed" && !block ? archivedBody(ledger, found.id) : undefined;
+  const archived = found.table === "closed" && !block
+    ? archivedBodyForRow(ledger, found.row, found.id)
+    : undefined;
   const view: IssueView = {
     id: found.id,
     table: found.table,
@@ -549,25 +615,31 @@ export function viewIssue(
         : archived!.text,
       content: block ? bodyContent(ledger.lines, block.line, block.end) : archived!.content,
       id: block ? owner! : archived!.id,
-      ...(archived ? { archived: true as const } : {}),
+      ...(archived ? { archived: true as const, lineCount: archived.lineCount } : {}),
     };
     if (owner && owner !== found.id) view.body!.inherited = true;
     // Work on the body's own slice: `fencedLines` and the label scan then cost
     // O(body), not O(file) per label (review 13 performance finding).
     const bodyLines = ledger.lines.slice(displayedBody.line - 1, displayedBody.end);
+    const fenced = fencedLines(bodyLines, true);
+    const visibility = bodyVisibility(bodyLines, fenced);
+    const sourceBlocks = labelBlocksIn(bodyLines, 1, bodyLines.length, fenced, visibility);
     const labels: Record<string, string> = {};
     const labelBlocks: Record<string, string[]> = {};
-    for (const name of labelsIn(bodyLines, 1, bodyLines.length)) {
-      const found = labelBlock(bodyLines, 1, bodyLines.length, name);
-      labels[name] = found?.text ?? "";
-      labelBlocks[name] = found?.lines ?? [];
+    for (const candidate of sourceBlocks) {
+      if (!Object.hasOwn(labels, candidate.label)) {
+        labels[candidate.label] = candidate.text;
+        labelBlocks[candidate.label] = candidate.lines;
+      }
     }
+    const occurrences = criteriaOccurrencesFromLabelBlocks(sourceBlocks, displayedBody.line - 1);
     view.labels = labels;
     view.labelBlocks = labelBlocks;
+    view.criteriaBlocks = criteriaBlockViews(occurrences);
     // Open issues keep their criteria in the body; expose them the same way
     // a closed issue exposes its column, so consumers need not parse Markdown.
     // Same text `close` would promote (every non-empty 验收判据 block).
-    const promoted = found.table === "open" ? extractCriteria(bodyLines) : undefined;
+    const promoted = found.table === "open" ? criteriaTextFromOccurrences(occurrences) : undefined;
     if (promoted) {
       view.criteria = promoted;
       view.criteriaSource = "body";

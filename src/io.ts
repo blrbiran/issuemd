@@ -21,25 +21,34 @@ function sameSnapshot(a: ExpectedStat, b: ExpectedStat): boolean {
     a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 }
 
-export function readDocument(path: string): Document {
+export function readRaw(path: string): { raw: Buffer; stat: ExpectedStat } {
   const fd = openSync(path, "r");
-  let text: string;
+  let raw: Buffer;
   let stat: Stats;
   try {
     stat = fstatSync(fd);
     if (!stat.isFile()) throw new Error("expected a regular file");
-    text = readFileSync(fd, "utf8");
+    raw = readFileSync(fd);
     if (!sameSnapshot(stat, fstatSync(fd))) throw new Error("E130 file changed while being read");
   } finally {
     closeSync(fd);
   }
+  return { raw, stat };
+}
+
+export function decodeDocument(raw: Buffer): Omit<Document, "stat"> {
+  let text = raw.toString("utf8");
   const bom = text.charCodeAt(0) === 0xfeff;
   if (bom) text = text.slice(1);
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
   if (eol === "\r\n") text = text.replaceAll("\r\n", "\n");
-  return { text, bom, eol, finalNewline: text.endsWith("\n"), stat };
+  return { text, bom, eol, finalNewline: text.endsWith("\n") };
 }
 
+export function readDocument(path: string): Document {
+  const { raw, stat } = readRaw(path);
+  return { ...decodeDocument(raw), stat };
+}
 /** The line array holds physical lines without a split sentinel at EOF. */
 export function joinDocument(lines: string[], doc: Document): string {
   const text = lines.join("\n");

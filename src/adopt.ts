@@ -21,8 +21,8 @@
 
 import { scan } from "./scan.js";
 import { buildSections, type Section } from "./sections.js";
-import { bodyBlocks, countSuffix, limitsRecords, isStatusWord, stripCountSuffixes, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
-import { archiveHeading, endsInFence, fencedLines, formatRow, guideBlockLines, KEPT_BODY_VERSION, KEPT_BODY_START, KEPT_BODY_END, statusBlockLines, unescapeCell } from "./ledger-edit.js";
+import { archiveEnvelopeDiagnostics, archiveInventory, countSuffix, limitsRecords, isStatusWord, locateArchivePayload, stripCountSuffixes, isTableSection, mappingFor, parseLedger, splitCells, tableHeader, type Mapping } from "./ledger.js";
+import { endsInFence, fencedLines, formatRow, guideBlockLines, KEPT_BODY_VERSION_V3, serializeKeptBodyV3, statusBlockLines, unescapeCell } from "./ledger-edit.js";
 import { compareIds, parseId, parseIds, type IdSpan } from "./issue-id.js";
 import { checkLedger, STATUS_CLASSES } from "./ledger-check.js";
 
@@ -69,6 +69,8 @@ export type Decision = {
 export type AdoptResult = {
   lines: string[];
   decisions: Decision[];
+  /** Payload records for v3 archives emitted by this conversion, for write-time validation. */
+  archivePayloads?: { id: string; lines: string[] }[];
   /** Human-readable mechanical changes, for the report header. */
   changes: string[];
 };
@@ -387,7 +389,7 @@ function neutralizePreserved(content: string[]): string[] {
 }
 
 /** `#### 现象` inside a body becomes `**现象**`; H3 is the issue heading. */
-function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
+function demoteHeadings(lines: string[], protectedArchiveLines: ReadonlySet<number> = new Set()): { lines: string[]; count: number } {
   let count = 0;
   const fenced = fencedLines(lines);
   // Only body blocks have their H4s demoted: from an `Issue` heading (H1–H3;
@@ -395,6 +397,10 @@ function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
   // heading at its level or above. A foreign section's H4 stays verbatim.
   let issueLevel = 0;
   const out = lines.map((line, index) => {
+    if (protectedArchiveLines.has(index)) {
+      issueLevel = 0;
+      return line;
+    }
     if (fenced[index]) return line;
     const outer = /^ {0,3}(#{1,3})[ \t]+([\s\S]*)$/.exec(line);
     if (outer) {
@@ -418,7 +424,7 @@ function demoteHeadings(lines: string[]): { lines: string[]; count: number } {
  * `origin[i]` is the 1-indexed input line output line `i` came from; an
  * inserted separator borrows the line of the row above it.
  */
-function fixSeparators(lines: string[]): { lines: string[]; count: number; origin: number[]; synthetic: Set<number> } {
+function fixSeparators(lines: string[], protectedArchiveLines: ReadonlySet<number> = new Set()): { lines: string[]; count: number; origin: number[]; synthetic: Set<number> } {
   const out: string[] = [];
   const origin: number[] = [];
   const synthetic = new Set<number>();
@@ -426,14 +432,14 @@ function fixSeparators(lines: string[]): { lines: string[]; count: number; origi
   let count = 0;
   let index = 0;
   while (index < lines.length) {
-    if (fenced[index] || !/^ {0,3}\|/.test(lines[index]!)) {
+    if (fenced[index] || protectedArchiveLines.has(index) || !/^ {0,3}\|/.test(lines[index]!)) {
       out.push(lines[index]!);
       origin.push(index + 1);
       index++;
       continue;
     }
     const start = index;
-    while (index < lines.length && !fenced[index] && /^ {0,3}\|/.test(lines[index]!)) index++;
+    while (index < lines.length && !fenced[index] && !protectedArchiveLines.has(index) && /^ {0,3}\|/.test(lines[index]!)) index++;
     const blockLines = lines.slice(start, index);
     const cells = blockLines.map((text) => splitCells(text));
     // A block whose second row is a separator is already well-formed.
@@ -454,7 +460,7 @@ function fixSeparators(lines: string[]): { lines: string[]; count: number; origi
 }
 
 /** Any heading with a trailing `（N）` count (`countSuffix`; years stay) loses it. */
-function stripCounts(lines: string[]): {
+function stripCounts(lines: string[], protectedArchiveLines: ReadonlySet<number> = new Set()): {
   lines: string[];
   count: number;
   /** 1-based lines (of the returned array) whose heading text changed. */
@@ -464,7 +470,7 @@ function stripCounts(lines: string[]): {
   const renames: { line: number; before: string; after: string }[] = [];
   const fenced = fencedLines(lines);
   const out = lines.map((line, index) => {
-    if (fenced[index] || !/^ {0,3}#{1,6}[ \t]/.test(line)) return line;
+    if (protectedArchiveLines.has(index) || fenced[index] || !/^ {0,3}#{1,6}[ \t]/.test(line)) return line;
     // check reads the title without ATX closing hashes (`## 旧（3） ##`) and
     // an issue heading's title without its `Issue N:` prefix.
     const [, prefix, title, closing] = /^( {0,3}#{1,6}[ \t]+(?:Issue\s+[^:\s]+\s*:\s*)?)([\s\S]*?)((?:[ \t]+#+)?[ \t]*)$/.exec(line)!;
@@ -492,20 +498,6 @@ export function adopt(src: string): AdoptResult {
   // W220 (a status outside the vocabulary) is the one warning adopt itself
   // reports on, so such a ledger still goes through the conversion.
   if (precheck.errors.length === 0 && !precheck.warnings.some(({ code }) => code === "W220")) {
-    const checkedSource = parseLedger(src);
-    for (const body of bodyBlocks(checkedSource)) {
-      const payload = checkedSource.lines.slice(body.line, body.end);
-      const fenced = fencedLines(payload, true);
-      const marker = payload.findIndex((line, index) => !fenced[index] &&
-        (line.trim() === KEPT_BODY_VERSION || line.trim() === KEPT_BODY_START || line.trim() === KEPT_BODY_END));
-      if (marker !== -1) {
-        const value = payload[marker]!.trim();
-        throw Object.assign(
-          new Error(`refusing to convert: issue body #${body.id.start}${body.id.suffix} contains reserved archive marker '${value}' at source L${body.line + marker + 1}`),
-          { code: "lost-content" },
-        );
-      }
-    }
     // A W225 table is not converted, but it is still there: saying only
     // "nothing to convert" hid the retained table from the reader (#56/#57).
     const cited = precheck.warnings.filter(({ code }) => code === "W225").length;
@@ -518,12 +510,32 @@ export function adopt(src: string): AdoptResult {
     };
   }
 
+  const sourceLedger = parseLedger(original.join("\n"));
+  const malformedSourceArchives = archiveEnvelopeDiagnostics(sourceLedger);
+  if (malformedSourceArchives.length > 0) {
+    const first = malformedSourceArchives[0]!;
+    throw Object.assign(
+      new Error(`refusing to convert: existing archive #${first.id ?? "?"} is malformed at source L${first.line}: ${first.message}`),
+      { code: "lost-content" },
+    );
+  }
+  const sourceArchiveIndex = archiveInventory(sourceLedger);
+  const protectedArchiveLines = new Set<number>();
+  const archivePayloads: { id: string; lines: string[] }[] = [];
+  for (const { section, id } of sourceArchiveIndex.archives) {
+    for (let line = section.line_start; line <= section.line_end; line++) protectedArchiveLines.add(line - 1);
+    if (sourceLedger.lines[section.line_start] !== KEPT_BODY_VERSION_V3) continue;
+    const located = locateArchivePayload(sourceLedger, section, sourceArchiveIndex.masks);
+    if (!located.range) continue;
+    archivePayloads.push({ id, lines: sourceLedger.lines.slice(located.range.start - 1, located.range.end) });
+  }
+
   // Mechanical rewrites first, so every later coordinate refers to the text
   // that will actually be written.
-  const demoted = demoteHeadings(original);
+  const demoted = demoteHeadings(original, protectedArchiveLines);
   if (demoted.count > 0) changes.push(`正文 H4 → **加粗标签**：${demoted.count} 处`);
-  const stripped = stripCounts(demoted.lines);
-  const separated = fixSeparators(stripped.lines);
+  const stripped = stripCounts(demoted.lines, protectedArchiveLines);
+  const separated = fixSeparators(stripped.lines, protectedArchiveLines);
   if (separated.count > 0) changes.push(`补表格分隔行：${separated.count} 处`);
   const lines = separated.lines;
   /** 1-based line in `lines` → the line it came from in the source file. */
@@ -1007,18 +1019,6 @@ export function adopt(src: string): AdoptResult {
       const content = body
         ? trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, id, body.line))
         : ["**现象**：", "", "**根因**：", "", "**期望**：", "", `**验收判据**：${row.criteria}`];
-      if (body) {
-        const fenced = fencedLines(content, true);
-        const marker = content.findIndex((line, index) => !fenced[index] &&
-          (line.trim() === KEPT_BODY_VERSION || line.trim() === KEPT_BODY_START || line.trim() === KEPT_BODY_END));
-        if (marker !== -1) {
-          const value = content[marker]!.trim();
-          throw Object.assign(
-            new Error(`refusing to convert: open issue body #${id} contains reserved archive marker '${value}' at source L${sourceLineOf(body.line)}`),
-            { code: "lost-content" },
-          );
-        }
-      }
       // The index has no criteria column. Criteria (or extra columns) an open
       // row carried in the old table go into its body instead of vanishing.
       // Extra columns are never 验收判据: a later `close` would promote them.
@@ -1237,7 +1237,6 @@ export function adopt(src: string): AdoptResult {
   for (const row of archived) {
     const body = bodyById.get(fullId(row))!;
     usedBodyIds.add(body.idText);
-    appendixOut.push(archiveHeading(row.idText, row.summary), KEPT_BODY_VERSION, KEPT_BODY_START);
     const content = trimBlankEdges(dropStatusLabels(lines.slice(body.line, body.end), decisions, row.idText, body.line));
     if (endsInFence(content, true)) {
       throw Object.assign(
@@ -1245,17 +1244,9 @@ export function adopt(src: string): AdoptResult {
         { code: "lost-content" },
       );
     }
-    const fenced = fencedLines(content, true);
-    const marker = content.findIndex((line, index) => !fenced[index] &&
-      (line.trim() === KEPT_BODY_VERSION || line.trim() === KEPT_BODY_START || line.trim() === KEPT_BODY_END));
-    if (marker !== -1) {
-      const value = content[marker]!.trim();
-      throw Object.assign(
-        new Error(`refusing to convert: issue body #${row.idText} contains reserved archive marker '${value}' at source L${sourceLineOf(body.line)}`),
-        { code: "lost-content" },
-      );
-    }
-    appendixOut.push(...(content.length ? content : ["（空）"]), KEPT_BODY_END, "");
+    const payload = content.length ? content : ["（空）"];
+    archivePayloads.push({ id: row.idText, lines: payload });
+    appendixOut.push(...serializeKeptBodyV3(row.idText, row.summary, payload));
   }
   // A body that lives inside preserved text is already copied with it; do not
   // archive a second copy.
@@ -1481,7 +1472,7 @@ export function adopt(src: string): AdoptResult {
     const sourceLine = decision.line > 0 ? separated.origin[decision.line - 1] ?? decision.line : undefined;
     return line >= 0 ? { ...decision, line: line + 1, sourceLine } : { ...decision, line: 0, sourceLine };
   });
-  return { lines: out, decisions: located, changes };
+  return { lines: out, decisions: located, changes, archivePayloads };
 }
 
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
