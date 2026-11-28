@@ -332,7 +332,9 @@ test("criteria alias repair ignores empty alias blocks when selecting one nonemp
   expect(written.code).toBe(0);
   expect(written.stderr).toContain("--criteria-labels");
 
-  const preview = await run(["sync", ledger, "--criteria-labels", "--dry-run"]);
+  // The nonempty alias is a single line, not a list; the default guard now
+  // requires --force for that shape (dogfood #104).
+  const preview = await run(["sync", ledger, "--criteria-labels", "--force", "--dry-run"]);
   expect(preview.code).toBe(0);
   expect(preview.stdout).toContain("**验收判据**：可验证。");
 });
@@ -540,7 +542,7 @@ test("close/reopen keeps W201 bytes equal at and above the v3 payload limit", as
     const afterW201 = after.warnings.filter((warning: { code: string; id?: string }) => warning.code === "W201" && warning.id === "2");
     expect(afterW201).toHaveLength(beforeW201.length);
     if (afterW201.length) expect(afterW201[0].message).toContain(`${targetBytes} UTF-8 bytes`);
-    expect((await run(["check", ledger, "--strict"])).code).toBe(targetBytes > 20_480 ? 3 : 0);
+    expect((await run(["check", ledger, "--strict"])).code).toBe(0);
 
     expect((await run(["reopen", ledger, "2"])).code).toBe(0);
     expect(readFileSync(ledger, "utf8")).toBe(source);

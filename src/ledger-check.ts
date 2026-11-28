@@ -13,6 +13,11 @@ import { STATUS_CLASSES } from "./statuses.js";
 export { STATUS_CLASSES };
 /** Priorities `new` accepts and `check` knows; "" means "not prioritised". */
 export const PRIORITIES: readonly string[] = ["P0", "P1", "P2", "P3", ""];
+/**
+ * Advisory warnings: they have a mechanical exit (or are guarded by close /
+ * prune) and must not make a long-lived ledger permanently fail `--strict`.
+ */
+export const STRICT_EXEMPT_WARNINGS: ReadonlySet<string> = new Set(["W201", "W202", "W250", "W264"]);
 const STATUS_LINES = [
   "| 状态 | 分类 |", "|---|---|",
   ...Object.entries(STATUS_CLASSES).map(([status, kind]) => `| ${status} | ${kind} |`),
@@ -233,7 +238,7 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
         warnings.push({
           code: "W264", line: occurrence.line, id,
           message: `Possible additional criteria block is not included in the canonical criteria: L${occurrence.line}: review **${occurrence.label}**. ` +
-            "Merge it into **验收判据** or use close --keep-body to preserve it",
+            "Merge it into **验收判据** (renaming it would create a duplicate label), close with --keep-body, or pass reviewed --criteria TEXT",
         });
       }
     }
@@ -631,6 +636,6 @@ export function checkParsedLedger(parsed: Ledger, file: string, options: Options
   // W250 records a deliberate `--keep-body` archive, not a defect. Failing
   // `--strict` on it would leave every ledger that used the escape hatch
   // permanently red, so it is reported but does not affect `ok`.
-  const strictFailures = warnings.filter(({ code }) => code !== "W250");
+  const strictFailures = warnings.filter(({ code }) => !STRICT_EXEMPT_WARNINGS.has(code));
   return { file, counts, errors, warnings, ok: errors.length === 0 && (!options.strict || strictFailures.length === 0) };
 }

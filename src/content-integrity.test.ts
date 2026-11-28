@@ -49,7 +49,9 @@ test.each(["补充判据", "新增判据", "收窄判据", "判定标准", "完�
     expect(JSON.parse(report.stdout).warnings).toContainEqual(expect.objectContaining({
       code: "W264", id: "2", line: lineOf(before, heading),
     }));
-    expect((await run(["check", ledger, "--strict"])).code).toBe(3);
+    // W264 is advisory under --strict: the close guard is what protects the
+    // body, and this block is not silently discarded.
+    expect((await run(["check", ledger, "--strict"])).code).toBe(0);
   },
 );
 

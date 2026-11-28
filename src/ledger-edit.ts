@@ -332,7 +332,12 @@ export function criteriaAliasRepair(lines: string[], offset = 0, fenced = fenced
   const labels = [...bodyLabels(lines, 1, lines.length, fenced)];
   const canonical = labels.find(({ label }) => label === "验收判据");
   const aliases = labels.filter(({ label }) => label !== "验收判据" && isCriteriaAlias(label));
-  const relevant = canonical ? aliases.filter(({ line }) => line > canonical.line) : aliases;
+  const relevant = (canonical ? aliases.filter(({ line }) => line > canonical.line) : aliases)
+    .filter(({ label, line }) => {
+      if (!canonical) return true;
+      const block = labelBlock(lines, line, lines.length, label, fenced);
+      return !(block && isCriteriaPointerBlock(block));
+    });
   if (relevant.length === 0) return undefined;
   const candidates = relevant.map(({ label, line }) => ({ label, line: line + offset }));
   if (canonical) return { candidates, reason: "a canonical **验收判据** label already exists" };
@@ -664,6 +669,22 @@ export function isCriteriaLabel(label: string): boolean {
   return label === "验收判据" || isCriteriaSupplement(label);
 }
 
+const CRITERIA_POINTER_LABEL = /^(?:判据|验收判据)[（(](?:不变|同上|同\s*#\d+[a-z]?|见上文|参见上文|见前文)[）)]$/u;
+const CRITERIA_POINTER_TEXT = /^(?:[^，,；;。]*[，,])?[ \t]*(?:判据)?(?:不变|未变|照旧|同上|同上所述|与上文一致|仍然成立|依旧成立|就是上面那条|见上文|参见上文|见前文)[。.!！]?$/u;
+
+/** `**判据（不变）**` and friends point at the canonical block instead of adding one. */
+export function isCriteriaPointerLabel(label: string): boolean {
+  return CRITERIA_POINTER_LABEL.test(labelName(label));
+}
+
+/**
+ * A pointer is covered only when it has no list items and its text is wholly
+ * a no-change statement. `同上，但还需离线通过。` adds a condition and stays W264.
+ */
+function isCriteriaPointerBlock(block: LabelBlock): boolean {
+  return isCriteriaPointerLabel(block.label) && !blockHasListItems(block) && CRITERIA_POINTER_TEXT.test(block.text.trim());
+}
+
 function criteriaSourceKey(block: LabelBlock): string {
   const content = block.lines.slice(1);
   if (block.inline.trim() !== "") content.unshift(block.inline);
@@ -681,7 +702,8 @@ export function criteriaOccurrencesFromLabelBlocks(blocks: LabelBlock[], offset 
     const kind = found.label === "验收判据" ? "canonical" : "supplement";
     if (kind === "supplement" && !isCriteriaSupplement(found.label)) continue;
     if (kind === "supplement" && found.text === "") continue;
-    const alreadyCovered = kind === "supplement" && canonicalSources.has(criteriaSourceKey(found));
+    const alreadyCovered = kind === "supplement" &&
+      (canonicalSources.has(criteriaSourceKey(found)) || isCriteriaPointerBlock(found));
     occurrences.push({ line: found.line + offset, label: found.label, kind, lines: found.lines, text: found.text,
       ...(alreadyCovered ? { alreadyCovered: true } : {}),
     });

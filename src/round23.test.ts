@@ -325,10 +325,11 @@ test("criteria-label sync receipts include the absolute source line", async () =
   expect((await run(["body", ledger, "2", "--body-file", body])).code).toBe(0);
   const aliasLine = readFileSync(ledger, "utf8").split("\n").findIndex((line) => line === "**判据**：可验证。") + 1;
 
-  const preview = await run(["sync", ledger, "--criteria-labels", "--dry-run"]);
+  // A single-line alias is not list-shaped; the default guard requires --force.
+  const preview = await run(["sync", ledger, "--criteria-labels", "--force", "--dry-run"]);
   expect(preview.code).toBe(0);
   expect(preview.stderr).toContain(`L${aliasLine}`);
-  const applied = await run(["sync", ledger, "--criteria-labels"]);
+  const applied = await run(["sync", ledger, "--criteria-labels", "--force"]);
   expect(applied.code).toBe(0);
   expect(applied.stderr).toContain(`L${aliasLine}`);
 });
