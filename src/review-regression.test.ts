@@ -94,8 +94,8 @@ test("prune refuses archive-shaped text still inside a void-tag HTML block", asy
 
   const result = await run(["prune", ledger, "1", "--dry-run"]);
 
-  expect(result.code).toBe(1);
-  expect(result.stderr).toContain("no kept-body archive");
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("archive heading is hidden by raw HTML");
   expect(readFileSync(ledger, "utf8")).toBe(before);
 });
 
@@ -292,7 +292,8 @@ test("prune refuses archive examples inside standalone raw HTML block tags", asy
 
     const result = await run(["prune", ledger, "1", "--dry-run"]);
 
-    expect(result.code).toBe(1);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("archive heading is hidden by raw HTML");
   }
 });
 
@@ -599,7 +600,8 @@ test("prune refuses an archive example inside a CDATA raw HTML block", async () 
 
   const result = await run(["prune", ledger, "1", "--dry-run"]);
 
-  expect(result.code).toBe(1);
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("archive heading is hidden by raw HTML");
 });
 
 test("a closed raw-text HTML block does not hide a following archive", async () => {

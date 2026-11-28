@@ -572,6 +572,14 @@ export function criteriaTextFromOccurrences(occurrences: CriteriaOccurrence[]): 
   return texts.length > 0 ? joinClauses(texts) : undefined;
 }
 
+// Automatic rename is deliberately stricter than the set of blocks that
+// require review before deleting a body.
+function isCriteriaSupplement(label: string): boolean {
+  if (label === "关闭时判据") return false;
+  return isCriteriaAlias(label) || /判据(?:（[^）]*）|\([^)]*\))?$/.test(label) ||
+    ["判定标准", "完成标准", "验收标准", "必须满足"].includes(label);
+}
+
 export function criteriaOccurrencesFromLabelBlocks(blocks: LabelBlock[], offset = 0): CriteriaOccurrence[] {
   const firstCanonical = blocks.findIndex(({ label }) => label === "验收判据");
   if (firstCanonical < 0) return [];
@@ -579,8 +587,8 @@ export function criteriaOccurrencesFromLabelBlocks(blocks: LabelBlock[], offset 
   for (let index = firstCanonical; index < blocks.length; index++) {
     const found = blocks[index]!;
     const kind = found.label === "验收判据" ? "canonical" : "supplement";
-    if (kind === "supplement" && !isCriteriaAlias(found.label)) continue;
-    if (kind === "supplement" && (!blockHasVisibleContent(found.lines) || found.text === "")) continue;
+    if (kind === "supplement" && !isCriteriaSupplement(found.label)) continue;
+    if (kind === "supplement" && found.text === "") continue;
     occurrences.push({ line: found.line + offset, label: found.label, kind, lines: found.lines, text: found.text });
   }
   return occurrences;

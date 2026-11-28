@@ -134,8 +134,8 @@ test("prune refuses ambiguous ownership, duplicate appendices, and legacy archiv
   const headingEnd = exampleSource.indexOf(endMarker, headingStart) + endMarker.length;
   const example = fixture("prune-html-example.md", `${exampleSource.slice(0, headingStart)}<pre>\n${exampleSource.slice(headingStart, headingEnd)}\n</pre>\n${exampleSource.slice(headingEnd)}`);
   result = await run(["prune", example, "2", "--dry-run"]);
-  expect(result.code).toBe(1);
-  expect(result.stderr).toContain("no kept-body archive");
+  expect(result.code).toBe(2);
+  expect(result.stderr).toContain("archive heading is hidden by raw HTML");
 });
 
 test("prune refuses a second eligible end marker and trailing user text", async () => {

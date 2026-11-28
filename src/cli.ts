@@ -34,7 +34,7 @@ import { hashRepairContextSkipReason, hashRepairRanges, hashRepairSkipReason, ha
 import { buildSections, countLines } from "./sections.js";
 import { decodeDocument, joinDocument, readRaw, writeAtomically, type Document } from "./io.js";
 import { parseId, parseIds, compareIds, IdSet, type IdSpan } from "./issue-id.js";
-import { archiveInventory as discoverArchives, archivePayloadRange, archivePayloadSnapshot, locateArchivePayload, validateSerializedArchive, bodyBlocks, countSuffix, DEFAULT_LIMITS, effectiveLimits, highWaterRecords, HIGH_WATER_MARKER, htmlBlockLines, LIMITS_MARKER, limitsRecords, maxIssueId, parseLedger, prunableArchive, type Diagnostic } from "./ledger.js";
+import { archiveInventory as discoverArchives, archivePayloadRange, archivePayloadSnapshot, hiddenArchiveRefusal, locateArchivePayload, validateSerializedArchive, bodyBlocks, countSuffix, DEFAULT_LIMITS, effectiveLimits, highWaterRecords, HIGH_WATER_MARKER, htmlBlockLines, LIMITS_MARKER, limitsRecords, maxIssueId, parseLedger, prunableArchive, type Diagnostic } from "./ledger.js";
 import { checkLedger, checkParsedLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
 import {
   bodySkeleton,
@@ -676,6 +676,10 @@ function cmdShow(rest: string[], v: Values): CliResult {
     baseNote === "" && twinNote === "" ? result : { ...result, stderr: baseNote + twinNote + result.stderr };
 
   if (v["body-only"]) {
+    if (view.table === "closed" && (!view.body?.archived || view.body.id !== view.id)) {
+      const hidden = hiddenArchiveNote(discoverArchives(ledger), view.id);
+      if (hidden) return withNote(err(`issuemd show: ${hidden}\n`));
+    }
     if (!view.body || view.body.inherited || (view.table === "closed" && !view.body.archived)) {
       return withNote(err(`issuemd show: #${id} has no body of its own\n`));
     }
@@ -1190,6 +1194,12 @@ function perIdRefusal(verb: string, idText: string, found: NonNullable<ReturnTyp
   return err(`issuemd ${verb}: #${idText} ${what}; split the row first: issuemd split FILE ${idText}\n`, 2);
 }
 
+function hiddenArchiveNote(inventory: ReturnType<typeof discoverArchives>, id: string): string | undefined {
+  if (inventory.archives.some((archive) => archive.id === id)) return undefined;
+  const refusal = hiddenArchiveRefusal(inventory, id);
+  if (refusal) return `#${id}: ${refusal.reason} (${refusal.lines.map((line) => `L${line}`).join(", ")})`;
+}
+
 /** Rows in `status`'s category, used by close/reopen/status decisions. */
 function statusCategory(status: string): "open" | "closed" | undefined {
   return Object.hasOwn(STATUS_CLASSES, status)
@@ -1611,6 +1621,8 @@ function cmdClose(rest: string[], v: Values): CliResult {
         3,
       );
     }
+    const hidden = hiddenArchiveNote(archiveIndex, idText);
+    if (hidden) return err(`issuemd close: ${hidden}\n`, 3);
   }
   // Criteria are stored once and must not vanish silently (spec §7.2): the
   // body is deleted by close, so whatever it says has to land somewhere.
@@ -1881,6 +1893,10 @@ function cmdReopen(rest: string[], v: Values): CliResult {
     );
   }
   const archived = archivedCandidates[0]?.section;
+  if (!archived) {
+    const hidden = hiddenArchiveNote(archiveIndex, idText);
+    if (hidden) return err(`issuemd reopen: ${hidden}\n`, 3);
+  }
   // The archive spans heading → end marker. Archives written before the
   // marker existed fall back to the H3's extent, minus trailing blank lines
   // (those separate it from whatever follows and must stay).
@@ -1898,6 +1914,11 @@ function cmdReopen(rest: string[], v: Values): CliResult {
       restored = loaded.lines.slice(range.start - 1, range.end);
       archivedPayloadLines = [...restored];
     } else {
+      const overlapping = archiveIndex.hiddenArchives.filter(({ line }) => line >= range.start && line <= range.framingEnd);
+      if (overlapping.length > 0) {
+        const locations = overlapping.map(({ id, line }) => `#${id} at L${line}`).join(", ");
+        return err(`issuemd reopen: legacy archive for #${idText} overlaps a hidden kept-body archive (${locations}). Review the boundaries before retrying\n`, 3);
+      }
       // Legacy keeps its original H3 and provenance note as restored body text.
       restored = loaded.lines.slice(archived.line_start, range.end);
     }

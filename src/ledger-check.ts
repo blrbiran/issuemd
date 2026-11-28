@@ -2,7 +2,7 @@ import { inlineCodeRanges, multilineInlineCodeRanges } from "./scan.js";
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
-import { archiveInventory, locateArchivePayload, archivePayloadRange, bodyBlocks, countSuffix, effectiveLimits, type EffectiveLimits, highWaterRecords, limitsRecords, maxIssueId, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
+import { archiveInventory, hiddenArchiveReason, locateArchivePayload, archivePayloadRange, bodyBlocks, countSuffix, effectiveLimits, type EffectiveLimits, highWaterRecords, limitsRecords, maxIssueId, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
 import { hashSpans } from "./hash-scan.js";
 import { ARCHIVE_HEADING, bodyLabels, criteriaBoundaryHints, criteriaLabelHint, criteriaOccurrences, extractCriteria, fencedLines, unescapeCell } from "./ledger-edit.js";
 
@@ -194,7 +194,8 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
         if (occurrence.kind !== "supplement") continue;
         warnings.push({
           code: "W264", line: occurrence.line, id,
-          message: `Possible additional criteria block is not included in the canonical criteria: L${occurrence.line}: review **${occurrence.label}**`,
+          message: `Possible additional criteria block is not included in the canonical criteria: L${occurrence.line}: review **${occurrence.label}**. ` +
+            "Merge it into **验收判据** or use close --keep-body to preserve it",
         });
       }
     }
@@ -270,7 +271,10 @@ function checkRows(ledger: Ledger, ids: Record<TableKind, IdSet>) {
 function checkAppendix(ledger: Ledger, limits: EffectiveLimits) {
   const { lines, warnings, rows } = ledger;
   const inventory = archiveInventory(ledger);
-  const { appendices, archives, masks } = inventory;
+  const { appendices, archives, hiddenArchives, masks } = inventory;
+  for (const candidate of hiddenArchives) {
+    warnings.push({ code: "W269", line: candidate.line, id: candidate.id, message: hiddenArchiveReason(candidate) });
+  }
   const isVisible = (line: number) => ledger.visible.has(line) && !masks.rawHtml[line - 1] && !masks.comments[line - 1];
   if (appendices.length > 1) {
     for (const appendix of appendices) warnings.push({

@@ -658,11 +658,28 @@ function archiveMasks(lines: string[], fenced: boolean[] = fencedLines(lines, tr
 }
 
 export type ArchiveSection = { appendix: Section; section: Section; id: string };
+export type HiddenArchive = { id: string; line: number; mask: "code fence" | "HTML comment" | "raw HTML" };
 export type ArchiveInventory = {
   appendices: Section[];
   archives: ArchiveSection[];
+  hiddenArchives: HiddenArchive[];
   masks: ArchiveMasks;
 };
+
+export function hiddenArchiveReason({ mask }: HiddenArchive): string {
+  return `kept-body archive heading is hidden by ${mask}`;
+}
+
+export function hiddenArchiveRefusal(inventory: ArchiveInventory, id: string): ArchivePruneRefusal | undefined {
+  const candidates = inventory.hiddenArchives.filter((candidate) => candidate.id === id);
+  if (candidates.length === 0) return undefined;
+  const reasons = [...new Set(candidates.map(hiddenArchiveReason))];
+  return {
+    code: 2,
+    reason: `${reasons.join(", ")}; review the masked archive before retrying`,
+    lines: candidates.map(({ line }) => line),
+  };
+}
 
 /** Discover genuine appendix/archive headings after applying shared visibility masks. */
 export function archiveInventory(ledger: ReturnType<typeof parseLedger>): ArchiveInventory {
@@ -691,7 +708,27 @@ export function archiveInventory(ledger: ReturnType<typeof parseLedger>): Archiv
       archives.push({ appendix, section, id: match[1]! });
     }
   }
-  return { appendices, archives, masks };
+  const hiddenArchives: HiddenArchive[] = [];
+  let archiveIndex = 0;
+  let containingPayload: ArchivePayloadRange | undefined;
+  for (const appendix of appendices) {
+    for (let line = appendix.line_start + 1; line + 2 <= appendix.line_end; line++) {
+      if (!hidden(line) || lines[line + 1]!.trim() !== KEPT_BODY_START) continue;
+      const version = lines[line]!.trim();
+      if (version !== KEPT_BODY_VERSION_V2 && version !== KEPT_BODY_VERSION_V3) continue;
+      const match = ARCHIVE_HEADING.exec(lines[line - 1]!);
+      if (!match) continue;
+      while (archives[archiveIndex] && archives[archiveIndex]!.section.line_start < line) {
+        const { section } = archives[archiveIndex++]!;
+        containingPayload = section.line_end >= line ? locateArchivePayload(ledger, section, masks).range : undefined;
+      }
+      if (containingPayload && containingPayload.version !== "legacy" &&
+          line >= containingPayload.start && line + 2 <= containingPayload.end) continue;
+      const mask = masks.fenced[line - 1] ? "code fence" : masks.rawHtml[line - 1] ? "raw HTML" : "HTML comment";
+      hiddenArchives.push({ id: match[1]!, line, mask });
+    }
+  }
+  return { appendices, archives, hiddenArchives, masks };
 }
 
 export type ArchivePayloadVersion = "v2" | "v3" | "legacy";
@@ -910,7 +947,9 @@ export function prunableArchive(
   if (appendices.length === 0) return { refusal: { code: 1, reason: `no kept-body archive for #${id}`, lines: [] } };
 
   const candidates = inventory.archives.filter((archive) => archive.appendix.line_start === appendices[0]!.line_start && archive.id === id);
-  if (candidates.length === 0) return { refusal: { code: 1, reason: `no kept-body archive for #${id}`, lines: [] } };
+  if (candidates.length === 0) return { refusal: hiddenArchiveRefusal(inventory, id) ?? {
+    code: 1, reason: `no kept-body archive for #${id}`, lines: [],
+  } };
   if (candidates.length > 1) {
     return { refusal: { code: 2, reason: `multiple archives for #${id}`, lines: candidates.map(({ section }) => section.line_start) } };
   }
