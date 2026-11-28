@@ -293,9 +293,27 @@ export function bodyVisibility(lines: string[], fenced: boolean[]): BodyVisibili
 
 /** A bold label is standalone, colon-separated, or has its colon inside bold. */
 const LABEL_LINE = /^ {0,3}\*\*(?:([^*]+[:：])\*\*(?:\s*(.*))|([^*]+)\*\*(?:\s*[:：]\s*(.*)|[ \t]*))$/;
+const QUALIFIED_LABEL_START = /^ {0,3}\*\*([^*]+)\*\*(?=[（(])/;
+function qualifiedLabelLine(line: string): { label: string; rest: string } | undefined {
+  const start = QUALIFIED_LABEL_START.exec(line);
+  if (!start) return;
+  const from = start[0].length;
+  const closers: string[] = [];
+  for (let index = from; index < line.length; index++) {
+    const char = line[index];
+    if (char === "(" || char === "（") closers.push(char === "(" ? ")" : "）");
+    else if (char === ")" || char === "）") {
+      if (closers.pop() !== char) return;
+      if (closers.length !== 0) continue;
+      const rest = /^[ \t]*[:：][ \t]*(.*)$/.exec(line.slice(index + 1));
+      if (rest) return { label: start[1]! + line.slice(from, index + 1), rest: rest[1]! };
+      return;
+    }
+  }
+}
 function parseLabelLine(line: string): { label: string; rest: string } | undefined {
   const match = LABEL_LINE.exec(line);
-  if (!match) return undefined;
+  if (!match) return qualifiedLabelLine(line);
   return match[1] != null
     ? { label: match[1], rest: match[2] ?? "" }
     : { label: match[3]!, rest: match[4] ?? "" };
@@ -346,13 +364,17 @@ export function criteriaAliasRepair(lines: string[], offset = 0, fenced = fenced
   if (nonEmpty.length > 1) return { candidates, reason: "multiple nearby criteria labels need review" };
   if (nonEmpty.length === 0) return { candidates, reason: "all nearby criteria labels are empty" };
   const eligible = nonEmpty[0]!;
+  const visibility = bodyVisibility(lines, fenced);
+  if (qualifiedLabelLine(visibility.text[eligible.line - 1]!)) {
+    return { candidates, reason: "a qualifier outside the bold label needs manual review" };
+  }
   return { candidates, eligible: { label: eligible.label, line: eligible.line + offset } };
 }
 
 /** Every non-empty recognized supplement after the canonical block may hold unpromoted criteria. */
 export function criteriaSupplementHints(lines: string[], offset = 0, fenced?: boolean[]) {
   return criteriaOccurrences(lines, offset, fenced)
-    .filter((occurrence) => occurrence.kind === "supplement")
+    .filter((occurrence) => occurrence.kind === "supplement" && !occurrence.alreadyCovered)
     .map(({ label, line }) => ({ line, label, message: `L${line}: review **${label}**; it is not included in the canonical criteria` }));
 }
 export function criteriaSupplementHint(lines: string[], offset = 0, fenced?: boolean[]) {
@@ -392,6 +414,10 @@ export type LabelBlock = {
    * joined with `；`, soft wraps with a space, unordered markers dropped.
    */
   text: string;
+  /** Inline label content before flattening or whitespace normalization. */
+  inline: string;
+  boundary?: { line: number; sawListItem: boolean };
+  ambiguousProse?: number;
 };
 
 /**
@@ -415,25 +441,41 @@ export function labelBlock(
     const match = parseLabelLine(visibility.text[line - 1]!);
     if (!match || labelName(match.label) !== label) continue;
     let stop = line + 1;
+    let boundary: LabelBlock["boundary"];
+    let ambiguousProse: number | undefined;
+    let nextContinuation = 0;
     const listMargins: ListMargins[] = [];
     while (stop <= last) {
       const text = visibility.text[stop - 1]!;
-      if (!fenced[stop - 1] && !visibility.hidden[stop - 1] && (parseLabelLine(text) != null || /^ {0,3}#{1,6}(?:\s|$)/.test(text))) break;
+      if (!fenced[stop - 1] && !visibility.hidden[stop - 1]) {
+        if (parseLabelLine(text)) {
+          boundary = { line: stop, sawListItem: listMargins.length > 0 };
+          break;
+        }
+        if (/^ {0,3}#{1,6}(?:\s|$)/.test(text)) break;
+      }
       if (label === "验收判据" && listMargins.length > 0 && !visibility.hidden[stop - 1] && text.trim() === "") {
         let look = stop + 1;
         while (look <= last && (visibility.hidden[look - 1] || visibility.text[look - 1]!.trim() === "")) look++;
+        if (look <= last && !fenced[look - 1] && parseLabelLine(visibility.text[look - 1]!)) {
+          boundary = { line: look, sawListItem: true };
+          break;
+        }
         if (look <= last && !fenced[look - 1] && !LIST_ITEM.test(visibility.text[look - 1]!) && !isListContinuation(visibility.text[look - 1]!, listMargins)) {
-          let laterList = false;
-          for (; look <= last; look++) {
-            const candidate = visibility.text[look - 1]!;
-            if (visibility.hidden[look - 1]) continue;
-            if (!fenced[look - 1] && (parseLabelLine(candidate) != null || /^ {0,3}#{1,6}(?:\s|$)/.test(candidate))) break;
-            if (LIST_ITEM.test(candidate) || isListContinuation(candidate, listMargins) || fenced[look - 1] || /^[ \t]*(?:`{3,}|~{3,})/.test(candidate)) {
-              laterList = true;
-              break;
+          const proseLine = look;
+          if (nextContinuation <= look) {
+            for (; look <= last; look++) {
+              const candidate = visibility.text[look - 1]!;
+              if (visibility.hidden[look - 1]) continue;
+              if (!fenced[look - 1] && (parseLabelLine(candidate) != null || /^ {0,3}#{1,6}(?:\s|$)/.test(candidate))) break;
+              if (LIST_ITEM.test(candidate) || isListContinuation(candidate, listMargins) || fenced[look - 1] || /^[ \t]*(?:`{3,}|~{3,})/.test(candidate)) {
+                nextContinuation = look;
+                break;
+              }
             }
+            if (nextContinuation < proseLine) break;
           }
-          if (!laterList) break;
+          ambiguousProse ??= proseLine;
         }
       }
       if (!fenced[stop - 1] && !visibility.hidden[stop - 1]) {
@@ -495,7 +537,7 @@ export function labelBlock(
     }
     flush();
     const text = joinClauses(segments).replace(/[ \t]+/g, " ").trim();
-    return { label, line, lines: own, text };
+    return { label, line, lines: own, text, inline: match.rest, boundary, ambiguousProse };
   }
   return undefined;
 }
@@ -560,6 +602,7 @@ export type CriteriaOccurrence = {
   kind: "canonical" | "supplement";
   lines: string[];
   text: string;
+  alreadyCovered?: true;
 };
 
 export function criteriaTextFromOccurrences(occurrences: CriteriaOccurrence[]): string | undefined {
@@ -580,16 +623,31 @@ function isCriteriaSupplement(label: string): boolean {
     ["判定标准", "完成标准", "验收标准", "必须满足"].includes(label);
 }
 
+export function isCriteriaLabel(label: string): boolean {
+  return label === "验收判据" || isCriteriaSupplement(label);
+}
+
+function criteriaSourceKey(block: LabelBlock): string {
+  const content = block.lines.slice(1);
+  if (block.inline.trim() !== "") content.unshift(block.inline);
+  const first = content.findIndex((line) => line.trim() !== "");
+  return first < 0 ? "" : JSON.stringify([block.text, ...content.slice(first)]);
+}
+
 export function criteriaOccurrencesFromLabelBlocks(blocks: LabelBlock[], offset = 0): CriteriaOccurrence[] {
   const firstCanonical = blocks.findIndex(({ label }) => label === "验收判据");
   if (firstCanonical < 0) return [];
+  const canonicalSources = new Set(blocks.filter(({ label, text }) => label === "验收判据" && text !== "").map(criteriaSourceKey));
   const occurrences: CriteriaOccurrence[] = [];
   for (let index = firstCanonical; index < blocks.length; index++) {
     const found = blocks[index]!;
     const kind = found.label === "验收判据" ? "canonical" : "supplement";
     if (kind === "supplement" && !isCriteriaSupplement(found.label)) continue;
     if (kind === "supplement" && found.text === "") continue;
-    occurrences.push({ line: found.line + offset, label: found.label, kind, lines: found.lines, text: found.text });
+    const alreadyCovered = kind === "supplement" && canonicalSources.has(criteriaSourceKey(found));
+    occurrences.push({ line: found.line + offset, label: found.label, kind, lines: found.lines, text: found.text,
+      ...(alreadyCovered ? { alreadyCovered: true } : {}),
+    });
   }
   return occurrences;
 }
@@ -608,31 +666,29 @@ export function criteriaBoundaryHints(
   lines: string[],
   offset = 0,
   fenced = fencedLines(lines, true),
-): { line: number; label: string }[] {
-  const visibility = bodyVisibility(lines, fenced);
-  const hints: { line: number; label: string }[] = [];
-  let inCriteria = false;
-  let sawListItem = false;
-  for (let index = 0; index < lines.length; index++) {
-    if (fenced[index] || visibility.hidden[index]) continue;
-    const text = visibility.text[index]!;
-    const match = parseLabelLine(text);
-    if (match) {
-      const label = labelName(match.label);
-      const standalone = /^ {0,3}\*\*([^*]+)\*\*[ \t]*$/.exec(text);
-      if (inCriteria && sawListItem && standalone && /[。！？.!?]$/.test(standalone[1]!)) {
-        hints.push({ line: index + 1 + offset, label: standalone[1]! });
-      }
-      if (label === "验收判据") {
-        inCriteria = true;
-        sawListItem = false;
-      } else if (inCriteria) {
-        inCriteria = false;
-        sawListItem = false;
-      }
-      continue;
+  visibility = bodyVisibility(lines, fenced),
+  blocks = labelBlocksIn(lines, 1, lines.length, fenced, visibility),
+): { line: number; detail: string }[] {
+  const hints: { line: number; detail: string }[] = [];
+  for (const block of blocks) {
+    if (block.label !== "验收判据") continue;
+    if (block.ambiguousProse != null) {
+      hints.push({ line: block.ambiguousProse + offset, detail: "prose between criteria and a later list or fence may be a separate section" });
     }
-    if (inCriteria && LIST_ITEM.test(text)) sawListItem = true;
+    const boundary = block.boundary;
+    if (!boundary?.sawListItem) continue;
+    const standalone = /^ {0,3}\*\*([^*]+)\*\*[ \t]*$/.exec(visibility.text[boundary.line - 1]!);
+    if (!standalone || isCriteriaLabel(labelName(standalone[1]!))) continue;
+    const stop = blocks.find(({ line }) => line > boundary.line)?.line ?? lines.length + 1;
+    for (let next = boundary.line; next < stop - 1; next++) {
+      if (visibility.hidden[next] || fenced[next]) continue;
+      const text = visibility.text[next]!;
+      if (/^ {0,3}#{1,6}(?:\s|$)/.test(text)) break;
+      if (LIST_ITEM.test(text)) {
+        hints.push({ line: boundary.line + offset, detail: `standalone bold label **${standalone[1]}** separates possible criteria items` });
+        break;
+      }
+    }
   }
   return hints;
 }

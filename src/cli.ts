@@ -43,6 +43,8 @@ import {
   criteriaLabelHint,
   criteriaAliasRepair,
   criteriaOccurrences,
+  criteriaBoundaryHints,
+  isCriteriaLabel,
   extractCriteria,
   bodyLabels,
   unescapeCell,
@@ -2179,14 +2181,35 @@ function cmdBody(rest: string[], v: Values): CliResult {
   }
   if (block) {
     if (v.append) {
-      const end = bodyContentEnd(lines, block.line, block.end);
       const currentBody = lines.slice(block.line - 1, block.end);
-      const lastLabel = [...bodyLabels(currentBody, 1, currentBody.length)].at(-1)?.label;
-      const startsWithLabel = bodyLabels(incoming, 1, incoming.length).next().value?.line === 1;
-      const addition = lastLabel === "验收判据" && !startsWithLabel
-        ? ["**复测记录**", "", ...incoming]
-        : incoming;
-      lines = insertBlock(lines, end + 1, addition);
+      const incomingLabels = [...bodyLabels(incoming, 1, incoming.length)];
+      const incomingCriteria = incomingLabels.find(({ label }) => isCriteriaLabel(label));
+      if (incomingCriteria) {
+        return err(`issuemd body: append contains criteria label **${incomingCriteria.label}** at input L${incomingCriteria.line}; ` +
+          "put quoted criteria inside a code fence or replace the body with reviewed criteria\n", 2);
+      }
+      const currentLabels = [...bodyLabels(currentBody, 1, currentBody.length)];
+      const lastLabel = currentLabels.at(-1)?.label;
+      let addition = incoming;
+      if (lastLabel && isCriteriaLabel(lastLabel) && incomingLabels[0]?.line !== 1) {
+        const reserved = new Set([...currentLabels, ...incomingLabels].map(({ label }) => label));
+        let reviewLabel = "复测记录";
+        for (let suffix = 2; reserved.has(reviewLabel); suffix++) reviewLabel = `复测记录 ${suffix}`;
+        addition = [`**${reviewLabel}**：`, "", ...incoming];
+      }
+      const end = bodyContentEnd(lines, block.line, block.end);
+      const candidate = insertBlock(lines, end + 1, addition);
+      const candidateBody = candidate.slice(block.line - 1, block.end + candidate.length - lines.length);
+      const before = criteriaOccurrences(currentBody);
+      const after = criteriaOccurrences(candidateBody);
+      const previousHints = new Set(criteriaBoundaryHints(currentBody).map(({ line, detail }) => `${line}:${detail}`));
+      const newHint = criteriaBoundaryHints(candidateBody).find(({ line, detail }) => !previousHints.has(`${line}:${detail}`));
+      if (JSON.stringify(before) !== JSON.stringify(after) || newHint) {
+        const where = newHint ? ` at L${block.line + newHint.line - 1}` : "";
+        return err(`issuemd body: append would change or obscure criteria for #${idText}${where}; ` +
+          "use a separate review label or replace the body with reviewed criteria\n", 2);
+      }
+      lines = candidate;
     } else {
       const current = trimBlank(lines.slice(block.line, block.end));
       // A body-only round trip should preserve the ledger's original spacing.

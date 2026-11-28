@@ -68,7 +68,7 @@ test("label-like text inside a multiline comment does not split criteria", async
   expect(shown.body.content).toContain("**说明**");
 });
 
-test("a standalone punctuation label remains a boundary and warns when it follows criteria", async () => {
+test("a standalone review heading remains a boundary without a following criterion item", async () => {
   const ledger = fixture("standalone-punctuation-label.md", canonical);
   const body = fixture("standalone-punctuation-label.body", [
     "**验收判据**",
@@ -83,7 +83,7 @@ test("a standalone punctuation label remains a boundary and warns when it follow
   expect(shown.labels).toHaveProperty("待确认？");
   expect(shown.criteria).toBe("1. 第一条。");
   const checked = JSON.parse((await run(["check", ledger, "--json"])).stdout);
-  expect(checked.warnings).toContainEqual(expect.objectContaining({ code: "W268", id: "2" }));
+  expect(checked.warnings).not.toContainEqual(expect.objectContaining({ code: "W268", id: "2" }));
 });
 
 test("compact punctuation labels keep their boundary and bold-leading prose stays content", async () => {

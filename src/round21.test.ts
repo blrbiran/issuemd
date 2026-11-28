@@ -41,10 +41,9 @@ test("bold prose inside criteria remains content instead of ending the block", a
   expect(issue.criteria).toContain("3. 第三条。");
 
   const closed = await run(["close", ledger, "2", "--criteria-from-body", "--dry-run"]);
-  expect(closed.code).toBe(0);
-  expect(closed.stdout).toContain("必须**先跑完 A 再跑 B");
-  expect(closed.stdout).toContain("2. 第二条。");
-  expect(closed.stdout).toContain("3. 第三条。");
+  expect(closed.code).toBe(2);
+  expect(closed.stderr).toContain("W268");
+  expect(closed.stdout).toBe("");
   expect(readFileSync(ledger, "utf8")).toContain("3. 第三条。");
 });
 

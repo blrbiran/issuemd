@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
 import { archiveInventory, hiddenArchiveReason, locateArchivePayload, archivePayloadRange, bodyBlocks, countSuffix, effectiveLimits, type EffectiveLimits, highWaterRecords, limitsRecords, maxIssueId, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
 import { hashSpans } from "./hash-scan.js";
-import { ARCHIVE_HEADING, bodyLabels, criteriaBoundaryHints, criteriaLabelHint, criteriaOccurrences, extractCriteria, fencedLines, unescapeCell } from "./ledger-edit.js";
+import { ARCHIVE_HEADING, bodyLabels, bodyVisibility, criteriaBoundaryHints, criteriaLabelHint, criteriaOccurrencesFromLabelBlocks, criteriaTextFromOccurrences, fencedLines, labelBlocksIn, unescapeCell } from "./ledger-edit.js";
 
 import { STATUS_CLASSES } from "./statuses.js";
 export { STATUS_CLASSES };
@@ -169,10 +169,12 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
         warnings.push({ code: "W206", line: line + current - 1, id, message: `Duplicate body label: ${name}; occurrences at ${locations}` });
       }
     }
-    for (const hint of criteriaBoundaryHints(bodyLines, line - 1, fenced)) {
+    const visibility = bodyVisibility(bodyLines, fenced);
+    const sourceBlocks = labelBlocksIn(bodyLines, 2, bodyLines.length, fenced, visibility);
+    for (const hint of criteriaBoundaryHints(bodyLines, line - 1, fenced, visibility, sourceBlocks)) {
       warnings.push({
         code: "W268", line: hint.line, id,
-        message: `L${hint.line}: standalone bold sentence **${hint.label}** interrupts the criteria list; if it is prose, bold only the emphasized word; otherwise close with reviewed --criteria or --keep-body`,
+        message: `L${hint.line}: ${hint.detail}. Mark review notes with **复核记录**： or use reviewed --criteria or --keep-body`,
       });
     }
     checkBodySize(lines, line, end, limits, id, warnings);
@@ -181,7 +183,8 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
     // deleted criteria block leaves an open item that is not verifiable at
     // all (dogfood #62). Closed rows keep criteria in their table column and
     // are deliberately not judged here.
-    const criteria = extractCriteria(bodyLines, fenced);
+    const occurrences = criteriaOccurrencesFromLabelBlocks(sourceBlocks, line - 1);
+    const criteria = criteriaTextFromOccurrences(occurrences);
     if (ids.open.has(span) && !criteria) {
       const hint = criteriaLabelHint(bodyLines, line - 1, fenced);
       warnings.push({
@@ -190,8 +193,8 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
           (hint ? `. ${hint.message}` : ""),
       });
     } else if (ids.open.has(span)) {
-      for (const occurrence of criteriaOccurrences(bodyLines, line - 1, fenced)) {
-        if (occurrence.kind !== "supplement") continue;
+      for (const occurrence of occurrences) {
+        if (occurrence.kind !== "supplement" || occurrence.alreadyCovered) continue;
         warnings.push({
           code: "W264", line: occurrence.line, id,
           message: `Possible additional criteria block is not included in the canonical criteria: L${occurrence.line}: review **${occurrence.label}**. ` +
