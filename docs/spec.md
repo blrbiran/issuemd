@@ -432,7 +432,7 @@ issuemd close FILE 57 --criteria-from-body   # 或 --status 已修 --criteria "�
 | `--no-criteria` | 明确以空判据关闭 |
 | 都不给 | 正文有一个无歧义的非空判据块 → 自动提升；若存在 W268 边界、多块或非空后续别名且 close 会删除正文 → exit 2 并要求显式审阅；没有判据时 `--keep-body` 允许空判据（正文整体保留，信息不丢），否则 exit 2，要求三选一 |
 
-`--status S` 选关闭状态（默认 `已修`）。开放项使用 `close --criteria TEXT` 时必须显式指定 `--status S`，否则 exit 2。只改开放项验收判据用 `issuemd criteria FILE ID --criteria TEXT`；这里的文本按正文原文写入。`close --criteria` 则按表格单元格约定解析，`\|` 表示字面竖线；写入会导致反斜杠变化时 stderr 显示读入的单元格值。该命令接受一行非空 Markdown，替换唯一且边界清晰的 `**验收判据**` 块，或在没有判据标签时追加一块。建议先预演，再携带快照写入。对已关闭编号执行 `close FILE ID --criteria TEXT` 时，只更新关闭表判据格，不改状态、摘要或正文，并在 stderr 报告旧值与新值。**标签块**的边界：从 `**标签**` 行到下一个可识别的标签行或标题为止；标签行必须独立成行或在粗体标签后使用 `:` / `：` 分隔内容，常见强调行（如 `**注意：这只是提醒。**`）属于当前块。闭合的 HTML 注释和 fence 内的粗体行不会创建标签边界；注释原文仍保留在 raw body 输出中。空行与列表都属于它；列表续行按 marker 的内容列缩进判断（制表符按 4 列 tab stop 计算）。在验收判据已有列表项后，空行再接无缩进普通段落会结束判据块；若该段后还有列表项或 fence，读取时继续计入，并用 W268 提醒关闭前确认归属。独立粗体标签只有在后续列表延续判据列表时才可能报 W268；复核/边界类小节标题不报。需要复核的内容建议另起 `**复核记录**：` 标签。`**标签**（括注）：正文` 同样可明确边界。提升进单元格时段落与列表项以 `；` 连接、无序列表符号去掉、fence 内代码保留。
+`--status S` 选关闭状态（默认 `已修`）。开放项使用 `close --criteria TEXT` 时必须显式指定 `--status S`，否则 exit 2。只改开放项验收判据用 `issuemd criteria FILE ID --criteria TEXT`；这里的文本按正文原文写入。`close --criteria` 则按表格单元格约定解析，`\|` 表示字面竖线；写入会导致反斜杠变化时 stderr 显示读入的单元格值。该命令接受一行非空 Markdown，替换唯一且边界清晰的 `**验收判据**` 块，或在没有判据标签时追加一块。建议先预演，再携带快照写入。对已关闭编号执行 `close FILE ID --criteria TEXT` 时，只更新关闭表判据格，不改状态、摘要或正文，并在 stderr 报告旧值与新值。**标签块**的边界：从 `**标签**` 行到下一个可识别的标签行或标题为止；标签行必须独立成行或在粗体标签后使用 `:` / `：` 分隔内容，常见强调行（如 `**注意：这只是提醒。**`）属于当前块。闭合的 HTML 注释和 fence 内的粗体行不会创建标签边界；注释原文仍保留在 raw body 输出中。空行与列表都属于它；列表续行按 marker 的内容列缩进判断（制表符按 4 列 tab stop 计算）。在验收判据已有列表项后，空行再接无缩进普通段落会结束判据块；**只有后续列表续接同一列表时**才继续计入（有序列表编号递增，或同为无序列表）；列表类型不同或有序编号从 `1.` 重新开始时视为新小节，不报 W268。缩进续行与围栏属于判据。仍续接时用 W268 提醒关闭前确认归属。独立粗体标签只有在后续列表延续判据列表时才可能报 W268；复核/边界类小节标题不报。需要复核的内容建议另起 `**复核记录**：` 标签，或使用 `issuemd narrow FILE ID --criteria TEXT [--status S] [--note TEXT|--note-file PATH]` 一次完成「缩窄判据 + 换开放状态 + 留带日期复核记录」。`**标签**（括注）：正文` 同样可明确边界。提升进单元格时段落与列表项以 `；` 连接、无序列表符号去掉、fence 内代码保留。
 
 正文里有多个 `**验收判据**` 块时，`show --json.criteria` 为兼容仍按顺序以 `；` 展平所有非空块，`criteriaBlocks` 保留各块边界。`check` 用 W206 列出所有块的行号；普通 close 与 `--criteria-from-body` 在会删除正文时拒绝自动把多块展平进表格。读完全部块后，可用显式 `--status S --criteria TEXT` 提交完整合并结果，或用 `--keep-body` 保留原文。即使一个判据块内含字面 `；`，旧闭表格也无法还原条目边界；结构化 JSON 与 keep-body 归档保留原始行。
 
@@ -475,14 +475,16 @@ error: #56 当前 观察（open），目标 已修（closed）跨分类，请用
 - 所有 per-id 命令（close/reopen/status/rename/body/priority）对多号行、区间行用同一句话拒绝，并给出 `issuemd split FILE <id>`；`close`/`reopen` 先判行形状、再判开关状态。
 
 - `body FILE ID --move-evidence LABEL` 把一个唯一可见的证据块移进同文件的附录，并在正文留下链接。用 `--dry-run` 审阅搬移范围和目标，再用 `--if-unchanged` 应用。移动减少活动正文体积，`check` 仍报告整份文件的大小。命令保护判据、编号引用和现有归档。
+- `body FILE ID --append --before LABEL` 把追加段插在唯一可见标签行之前，而不是正文末尾。`LABEL` 按标签名精确匹配（`验收判据` 与 `**验收判据**` 等价）；0 个匹配时 exit 2 并列出可用标签，多个匹配时列出各行号并拒绝。写前比较判据文本、各判据块的 `label/kind/lines` 与 `criteriaBoundaryHints` 的 `detail` 多重集合（不看绝对行号，因为插入点在判据之前）；任一变化或新增 W268/W264/W261 都 exit 2、字节不变。追加段必须自带标签（如 `**复核记录**：…`），否则会归属到前一标签块。`--before` 单独出现 exit 2。
+- `narrow FILE ID --criteria TEXT [--status S] [--note TEXT | --note-file PATH]` 一次完成收窄判据、切换到另一个开放状态、在判据前插入带日期复核记录。`--criteria` 与 `criteria` 同口径（一行正文、`\|` 保持字面）；`--status` 必须是开放状态，闭合状态 exit 2 并提示 `close`；`--note` 与 `--note-file` 互斥，note 不得含标签行、顶层标题或 HTML 注释定界符。三步之间重新解析，不依赖旧行号；复核记录标签在 `复核记录`、`复核记录 2`… 中取首个未使用名。写前比较目标判据（按读视图的空白折叠）并拒绝新增 W268/W264/W206/W261；三项都无变化时为 `(no changes)`。已关闭项 exit 2。
 
 ### 7.6 `counts`
 
 ```bash
-issuemd counts FILE [--json]
+issuemd counts FILE [--json | --markdown]
 ```
 
-输出每个状态与整表的**编号数**。不写盘（canonical 里没有计数可修）。
+输出每个状态与整表的**编号数**。不写盘（canonical 里没有计数可修）。`--markdown` 输出同一条计数的一行 Markdown 列表项（`- open N (状态 n, …) · closed M`），便于直接粘进头注；`--markdown --json` exit 2。
 
 ### 7.6a `find`
 
@@ -495,7 +497,7 @@ issuemd counts FILE [--json]
 | 开关 | 行为 |
 |---|---|
 | `--titles` | 对齐正文标题与索引摘要。摘要和正文标题相同时是 no-op；不同时必须明确选择：`--prefer table` 保留表格摘要并改正文标题；`--prefer body --move-progress` 把旧摘要完整保存为正文进展后改表格摘要；`--prefer body --drop-progress` 明确丢弃旧摘要并改表格摘要。只给 `--titles` 或只给 `--prefer body` 都 exit 3、不写。W260 护栏保留：正文优先需显式 move/drop，表格优先命中 W260 仍拒绝。所有真实或 dry-run 标题变化都在 stderr 点名旧值、新值。多号行仍跳过并点名，提示先拆行 |
-| `--criteria-labels` | 当开放项没有 `**验收判据**`、只有一个非空安全近似标签（`判据`、`验收判据…`、`追加判据…`、`修复判据…` 或以 `的判据` 结尾）时，将标签名改为 `验收判据`，保留正文行与内容。多个近似标签、已有正式标签、空块及历史标签（如 `关闭时判据`）不自动处理。每项在 stderr 报告，dry-run 与真实写入一致 |
+| `--criteria-labels` | 当开放项没有 `**验收判据**`、只有一个非空安全近似标签（`判据`、`验收判据…`、`追加判据…`、`修复判据…` 或以 `的判据` 结尾）时，将标签名改为 `验收判据`，保留正文行与内容。默认只改**含至少一个可见列表项**的块；单行散文需显式 `--force`，否则 skip 并提示，以免把状态句升级成判据。多个近似标签、已有正式标签、空块及历史标签（如 `关闭时判据`）不自动处理；纯指针块（`判据（不变）` 等）不是候选。每项在 stderr 报告，dry-run 与真实写入一致 |
 | `--fix-hashes` | 把开放正文与普通附录文本中可安全包裹的 W202 命中包进行内代码，一次修复所有出现处。dry-run 显示精确 diff；真实写入报告每个改动位置和新 snapshot。跳过所有解析表格单元格、code fence、行内代码（含跨行 code span）、Markdown 链接目标、bare URL/autolink、raw HTML block/属性、无法安全闭合的行内代码，以及归档标题/正文；坏归档子树也不改，命中位置在 stderr 点名原因 |
 | `--fix-tables` | 补 `\|---\|`（修 E122），列数按表头补齐或报 E108 |
 | `--guide` | 重写 `## 怎么用` 与 `## 状态口径` 受控块 |
@@ -551,9 +553,9 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
   issuemd check   FILE [--json] [--strict] [--verify-commits]
   issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]
   issuemd show    FILE ID [--body-only | [--json] [--label NAME]]
-  issuemd counts  FILE [--json]
+  issuemd counts  FILE [--json | --markdown]
   issuemd read    FILE <H2 标题>          # 精确匹配顶层标题，无选择器/正则
-  issuemd --version                          # 当前安装包版本
+  issuemd --version                          # 包版本与运行中的构建目录
 
 台账写（全部 --dry-run，原子写且保持 BOM/行尾/模式位）
   issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-] [--allow-duplicate-title]
@@ -561,12 +563,15 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
   issuemd reopen  FILE ID [--status S] [--allow-duplicate-title]
   issuemd status  FILE ID NEW_STATUS
   issuemd rename  FILE ID "NEW TITLE" [--allow-duplicate-title]
-  issuemd body    FILE ID (--body-file PATH|- [--append] | --move-evidence LABEL)
+  issuemd body    FILE ID (--body-file PATH|- [--append [--before LABEL]] | --move-evidence LABEL)
   issuemd criteria FILE ID --criteria TEXT
+  issuemd narrow  FILE ID --criteria TEXT [--status S] [--note TEXT | --note-file PATH]
   issuemd priority FILE ID P0|P1|P2|P3|""
   issuemd split   FILE ID
+  issuemd prune   FILE ID (--dry-run | --confirm --if-unchanged SNAPSHOT)
   issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]
-                        [--move-progress | --drop-progress] | --criteria-labels]
+                        [--move-progress | --drop-progress] | --criteria-labels [--force]
+                        | --fix-hashes [--require-complete]]
 
 迁移（一次性，不进运行时）
   issuemd adopt   FILE [--dry-run] [--report PATH]
