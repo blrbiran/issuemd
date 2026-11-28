@@ -46,6 +46,7 @@ import {
   criteriaLabelHint,
   criteriaAliasRepair,
   criteriaOccurrences,
+  criteriaTextFromOccurrences,
   criteriaBoundaryHints,
   labelBlock,
   blockHasListItems,
@@ -113,8 +114,9 @@ const COMMANDS = {
   reopen: { usage: "issuemd reopen  FILE ID [--status S] [--allow-duplicate-title]", options: ["status", "allow-duplicate-title", "dry-run", "if-unchanged"] },
   status: { usage: "issuemd status  FILE ID NEW_STATUS", options: ["dry-run", "if-unchanged"] },
   rename: { usage: "issuemd rename  FILE ID \"NEW TITLE\" [--allow-duplicate-title]", options: ["allow-duplicate-title", "dry-run", "if-unchanged"] },
-  body: { usage: "issuemd body    FILE ID (--body-file PATH|- [--append] | --move-evidence LABEL)", options: ["body-file", "append", "move-evidence", "dry-run", "if-unchanged"] },
+  body: { usage: "issuemd body    FILE ID (--body-file PATH|- [--append [--before LABEL]] | --move-evidence LABEL)", options: ["body-file", "append", "before", "move-evidence", "dry-run", "if-unchanged"] },
   criteria: { usage: "issuemd criteria FILE ID --criteria TEXT", options: ["criteria", "dry-run", "if-unchanged"] },
+  narrow: { usage: "issuemd narrow  FILE ID --criteria TEXT [--status S] [--note TEXT | --note-file PATH]", options: ["criteria", "status", "note", "note-file", "dry-run", "if-unchanged"] },
   priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run", "if-unchanged"] },
   split: { usage: "issuemd split   FILE ID", options: ["dry-run", "if-unchanged"] },
   prune: { usage: "issuemd prune   FILE ID (--dry-run | --confirm --if-unchanged SNAPSHOT)", options: ["confirm", "dry-run", "if-unchanged"] },
@@ -144,6 +146,9 @@ const OPTION_HELP: Record<string, string> = {
     "                            (the `show --json` fields, without 61 separate calls)",
   label: "--label <NAME>            show: print only the **NAME** block",
   "body-only": "--body-only               show: print only this issue’s body, ready for --body-file",
+  before: "--before <LABEL>          body --append: insert before the unique **LABEL** block",
+  note: "--note <TEXT>             narrow: dated review note to insert before the criteria",
+  "note-file": "--note-file <path|->      narrow: read the review note from a file or stdin",
   title: "--title <T>               new: summary/body title (starts with '-'? write --title=\"-…\")",
   id: "--id <N>                  new: explicit issue id",
   "allow-duplicate-title":
@@ -284,9 +289,12 @@ const OPTIONS = {
   "allow-duplicate-title": { type: "boolean" },
   "body-file": { type: "string" },
   append: { type: "boolean" },
+  before: { type: "string" },
   "move-evidence": { type: "string" },
   // close
   criteria: { type: "string" },
+  note: { type: "string" },
+  "note-file": { type: "string" },
   "criteria-from-body": { type: "boolean" },
   "no-criteria": { type: "boolean" },
   "keep-body": { type: "boolean" },
@@ -380,6 +388,8 @@ export async function run(argv: string[]): Promise<CliResult> {
       return cmdBody(positionals.slice(1), values);
     case "criteria":
       return cmdCriteria(positionals.slice(1), values);
+    case "narrow":
+      return cmdNarrow(positionals.slice(1), values);
     case "priority":
       return cmdPriority(positionals.slice(1), values);
     case "split":
@@ -2255,6 +2265,7 @@ function cmdBody(rest: string[], v: Values): CliResult {
       (moving ? (v.append || v["body-file"] != null) : v["body-file"] == null)) {
     return err(`usage: ${COMMANDS.body.usage}\n`, 2);
   }
+  if (v.before != null && !v.append) return err("issuemd body: --before applies to --append\n", 2);
   let incoming: string[] = [];
   let originalIncoming: string[] = [];
   if (!moving) {
@@ -2313,18 +2324,47 @@ function cmdBody(rest: string[], v: Values): CliResult {
         addition = [`**${reviewLabel}**：`, "", ...incoming];
       }
       const end = bodyContentEnd(lines, block.line, block.end);
-      const candidate = insertBlock(lines, end + 1, addition);
-      const candidateBody = candidate.slice(block.line - 1, block.end + candidate.length - lines.length);
-      const before = criteriaOccurrences(currentBody);
-      const after = criteriaOccurrences(candidateBody);
-      const previousHints = new Set(criteriaBoundaryHints(currentBody).map(({ line, detail }) => `${line}:${detail}`));
-      const newHint = criteriaBoundaryHints(candidateBody).find(({ line, detail }) => !previousHints.has(`${line}:${detail}`));
-      if (JSON.stringify(before) !== JSON.stringify(after) || newHint) {
-        const where = newHint ? ` at L${block.line + newHint.line - 1}` : "";
-        return err(`issuemd body: append would change or obscure criteria for #${idText}${where}; ` +
-          "use a separate review label or replace the body with reviewed criteria\n", 2);
+      if (v.before != null) {
+        const wanted = labelName(v.before.trim().replace(/^\*+|\*+$/g, "").trim());
+        const labels = [...bodyLabels(currentBody, 1, currentBody.length)];
+        const matches = labels.filter(({ label }) => label === wanted);
+        if (matches.length === 0) {
+          const available = [...new Set(labels.map(({ label }) => label))];
+          return err(`issuemd body: no visible label **${wanted}** in #${idText}; available: ${available.length ? available.map((label) => `**${label}**`).join(", ") : "(none)"}\n`, 2);
+        }
+        if (matches.length > 1) {
+          return err(`issuemd body: **${wanted}** occurs ${matches.length} times in #${idText} (${matches.map(({ line }) => `L${block.line + line - 1}`).join(", ")}); edit the body instead\n`, 2);
+        }
+        const at = block.line - 1 + matches[0]!.line;
+        const candidate = insertBlock(lines, at, addition);
+        const candidateLedger = parseLedger(candidate.join("\n"));
+        const candidateBlock = bodyBlocks(candidateLedger).find((entry) => `${entry.id.start}${entry.id.suffix}` === idText);
+        if (!candidateBlock) return err("issuemd body: could not locate the body after inserting\n", 3);
+        const candidateBody = candidate.slice(candidateBlock.line - 1, candidateBlock.end);
+        const beforeOccurrences = criteriaOccurrences(currentBody);
+        const afterOccurrences = criteriaOccurrences(candidateBody);
+        const normalized = (occurrences: typeof beforeOccurrences) => occurrences.map(({ label, kind, lines }) => ({ label, kind, lines }));
+        const sameCriteria = criteriaTextFromOccurrences(beforeOccurrences) === criteriaTextFromOccurrences(afterOccurrences) &&
+          JSON.stringify(normalized(beforeOccurrences)) === JSON.stringify(normalized(afterOccurrences));
+        const hints = (body: string[]) => criteriaBoundaryHints(body).map(({ detail }) => detail).sort();
+        if (!sameCriteria || JSON.stringify(hints(currentBody)) !== JSON.stringify(hints(candidateBody))) {
+          return err(`issuemd body: --before **${wanted}** would change or obscure criteria for #${idText}; choose another label\n`, 2);
+        }
+        lines = candidate;
+      } else {
+        const candidate = insertBlock(lines, end + 1, addition);
+        const candidateBody = candidate.slice(block.line - 1, block.end + candidate.length - lines.length);
+        const before = criteriaOccurrences(currentBody);
+        const after = criteriaOccurrences(candidateBody);
+        const previousHints = new Set(criteriaBoundaryHints(currentBody).map(({ line, detail }) => `${line}:${detail}`));
+        const newHint = criteriaBoundaryHints(candidateBody).find(({ line, detail }) => !previousHints.has(`${line}:${detail}`));
+        if (JSON.stringify(before) !== JSON.stringify(after) || newHint) {
+          const where = newHint ? ` at L${block.line + newHint.line - 1}` : "";
+          return err(`issuemd body: append would change or obscure criteria for #${idText}${where}; ` +
+            "use a separate review label or replace the body with reviewed criteria\n", 2);
+        }
+        lines = candidate;
       }
-      lines = candidate;
     } else {
       const current = trimBlank(lines.slice(block.line, block.end));
       // A body-only round trip should preserve the ledger's original spacing.
@@ -2389,6 +2429,118 @@ function cmdCriteria(rest: string[], v: Values): CliResult {
   return commit(file, loaded, errors, lines, !!v["dry-run"], {
     receipt: `#${idText} acceptance criteria updated`,
     preserveTrailingBlanks: true,
+  });
+}
+
+function localDate(): string {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+function unusedReviewLabel(labels: string[]): string {
+  const used = new Set(labels);
+  let name = "复核记录";
+  for (let suffix = 2; used.has(name); suffix++) name = `复核记录 ${suffix}`;
+  return name;
+}
+
+/**
+ * One atomic semantic edit for an open issue: narrow the criteria, optionally
+ * move it to another open status, and leave a dated review note before the
+ * criteria block (dogfood #140).
+ */
+function cmdNarrow(rest: string[], v: Values): CliResult {
+  const [file, idText] = rest;
+  const value = v.criteria?.trim();
+  if (file == null || idText == null || rest.length !== 2 || value == null) {
+    return err(`usage: ${COMMANDS.narrow.usage}\n`, 2);
+  }
+  if (v.note != null && v["note-file"] != null) return err("issuemd narrow: choose --note or --note-file\n", 2);
+  if (value === "" || /[\r\n]|<!--|-->/.test(value)) {
+    return err("issuemd narrow: --criteria must be one nonempty Markdown line without HTML comment delimiters\n", 2);
+  }
+  let noteLines: string[] = [];
+  if (v.note != null) {
+    if (/[\r\n]/.test(v.note)) return err("issuemd narrow: --note must be one line; use --note-file for more\n", 2);
+    if (v.note.trim() !== "") noteLines = [v.note.trim()];
+  } else if (v["note-file"] != null) {
+    const read = readBodyFile(v["note-file"], "narrow");
+    if ("code" in read) return read;
+    noteLines = trimBlank(read.lines);
+  }
+  if (noteLines.some((line) =>
+    [...bodyLabels([line], 1, 1)].length > 0 || /^ {0,3}#{1,2}(?:\s|$)/.test(line) || /<!--|-->/.test(line))) {
+    return err("issuemd narrow: --note may not contain labels, top-level headings, or HTML comment delimiters\n", 2);
+  }
+  const opened = openLedger(file, v["if-unchanged"]);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
+  const found = findRow(ledger, idText);
+  if (!found) return missingIssue("narrow", idText);
+  const refused = perIdRefusal("narrow", idText, found);
+  if (refused) return refused;
+  if (found.table === "closed") {
+    return err(`issuemd narrow: #${idText} is closed; use 'issuemd close FILE ID --criteria TEXT' to correct its table cell\n`, 2);
+  }
+  if (v.status != null && statusCategory(v.status) !== "open") {
+    return err("issuemd narrow: --status must be an open status; use close for a closed status\n", 2);
+  }
+  const bodies = bodyBlocks(ledger).filter(({ id }) => spanText(id) === idText);
+  const owners = [...ledger.rows.open, ...ledger.rows.closed].filter(({ ids }) => ids.some((span) =>
+    span.suffix === found.span.suffix && span.start <= found.span.start && found.span.start <= span.end));
+  if (bodies.length !== 1 || owners.length !== 1 || unreadableHolding(ledger, idText)) {
+    return err(`issuemd narrow: #${idText} needs one unambiguous open row and its own body\n`, 2);
+  }
+
+  const block = bodies[0]!;
+  const edit = editOpenCriteria(loaded.lines.slice(block.line - 1, block.end), value, block.line - 1);
+  if ("error" in edit) return err(`issuemd narrow: #${idText} ${edit.error}\n`, 2);
+  let lines = [...loaded.lines.slice(0, block.line - 1), ...edit.body, ...loaded.lines.slice(block.end)];
+  const changes = [`criteria replaced at L${block.line}`];
+
+  if (noteLines.length > 0) {
+    const intermediate = parseLedger(lines.join("\n"));
+    const bodyBlock = bodyBlocks(intermediate).find(({ id }) => spanText(id) === idText);
+    if (!bodyBlock) return err("issuemd narrow: could not locate the body after the criteria edit\n", 3);
+    const bodyLines = lines.slice(bodyBlock.line - 1, bodyBlock.end);
+    const labels = [...bodyLabels(bodyLines, 1, bodyLines.length)];
+    const canonical = labels.find(({ label }) => label === "验收判据");
+    if (!canonical) return err("issuemd narrow: the criteria edit produced no **验收判据** block\n", 3);
+    const label = unusedReviewLabel(labels.map((entry) => entry.label));
+    const note = [`**${label}**：${localDate()} ${noteLines[0]}`, ...noteLines.slice(1)];
+    const at = bodyBlock.line - 1 + canonical.line;
+    lines = insertBlock(lines, at, note);
+    changes.push(`note inserted at L${at} as **${label}**`);
+  }
+
+  if (v.status != null && v.status !== found.row.status) {
+    const intermediate = parseLedger(lines.join("\n"));
+    const row = findRow(intermediate, idText);
+    if (!row) return err("issuemd narrow: could not locate the row after editing\n", 3);
+    lines[row.row.line - 1] = replaceCell(lines[row.row.line - 1]!, 1, v.status);
+    changes.push(`status ${found.row.status} → ${v.status}`);
+  }
+
+  return commit(file, loaded, errors, lines, !!v["dry-run"], {
+    receipt: `#${idText} narrowed`,
+    report: `${changes.join("\n")}\n`,
+    validateCandidate(candidate) {
+      const view = viewIssue(candidate, idText);
+      if (!view) return err(`issuemd narrow: the edited ledger no longer has #${idText}\n`, 3);
+      if (view.criteria !== value) {
+        return err(`issuemd narrow: the edit did not land as one criteria line; nothing written\n`, 3);
+      }
+      const baseline = checkParsedLedger(ledger, file);
+      const after = checkParsedLedger(candidate, file);
+      const beforeCodes = new Set(baseline.warnings.filter(({ id }) => id === idText).map(({ code }) => code));
+      const introduced = after.warnings.filter(({ id, code }) =>
+        id === idText && ["W268", "W264", "W206", "W261"].includes(code) && !beforeCodes.has(code));
+      if (introduced.length > 0) {
+        return err(`issuemd narrow: refusing to write; the edit introduces ${introduced.map(({ code }) => code).join(", ")} for #${idText}\n`, 2);
+      }
+      return undefined;
+    },
   });
 }
 
