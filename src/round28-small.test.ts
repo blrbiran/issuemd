@@ -65,6 +65,15 @@ test("close explains the size consequence of each missing-criteria exit", async 
   expect(result.stderr).toContain("file grows");
 });
 
+test("the write-time alias hint names --force for a single-line block", async () => {
+  const path = fixture(canonical);
+  const body = fixture("**现象**：甲。\n\n**判据**：只是散文一句。\n");
+  const written = await run(["body", path, "2", "--body-file", body]);
+  expect(written.code).toBe(0);
+  expect(written.stderr).toContain("--criteria-labels --force");
+  expect((await run(["check", path, "--json"])).stdout).toContain('"W261"');
+});
+
 test("sync --criteria-labels skips prose that does not look like criteria", async () => {
   const path = fixture(canonical);
   const body = fixture("**现象**：甲。\n\n**判据**\n\n讨论中，尚未定稿。\n");

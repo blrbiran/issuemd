@@ -685,7 +685,8 @@ function cmdCounts(rest: string[], v: Values): CliResult {
     unreadableNote(ledger);
   if (v.json) return { code: 0, stdout: JSON.stringify({ file, snapshot: snapshotOf(loaded.src), counts: report.counts, ...citedRowsField(ledger), ...diagnosticsField(report.errors, report.warnings) }, null, 2) + "\n", stderr };
   const summary = summaryLine(report.counts, openStatusCounts(ledger.rows.open));
-  return { code: 0, stdout: (v.markdown ? `- ${summary.replace(/ {3}/, " · ")}` : summary) + "\n", stderr };
+  // `summaryLine` separates the halves with several spaces; any run works.
+  return { code: 0, stdout: (v.markdown ? `- ${summary.replace(/\s{2,}/, " · ")}` : summary) + "\n", stderr };
 }
 
 function cmdShow(rest: string[], v: Values): CliResult {
@@ -1449,7 +1450,9 @@ function criteriaAliasWriteHint(file: string, lines: string[], id: string): stri
   const mapping = "闭表判据列只从正文 **验收判据** 标签提升";
   if (repair.eligible) {
     const quotedFile = `'${file.replace(/'/g, "'\\''")}'`;
-    return `W261: #${id} has a nearby criteria label at ${locations}; ${mapping}. Rename it with issuemd sync ${quotedFile} --criteria-labels\n`;
+    const aliasBlock = labelBlock(bodyLines, repair.eligible.line - block.line + 1, bodyLines.length, repair.eligible.label);
+    const force = blockHasListItems(aliasBlock) ? "" : " --force";
+    return `W261: #${id} has a nearby criteria label at ${locations}; ${mapping}. Rename it with issuemd sync ${quotedFile} --criteria-labels${force}\n`;
   }
   return `W261/W264: #${id} has nearby criteria labels at ${locations}; ${mapping}; ` +
     `automatic label repair is unavailable because ${repair.reason}; review or edit the body manually\n`;
@@ -2497,7 +2500,13 @@ function cmdNarrow(rest: string[], v: Values): CliResult {
   const edit = editOpenCriteria(loaded.lines.slice(block.line - 1, block.end), value, block.line - 1);
   if ("error" in edit) return err(`issuemd narrow: #${idText} ${edit.error}\n`, 2);
   let lines = [...loaded.lines.slice(0, block.line - 1), ...edit.body, ...loaded.lines.slice(block.end)];
-  const changes = [`criteria replaced at L${block.line}`];
+  const editedLedger = parseLedger(lines.join("\n"));
+  const editedBlock = bodyBlocks(editedLedger).find(({ id }) => spanText(id) === idText);
+  const editedBody = editedBlock ? lines.slice(editedBlock.line - 1, editedBlock.end) : [];
+  const criteriaLine = editedBlock
+    ? [...bodyLabels(editedBody, 1, editedBody.length)].find(({ label }) => label === "验收判据")?.line
+    : undefined;
+  const changes = [criteriaLine ? `criteria replaced at L${editedBlock!.line - 1 + criteriaLine}` : "criteria replaced"];
 
   if (noteLines.length > 0) {
     const intermediate = parseLedger(lines.join("\n"));
@@ -2535,11 +2544,14 @@ function cmdNarrow(rest: string[], v: Values): CliResult {
       }
       const baseline = checkParsedLedger(ledger, file);
       const after = checkParsedLedger(candidate, file);
-      const beforeCodes = new Set(baseline.warnings.filter(({ id }) => id === idText).map(({ code }) => code));
-      const introduced = after.warnings.filter(({ id, code }) =>
-        id === idText && ["W268", "W264", "W206", "W261"].includes(code) && !beforeCodes.has(code));
+      // Compare counts per code: a second W264 beside a pre-existing one is
+      // still new damage even though the code was already present.
+      const keys = ["W268", "W264", "W206", "W261"];
+      const count = (report: typeof baseline, code: string) =>
+        report.warnings.filter((warning) => warning.id === idText && warning.code === code).length;
+      const introduced = keys.filter((code) => count(after, code) > count(baseline, code));
       if (introduced.length > 0) {
-        return err(`issuemd narrow: refusing to write; the edit introduces ${introduced.map(({ code }) => code).join(", ")} for #${idText}\n`, 2);
+        return err(`issuemd narrow: refusing to write; the edit introduces ${introduced.join(", ")} for #${idText}\n`, 2);
       }
       return undefined;
     },

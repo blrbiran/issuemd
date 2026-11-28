@@ -60,6 +60,18 @@ test("an indented continuation after a blank stays with its item", async () => {
   expect(view.criteriaItems).toEqual(["A 续行说明。"]);
 });
 
+test("a bare marker does not become an item", async () => {
+  const path = await ledger("**验收判据**\n\n- A\n\n-\n");
+  const view = await show(path);
+  expect(view.criteriaItems).toEqual(["A"]);
+});
+
+test("a criteria block with only prose still exposes one item", async () => {
+  const path = await ledger("**验收判据**\n\n只有一段散文判据。\n");
+  const view = await show(path);
+  expect(view.criteriaItems).toEqual(["只有一段散文判据。"]);
+});
+
 test("list --json --with-body carries the same items", async () => {
   const path = await ledger("**验收判据**\n\n1. A；带分号\n2. B\n");
   const batch = JSON.parse((await run(["list", path, "--json", "--with-body"])).stdout);

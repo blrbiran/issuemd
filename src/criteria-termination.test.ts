@@ -66,6 +66,18 @@ test("an indented continuation is part of the item, not prose", async () => {
   expect(await hasW268(path)).toBe(false);
 });
 
+test("a nested sub-list does not end the outer list at the next item", async () => {
+  const path = await ledger("**验收判据**\n\n1. A\n   - x\n\n叙述。\n\n2. B\n");
+  expect((await view(path)).criteria).toBe("1. A；x；叙述。；2. B");
+  expect(await hasW268(path)).toBe(true);
+});
+
+test("a nested ordered sub-list under bullets keeps the outer bullet list", async () => {
+  const path = await ledger("**验收判据**\n\n- A\n  1. 子\n\n叙述。\n\n- B\n");
+  expect((await view(path)).criteria).toBe("A；1. 子；叙述。；B");
+  expect(await hasW268(path)).toBe(true);
+});
+
 test("the label + blank + list shape still reads completely", async () => {
   const path = await ledger("**验收判据**\n\n- 一\n- 二\n");
   expect((await view(path)).criteria).toBe("一；二");

@@ -23,7 +23,7 @@ issuemd narrow  FILE ID --criteria TEXT [--status S] [--note TEXT | --note-file 
 issuemd priority FILE ID P0|P1|P2|P3|""
 issuemd split   FILE ID
 issuemd prune   FILE ID (--dry-run | --confirm --if-unchanged SNAPSHOT)
-issuemd sync    FILE [--guide | --fix-tables | --criteria-labels | --fix-hashes [--require-complete]]
+issuemd sync    FILE [--guide | --fix-tables | --criteria-labels [--force] | --fix-hashes [--require-complete]]
                       [--titles [--prefer body|table] [--move-progress | --drop-progress]]
 issuemd adopt   FILE [--dry-run] [--report PATH]
 ```

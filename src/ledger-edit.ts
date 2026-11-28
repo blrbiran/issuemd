@@ -334,7 +334,8 @@ export function criteriaAliasRepair(lines: string[], offset = 0, fenced = fenced
   const aliases = labels.filter(({ label }) => label !== "验收判据" && isCriteriaAlias(label));
   const relevant = (canonical ? aliases.filter(({ line }) => line > canonical.line) : aliases)
     .filter(({ label, line }) => {
-      if (!canonical) return true;
+      // A pure pointer is never a rename candidate: renaming `判据（不变）`
+      // would manufacture `同上。` as the acceptance criteria.
       const block = labelBlock(lines, line, lines.length, label, fenced);
       return !(block && isCriteriaPointerBlock(block));
     });
@@ -480,6 +481,7 @@ export function labelBlock(
     let boundary: LabelBlock["boundary"];
     let ambiguousProse: number | undefined;
     let lastMarker: ListMarker | undefined;
+    let topColumn = Number.POSITIVE_INFINITY;
     const listMargins: ListMargins[] = [];
     while (stop <= last) {
       const text = visibility.text[stop - 1]!;
@@ -534,7 +536,18 @@ export function labelBlock(
           listMargins.push(item);
         }
         const marker = listMarker(text);
-        if (marker) lastMarker = marker;
+        if (marker) {
+          // Only the outermost list decides continuation; a nested sub-list
+          // must not make the next top-level item look like a new list kind.
+          if (item && item.startColumn < topColumn) {
+            topColumn = item.startColumn;
+            lastMarker = marker;
+          } else if (item && item.startColumn === topColumn) {
+            lastMarker = marker;
+          } else if (!item) {
+            lastMarker = marker;
+          }
+        }
       }
       stop++;
     }
@@ -700,10 +713,12 @@ export function criteriaItemsFromBlock(lines: string[]): string[] {
       continue;
     }
     if (!fenced[index]) {
-      const marker = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(\S.*)$/.exec(text);
+      const marker = /^[ \t]*(?:[-*+]|\d+[.)])(?:[ \t]+(\S.*))?$/.exec(text);
       if (marker) {
         flush();
-        current = marker[1]!;
+        // A bare marker (`-` or `1.`) has no text: it still ends the previous
+        // item but contributes no entry of its own.
+        current = marker[1] ?? "";
         blank = false;
         continue;
       }
@@ -725,7 +740,9 @@ export function criteriaItemsFromOccurrences(occurrences: CriteriaOccurrence[]):
   for (const occurrence of occurrences) {
     if (occurrence.kind !== "canonical" || occurrence.text === "" || seen.has(occurrence.text)) continue;
     seen.add(occurrence.text);
-    items.push(...criteriaItemsFromBlock(occurrence.lines));
+    const blockItems = criteriaItemsFromBlock(occurrence.lines);
+    if (blockItems.length > 0) items.push(...blockItems);
+    else if (occurrence.text !== "") items.push(occurrence.text);
   }
   return items.length ? items : undefined;
 }

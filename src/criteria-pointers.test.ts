@@ -52,6 +52,14 @@ test("a pointer with a list is not treated as a pure pointer", async () => {
   expect((await run(["close", path, "2", "--criteria-from-body", "--dry-run"])).code).toBe(2);
 });
 
+test("a lone pointer block is never a rename candidate", async () => {
+  const path = await ledger("**现象**：甲。\n\n**判据（不变）**\n\n同上。\n");
+  const synced = await run(["sync", path, "--criteria-labels", "--force"]);
+  expect(synced.code).toBe(0);
+  expect(synced.stdout).toContain("(no changes)");
+  expect(readFileSync(path, "utf8")).toContain("**判据（不变）**");
+});
+
 test("a real supplement still blocks close", async () => {
   const path = await ledger("**验收判据**\n\n1. A\n\n**追加判据**\n\n1. B\n");
   expect(await warning(path, "W264")).toBeDefined();
