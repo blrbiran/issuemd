@@ -71,20 +71,21 @@ function sourceRanges(ledger: Ledger): SourceRange[] {
 }
 
 const SELF_LEDGER = /^(?:本|该|这|此|同一|当前|current|本文|本文件|本文档|本份|这份|该份|当前这份|this)$/iu;
-// Longer particles come first: `参考本` must strip `参考` (not `参`, which
-// would leave `考本` and flip the reference to external).
-const REFERENCE_PREFIX = /^(?:关于|根据|依据|参考|依照|按照|基于|记载在|记录在|记在|登记在|写在|列在|参见|详见|请|另|参|详|见|据|按|如|在)/u;
+/**
+ * Leading characters that can only belong to a reference verb or particle
+ * (`见本`, `参考本`, `列入本`, `载于本`, `登记在本`, `根据本`, `按照本`).
+ * Stripping by *character* handles compounds that a word list would miss —
+ * an unrecognized verb would otherwise flip a self-reference to external and
+ * silently stop reserving the id. `日本` is not stripped (日 is not listed).
+ */
+const REFERENCE_PREFIX_CHARS = new Set(Array.from("请另参见详见关于根据依据依照按照基于参考载列入写记录登见据按如在于附"));
 const LEDGER_MENTION = /([\p{L}\p{N}_./-]+)[ \t]*(?:台账|ledger)/giu;
 const LEDGER_FILE = /[^\s`]*?(?:dogfood|ledger|issue-\d{8})[^\s`]*?\.md/giu;
 
 /** `见本`、`登记在本`、`the current` all name this ledger; `日本` does not. */
 function selfLedgerName(name: string): boolean {
   let rest = name;
-  for (;;) {
-    const next = rest.replace(REFERENCE_PREFIX, "");
-    if (next === rest) break;
-    rest = next;
-  }
+  while (rest.length > 0 && REFERENCE_PREFIX_CHARS.has(rest[0]!)) rest = rest.slice(1);
   return SELF_LEDGER.test(rest);
 }
 
