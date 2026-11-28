@@ -76,7 +76,7 @@
 - **#107**：`--version` 输出 `0.1.0 (build: <dir>)`；`counts --markdown` 输出一条可直接粘进头注的 bullet。
 - **#114**：close 缺判据文案写明 `--no-criteria` 文件变小、`--keep-body` 文件变大且之后可 prune。
 - **文档**：`docs/spec.md` 的 W201/W264/W268/W271 行、读视图 `criteriaItems`、`skills/issuemd/SKILL.md` 的 strict 说明与命令示例、`README.md` 的命令表均已同步。
-- **验证**：`npm run typecheck`、`npm test` 1066 pass / 0 fail、`npm run build` 成功。只读复测：dogfood 0 errors / 2 warnings（W201×1、W271×1），`--strict` exit 3（仅剩 W271）；cafe 0/10（W250×8、W264×2），`--strict` exit 0；两份 `criteria` 与 `main` 构建逐条相同，SHA-256 未变（dogfood `75bb00da…`、cafe `17cbcb54…`）。Orca 台账原路径仍不存在，未复测。
+- **验证**：`npm run typecheck`、`npm test` 1068 pass / 0 fail、`npm run build` 成功。只读复测：dogfood 0 errors / 2 warnings（W201×1、W271×1），`--strict` exit 3（仅剩 W271）；cafe 0/10（W250×8、W264×2），`--strict` exit 0；两份 `criteria` 与 `main` 构建逐条相同，SHA-256 未变（dogfood `75bb00da…`、cafe `17cbcb54…`）。Orca 台账原路径仍不存在，未复测。
 - **等待后续裁定 / 测试者复测**：
   - 裸写 `#149`（cafe 引用）仍在 high-water 内，按设计继续报 W271；测试者若要清零可加 `cafe 台账` 前缀。
   - #103 的「列表续接」规则会缩短部分 `criteria`（只去掉被误吞的叙述）；若测试者认为某条真实判据被截断，需带样本反馈。
