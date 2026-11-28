@@ -60,6 +60,21 @@
 
 9. **第十一轮报审（备查）**：Q1 W225 编号占用（已执行，第十二轮维持）；Q2 更多「台账表小节」词（未做，推荐暂不做：改成 E124 会把 `## 已完成` 的行当开放项）；Q3 年份标题（第十二轮已做）；Q4 `list --json` 暴露被占用编号（第十二轮已做，`citedRows`）；Q5 台账复测留给测试者。
 
+## 第二十七轮（2026-11-28）
+
+本轮按 dogfooding #103/#111/#114/#124/#145/#148/#150 与 #115/#118/#128 当前状态，优先修复 W268 误报、隐藏归档信封 fail-open、prune 中间/末尾块拒绝、close 判据的转义提示，以及可安全归属的跨台账引用。Spec / plan：`docs/superpowers/specs/2026-11-28-diagnostics-boundaries-and-archives-design.md`、`docs/superpowers/plans/2026-11-28-diagnostics-boundaries-and-archives.md`。
+
+- **#148 / W268**：新增复核/边界类小节白名单和列表延续判定；本台账 W268 7→0，Cafe 20→0。缩进的 `**非目标**` + 后续编号列表仍报，round23 的 `**必须离线通过。**` 真阳性仍报；延续比较跳过 fence 内的示例编号，列表序号用 BigInt 精确比较，含「判据」字样的冒号标签不被白名单吞掉。`ambiguousProse` 口径未改。
+- **#145**：H3 可见、v2/v3 envelope marker 被 fence、HTML comment 或 raw HTML 遮挡时，`check` 报 W269；`show --body-only` / `prune` / `reopen` 均拒绝，reopen 前后字节不变。只扫描标题后的 envelope 短区间，不扫描 legacy payload；markerless legacy 正文中的 marker-shaped 字面行仍可读。
+- **#150**：同一行上明确的 `Orca 台账 #N`、`cafe 台账 #N`、`ledger #N`，以及外部台账文件路径后紧接的 `#N`，不再报 W271/占号；`find` 仍标为 `reference`。`本台账 #N` / `this ledger #N` 仍本地占用；裸 `#N` 与带说明文字后才出现的编号不猜来源。本台账 dogfood 的 W271 27→24，剩余 24 条大多在跨行/上下文陈述（例如 #106 的 Orca 体积清单 #446–#515 与 #127 的 #449/#480）；不应自动豁免，测试者若需要消除可在每个引用前加显式台账前缀。
+- **#114**：`prune` 改用 payload + framing 双快照校验，三块 v3 的中间、末尾、首块均可安全删除；每次确认前需重新预览。legacy 继续拒绝（其末尾用户文字边界无法验证），文案解释原因。W250 指向 `issuemd prune FILE ID`，并注明只支持 verified v2/v3。
+- **#111**：`close --criteria` 保留既有 W205，并在输入会被单元格解转义时显示实际存储值；open/closed 两条路径一致。help/SKILL/spec 说明 `criteria --criteria` 是正文原文，`close --criteria` 是单元格文本约定。
+- **#124**：`**注意：…句末标点。**` / `**提醒：…**` 作为强调句，不再切断父块。白名单限定在 `注意/提醒/重要提示/警告：`，复核标题 `**第二十六轮复核（…）：仍未修。**` 保持为标签边界。`**必须离线通过。**` 仍由 W268 阻止关闭。
+- **#115/#118/#128**：`check` 文本摘要按 format/artifacts/other 分组，JSON schema 不变；W270 文案点明 close/reopen 后果；spec/SKILL 补英文约 34 B/行、中文约 113 B/行的密度对照及归档读视图字节契约。
+- **只读复测**：`npm run typecheck` 通过，`npm test` 974 pass / 0 fail，`npm run build` 成功。Dogfood：0 errors / 20 warnings（W271）；Cafe：0 errors / 10 warnings（W264×2、W250×8）。W268 两份均为 0；Cafe 显式跨台账引用 W271 1→0，dogfood 27→20。SHA-256 前后相同：dogfood `fafccc02351d27de`、Cafe `17cbcb54de4eaa8b`。对两份台账逐个 open id 比较当前与 `main` 构建的 `criteria/labels/criteriaBlocks`，均 0 diffs（dogfood 26 条、Cafe 83 条）。Orca 当前测试台账原路径不存在，未能复测。
+- **尚未完成集成**：需等独立 code review 收敛、按阶段提交后 fast-forward 合入本地 `main` 并复跑 build；push `origin main` 仍待执行。本轮测试摘要已记录；当前 HEAD 以 `git log` 现查。
+- **等待后续裁定**：#103 的“普通叙述后又出现另一组列表”边界；#106 的 W201 是否参与 `--strict`；#108/#144 规范化读视图 vs 原始 payload；#120/#123 的 `criteriaItems` 切分；#140 的 `narrow`、`--append --before`、`counts --markdown`。#27 保持已知歧义。
+
 ## 第二十六轮（2026-11-28）
 
 - **#147** 新增 `issuemd criteria FILE ID --criteria TEXT`。输入一行 Markdown，编辑唯一开放项正文的 `**验收判据**`，支持 `--dry-run` 与 `--if-unchanged`。缺块时可插入。多重判据、补充判据和边界不明的证据要求人工复核。开放项执行 `close --criteria` 需要显式 `--status S`，显式覆盖不同判据时在预演和写入回执列出新旧值。已关闭项仍用 `close --criteria` 修正单元格。见 `docs/superpowers/specs/2026-11-28-open-criteria-edit-design.md` 及同名实现计划。

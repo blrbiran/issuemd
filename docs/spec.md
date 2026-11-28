@@ -320,8 +320,8 @@ Ledger
 | W221 | 优先级不在 `P0`–`P3` 或空之内（`new` 直接拒绝这类值，exit 2） |
 | W225 | 小节名不像台账表的 H2（`复核记录`、`变更记录`…，`正文`/`附录`/`怎么用`/`状态口径` 除外）里有表头含 `#`/`编号`/`ID` 列、且有 `摘要`/`标题` 列或只有两列（`\| # \| 说明 \|`）的表，或表头位置是 issue 行（见 E124 的表头判定）的表；必须有分隔行（没有分隔行的管道行渲染成段落，不算）。它不被当成 issue（adopt 原样保留，报告里写 `cited-table`），但**编号占用**：默认取号到达它时跳过（`max+1` 起逐个跳过被引用的编号，不会因为表里有 500 就跳到 501）、`new --id N` exit 2 点名那一行，`show N` 仍 exit 1 但 stderr 说明在哪里被引用（第十一轮推翻「不占用」，dogfood #56）。三列以上、没有摘要列的表（`\| ID \| 状态 \| 说明 \|`）不报 W225。有合法分隔行且同时含编号列和 `状态` 列时，只有状态格使用台账默认词（如 `未决`、`已修`）的行占用编号并进入 `citedRows`（dogfood #79）。`正文`/`附录` 仍为自由格式且不报 W225，但其中可见、非注释的 issue 形表遵循相同编号占用与 `citedRows` 规则，避免正文归档后释放编号（dogfood #84）。每张表报一次、指向第一条能解析出编号的行。是 issue 就人工把行移进索引/已关闭；不是就把 `#` 列改名即可消除。第八轮这类表报 E124，但 adopt 不迁移它们，于是 check 与 adopt 互相指认（dogfood #54） |
 | W240 | `--verify-commits` 时 commit 不存在 |
-| W250 | `close --keep-body`（或 `adopt`）把正文搬进附录。写命令当场打 stderr；共享 archive inventory 按可见 H3 标题识别所有 `## 附录` 中的归档，忽略 fences/comments/raw HTML 中的伪标题。新归档以 `&lt;!-- issuemd:kept-body:v3 -->` 标记版本，以 `&lt;!-- issuemd:kept-body:start -->` 起始，再以 `&lt;!-- issuemd:kept-body:lines:N -->` 声明后续 N 条 payload 行记录；N 条之后必须有一个独立空 frame 行，随后是 `&lt;!-- issuemd:kept-body:end -->`。marker-like 行在 N 条 payload 内是普通正文，绝不通过扫描 marker 文本确定边界。W201 只计算 N 条记录及 LF-join 后 UTF-8 字节，不计元数据或 frame。v2 保留 exact version/start/end 规则及 pre-commit positional separator 兼容形态；markerless legacy 按旧规则读取。Malformed v2/v3 报 W269；`check --strict` 失败，show/list 隐去 archive body，reopen/prune 拒绝；close/adopt 在写前验证候选格式。Post-end 非空文字不属 payload；reopen 保留尾注，prune 拒绝移除其 H3。**W250 属提示类，`--strict` 不因它失败**。归档是「冻结的历史快照」，其中的 `**验收判据**` 不算判据的第二份（§7.2） |
-| W269 | v2/v3 kept-body envelope 缺 marker、计数/顺序/可见性无效、version header 被挪位或不支持。可见附录内，fence、注释或 raw HTML 遮住带相邻 version 和 start marker 的归档标题时，同样报告编号和标题行。`--strict` 失败。仅有遮挡候选时，`show --body-only`、`reopen`、`prune` 与 `close --keep-body` 提示人工检查。可见归档仍按原规则校验，close/adopt 在写前拒绝损坏的候选 envelope |
+| W250 | `close --keep-body`（或 `adopt`）把正文搬进附录。写命令与 check 都提示 `issuemd prune FILE ID`；确认不再需要 `reopen` 后再清理。当前新归档使用 v3 计数信封：`lines:N` 精确声明 payload 行数，空行与 marker-shaped 文本也是正文，之后有一个空 frame 和 end marker；W201 不计 metadata/frame。读取兼容 v2 与无版本 legacy；W269 标记损坏信封。`prune` 只接受已验证的 v2/v3；markerless legacy 无法证明删除边界，保持拒绝。`--strict` 不因 W250 失败。归档是冻结快照，不是第二份判据；W251/W252 表示归档漂移，W253 表示存在第二份正文。 |
+| W269 | v2/v3 kept-body envelope 缺 marker、计数/顺序/可见性无效、version header 被挪位或不支持。可见附录内，归档 H3 可见但 envelope marker 被 fence、注释或 raw HTML 遮住时，也报告编号和被遮 marker 行。`--strict` 失败。`show --body-only`、`reopen` 与 `prune` 对损坏或隐藏 envelope 拒绝写入/读取；close/adopt 在写前拒绝损坏的候选 envelope。 |
 | W251 | 归档标题里的摘要 ≠ 已关闭表摘要（`rename` 会同步归档标题，手改才会出现） |
 | W252 | 归档对应的 issue 已重新开放（`reopen` 正常会收回归档，手改才会出现） |
 | W253 | 同一 issue 的正文在附录里还有另一份（转义的 `\### Issue N:` 副本，或重复归档）；旧版 `adopt` 会把表格小节里的正文存两份 |
@@ -330,9 +330,9 @@ Ledger
 | W262 | 报告未闭合 HTML 注释的起始行。围栏、管道表格行和同一行配对反引号中的字面分隔符不参与扫描。多行注释以 `-->` 开头的可见文本行收尾。H1/H2、受管理的 issue 或归档标题以及归档结束标记构成注释边界。正确闭合的注释隐藏其示例表，未闭合范围内的自由格式 issue 形表仍进入 `citedRows` 并保留编号。`--strict` 因 W262 失败。 |
 | W263 | `--verify-commits` 在非 Git worktree 中跳过：列出首个待验证 hash 的行号与说明。普通 `check` 可成功，`--strict` 失败；有效 Git worktree 中缺少 commit 仍报 W240。 |
 | W264 | 正文已有可提升的 `**验收判据**`，其后另有未计入的非空判据块。候选标签包括已有判据别名、以「判据」结尾的标签（可带括注）及 `判定标准`、`完成标准`、`验收标准`、`必须满足`，每块各报行号，`--strict` 失败。排除正式判据之前的描述性标签、`关闭时判据`、空块和仅注释块。`sync --criteria-labels` 仍用较窄的别名规则。默认 close 与 `--criteria-from-body` 拒绝移除正文。`--keep-body` 保留原文。审阅后可以用显式 `--criteria` 或 `--no-criteria` 选定判据列的值并关闭。 |
-| W268 | 判据列表后出现可能分隔判据条目的独立粗体标签（`**非目标**` 视为独立小节），或同一个判据块内的无缩进段落后还有列表或 fence。保留该段的读取结果并报告歧义行，`--strict` 失败。把复核内容放在 `**复核记录**：` 下可明确边界。默认 close 与 `--criteria-from-body` 拒绝删正文，可用审阅后的 `--status S --criteria TEXT`、`--no-criteria` 或 `--keep-body`。 |
-| W270 | 正文或可见附录以未闭合代码围栏收尾，指出起始行。正文诊断带编号。修复围栏后再写入，`--strict` 失败。 |
-| W271 | 正文或附录中的可见 `#N` / `#Na` 引用了本台账未登记的编号。裸写的跨台账引用也会命中。带编号和首次引用的位置，`--strict` 失败。`new` 顺序跳过该号，显式 `--id` 拒绝占用，也会复核将要写入的正文。持久化高水位继续独立追踪已分配号码。 |
+| W268 | 判据列表后出现可能分隔判据条目的独立粗体标签，仅当后续列表延续判据原有列表类型/编号时报警；复核、边界、非目标、复测记录等小节标题不报。无缩进段落后还有列表或 fence 时仍报告可能歧义。保留已有判据读取结果并指出歧义行，`--strict` 失败。用 `**复核记录**：` 写复核内容可明确边界。默认 close 与 `--criteria-from-body` 拒绝删正文，可用审阅后的 `--status S --criteria TEXT`、`--no-criteria` 或 `--keep-body`。 |
+| W270 | 正文或可见附录以未闭合代码围栏收尾，指出起始行。修复围栏后再写入；否则 `close --keep-body` 与 `reopen` 拒绝操作。`--strict` 失败。 |
+| W271 | 正文或附录中的可见 `#N` / `#Na` 引用了本台账未登记的编号。显式跨台账引用（如 `Orca 台账 #558`、`ledger #12`）豁免；`本台账 #N` 仍按本台账引用。带编号和首次引用的位置，`--strict` 失败。`new` 顺序跳过本台账引用，显式 `--id` 拒绝占用，也会复核将要写入的正文。持久化高水位继续独立追踪已分配号码。 |
 | W265 | 前言里的 `issuemd:high-water` 标记重复/格式错误，或它高于当前表格最大编号（可能有历史行被删）；`new` 使用该高水位避免重新分配编号。 |
 | W266 | 存在多个 `## 附录`，`check` 每个标题各报一条，`--strict` 失败。归档写入、恢复和 `read FILE 附录` 都报 W266、列出所有候选行号并拒绝猜选。 |
 | W267 | 台账前言的 `issuemd:limits` 格式无效或重复。使用默认值，`--strict` 失败。 |
@@ -393,7 +393,7 @@ error 28, warning 2。exit 3。
 
 ### `limits`
 
-`issuemd limits FILE --body-bytes N --body-lines N` 在首个 H2 之前写入 `<!-- issuemd:limits: body-bytes=N body-lines=N -->`。每个值为正安全整数，可只设置一维。`--clear` 删除标记并恢复默认值。支持 `--dry-run` 和 `--if-unchanged`。只有前言中可见、独立成行、且不在 fence、多行注释或 raw HTML block 里的标记才生效；示例内容（如 `<div>` 中的标记）保持用户原文，`limits --clear` 不会删除。未配置时行数约束阅读篇幅，UTF-8 字节数衡量输入体积。
+`issuemd limits FILE --body-bytes N --body-lines N` 在首个 H2 之前写入 `<!-- issuemd:limits: body-bytes=N body-lines=N -->`。每个值为正安全整数，可只设置一维。`--clear` 删除标记并恢复默认值。支持 `--dry-run` 和 `--if-unchanged`。只有前言中可见、独立成行、且不在 fence、多行注释或 raw HTML block 里的标记才生效；示例内容（如 `<div>` 中的标记）保持用户原文，`limits --clear` 不会删除。`limits` 可按台账配置。行数更贴近阅读篇幅，UTF-8 字节数约束输入体积；文本密度会让两个维度在不同语料上先触发：英文约 34 B/行，300 行约 10 KiB；中文约 113 B/行，300 行约 33 KiB。它们不是等价尺度，读取 `--strict` 结果时应同时看 `size` 和生效 `limits`。
 
 `check --json` 提供 `limits: {bodyBytes, bodyLines, source}`（`source` 为 `default` 或 `ledger`）与 `size: {bytes, lines, bodyLines, archivedLines, archivedBlocks}`。`size.bytes` 包含 BOM 和原换行字节。`check` 的文本摘要也显示体积。`body` 在首次超限时提示，`close --keep-body` 在归档 payload 超限时提示，预演也显示提示。整理长正文时，可将历史证据存到单独文件，再使用 `body --body-file` 留下链接及判据。
 
@@ -432,7 +432,7 @@ issuemd close FILE 57 --criteria-from-body   # 或 --status 已修 --criteria "�
 | `--no-criteria` | 明确以空判据关闭 |
 | 都不给 | 正文有一个无歧义的非空判据块 → 自动提升；若存在 W268 边界、多块或非空后续别名且 close 会删除正文 → exit 2 并要求显式审阅；没有判据时 `--keep-body` 允许空判据（正文整体保留，信息不丢），否则 exit 2，要求三选一 |
 
-`--status S` 选关闭状态（默认 `已修`）。开放项使用 `close --criteria TEXT` 时必须显式指定 `--status S`，否则 exit 2。只改开放项验收判据用 `issuemd criteria FILE ID --criteria TEXT`。该命令接受一行非空 Markdown，替换唯一且边界清晰的 `**验收判据**` 块，或在没有判据标签时追加一块。建议先预演，再携带快照写入。对已关闭编号执行 `close FILE ID --criteria TEXT` 时，只更新关闭表判据格，不改状态、摘要或正文，并在 stderr 报告旧值与新值。**标签块**的边界：从 `**标签**` 行到下一个可识别的标签行或标题为止；标签行必须独立成行或在粗体标签后使用 `:` / `：` 分隔内容，粗体强调句（如 `**必须**先完成 A`）属于当前块。闭合的 HTML 注释和 fence 内的粗体行不会创建标签边界；注释原文仍保留在 raw body 输出中。空行与列表都属于它；列表续行按 marker 的内容列缩进判断（制表符按 4 列 tab stop 计算）。在验收判据已有列表项后，空行再接无缩进普通段落会结束判据块；若该段后还有列表项或 fence，读取时继续计入，并用 W268 提醒关闭前确认归属。独立粗体标签将可能属于同一列表的判据条目隔开时也报 W268。需要复核的内容建议另起 `**复核记录**：` 标签。`**标签**（括注）：正文` 同样可明确边界。提升进单元格时段落与列表项以 `；` 连接、无序列表符号去掉、fence 内代码保留。
+`--status S` 选关闭状态（默认 `已修`）。开放项使用 `close --criteria TEXT` 时必须显式指定 `--status S`，否则 exit 2。只改开放项验收判据用 `issuemd criteria FILE ID --criteria TEXT`；这里的文本按正文原文写入。`close --criteria` 则按表格单元格约定解析，`\|` 表示字面竖线；写入会导致反斜杠变化时 stderr 显示读入的单元格值。该命令接受一行非空 Markdown，替换唯一且边界清晰的 `**验收判据**` 块，或在没有判据标签时追加一块。建议先预演，再携带快照写入。对已关闭编号执行 `close FILE ID --criteria TEXT` 时，只更新关闭表判据格，不改状态、摘要或正文，并在 stderr 报告旧值与新值。**标签块**的边界：从 `**标签**` 行到下一个可识别的标签行或标题为止；标签行必须独立成行或在粗体标签后使用 `:` / `：` 分隔内容，常见强调行（如 `**注意：这只是提醒。**`）属于当前块。闭合的 HTML 注释和 fence 内的粗体行不会创建标签边界；注释原文仍保留在 raw body 输出中。空行与列表都属于它；列表续行按 marker 的内容列缩进判断（制表符按 4 列 tab stop 计算）。在验收判据已有列表项后，空行再接无缩进普通段落会结束判据块；若该段后还有列表项或 fence，读取时继续计入，并用 W268 提醒关闭前确认归属。独立粗体标签只有在后续列表延续判据列表时才可能报 W268；复核/边界类小节标题不报。需要复核的内容建议另起 `**复核记录**：` 标签。`**标签**（括注）：正文` 同样可明确边界。提升进单元格时段落与列表项以 `；` 连接、无序列表符号去掉、fence 内代码保留。
 
 正文里有多个 `**验收判据**` 块时，`show --json.criteria` 为兼容仍按顺序以 `；` 展平所有非空块，`criteriaBlocks` 保留各块边界。`check` 用 W206 列出所有块的行号；普通 close 与 `--criteria-from-body` 在会删除正文时拒绝自动把多块展平进表格。读完全部块后，可用显式 `--status S --criteria TEXT` 提交完整合并结果，或用 `--keep-body` 保留原文。即使一个判据块内含字面 `；`，旧闭表格也无法还原条目边界；结构化 JSON 与 keep-body 归档保留原始行。
 
@@ -519,9 +519,9 @@ issuemd prune FILE ID --dry-run                 # 预览要删除的字节，std
 issuemd prune FILE ID --confirm --if-unchanged SNAPSHOT
 ```
 
-只删除**一个**可验证的 v2/v3 keep-body 归档，保留已关闭表行、判据和其他附录内容。要求目标为唯一的已关闭单号行；开放区间行、逗号行、不可读行同时占用该 id 时 exit 2。附录 H2 与 archive H3 必须是真实可见标题；v2 的固定 metadata/end markers 与 v3 计数行、frame/end 必须满足对应版本规则。存在重复 `## 附录`、重复同号归档、markerless legacy、malformed envelope、end marker 后的非空尾注时拒绝。无版本的 legacy archives 仍可 read/reopen，但 `prune` 需人工处理。v1 不猜边界，也不做批量或按时间的清理。
+只删除**一个**可验证的 v2/v3 keep-body 归档，保留已关闭表行、判据和其他附录内容。归档可以位于附录的任意位置（首块、中间块或末块），不要求按顺序删除；每次 `--confirm` 前应重新预演，因为上一次删除会改变 snapshot。要求目标为唯一的已关闭单号行；开放区间行、逗号行、不可读行同时占用该 id 时 exit 2。附录 H2 与 archive H3 必须是真实可见标题；v2 的固定 metadata/end markers 与 v3 计数行、frame/end 必须满足对应版本规则。存在重复 `## 附录`、重复同号归档、markerless legacy、malformed envelope、end marker 后的非空尾注时拒绝。无版本的 legacy archives 仍可 read/reopen，但 `prune` 无法证明其删除边界，保持拒绝。v1 不猜边界，也不做批量或按时间的清理。
 
-真实删除必须使用预览得到的 snapshot；两个参数缺失、同时给 `--dry-run --confirm`、`--confirm` 无 snapshot、或 snapshot 单独出现都 exit 2，过期 snapshot exit 4。写入前重新检查：既有 error 的多重集合（code/id/message/expected/actual，忽略行号漂移）必须不变，其他归档的 id 与 payload 必须逐字节不变，否则 exit 3。预览与落盘共用同一候选字节；有尾换行文件保留幸存空行，无尾换行 EOF 只去掉因此变成末尾的空行。成功后 stderr 给出 `wrote … #ID archive pruned (snapshot S)`。
+真实删除必须使用预览得到的 snapshot；两个参数缺失、同时给 `--dry-run --confirm`、`--confirm` 无 snapshot、或 snapshot 单独出现都 exit 2，过期 snapshot exit 4。写入前重新检查：既有 error 的多重集合（code/id/message/expected/actual，忽略行号漂移）必须不变，其他归档的 id、payload 与 framing 必须逐字节不变（忽略删块后前一块尾部多出的分隔空行），否则 exit 3。预览与落盘共用同一候选字节；有尾换行文件保留幸存空行，无尾换行 EOF 只去掉因此变成末尾的空行。成功后 stderr 给出 `wrote … #ID archive pruned (snapshot S)`。
 
 ## 8. 写入安全
 
@@ -578,9 +578,9 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
 
 读命令遇到不可读的表行时在 stderr 说明结果不完整，`list --json` 附 `unreadableRows`；外来表保留的编号不属于不可读行。`list --json`（开放与 `--closed` 都）附 `citedRows: [{ line, reason, ids }]`（没有时省略），agent 不必跑 `check` 也知道哪些编号不会被分配（第十二轮；W225 表引用的编号若同时是已登记的 issue 也照列）。`check --json` 与 `counts --json` 也在有引用时附同一 `citedRows`。`show` 查到的编号若还出现在某条不可读行（如 E124 的旧表）里，照常输出并在 stderr 点名那一行；`list --json` 每项带 `ids` 与 `count`，顶层带 `rowCount` / `issueCount`（`issueCount` 与 `counts` 一致）。
 
-**读视图与 `check` 的一致性（第十三轮，dogfood #63；第十八轮）**：`check` 有 error 时，`list` / `counts` / `show` 的退出码仍是 0/1（读一份坏台账去修它是正当用法），但会在 stderr 写一行 `note: 'issuemd check' reports N error(s) (first: CODE L… )`。三者的 `--json` 始终附 `diagnostics: { errors: [...], warnings: [...] }`，数组可为空并始终存在；诊断与同快照的 `check --json` 按 `code` / `line` / `id` 对齐，包含 E106 的 `expected` / `actual`。`N` 是 `check` 报告的全部 error 数（包括不可读行）；错误全部落在不可读行上时也照常出现，只是与 `unreadableNote` 的逐行说明并列（第十四轮）。
+**读视图与 `check` 的一致性（第十三轮，dogfood #63；第十八轮）**：`check` 有 error 时，`list` / `counts` / `show` 的退出码仍是 0/1（读一份坏台账去修它是正当用法），但会在 stderr 写一行 `note: 'issuemd check' reports N error(s) (first: CODE L… )`。三者的 `--json` 始终附 `diagnostics: { errors: [...], warnings: [...] }`，数组可为空并始终存在；诊断与同快照的 `check --json` 按 `code` / `line` / `id` 对齐，包含 E106 的 `expected` / `actual`。`N` 是 `check` 报告的全部 error 数（包括不可读行）；错误全部落在不可读行上时也照常出现，只是与 `unreadableNote` 的逐行说明并列（第十四轮）。**读视图逐字节一致**指同一快照下 `issues`、计数与行号字段不变；`snapshot` 与 `size` 会因前言元数据（如高水位标记）变化而不同，不属于该口径。
 
-**纯正文（dogfood #97；JSON 回灌 #108；归档读取 #127）**：对开放项，`show FILE ID --body-only` 输出该 issue 标题以下的正文，去除首尾分隔空行，保留内容空白与行尾约定；未编辑时可回灌 `body FILE ID --body-file -` 并保持字节不变。`show --json` 的 `body.content` 与 `--body-only` 内容一致（JSON 使用 LF），`body.text` 保留旧的含标题视图以兼容既有消费者。`list --json --with-body` 也附 `body.content`，可批量读取后直接回灌。对只有一个可识别 keep-body 归档的已关闭项，同一命令输出归档 payload；`show --json` 的 `body` 加 `archived: true`、`lineCount` 与 payload，内容按 v2/v3 版本规则提取。v3 的 N 条 payload 行记录逐行保留（包括空行和 marker-shaped 行），frame 与 metadata 不计入。legacy 归档不猜测 provenance note 边界，展示标题后至可见 end marker / H3 边界的全部文字。`list --closed --json --with-body` 同样附唯一归档的 body。无归档的已关闭项、缺正文或借用兄弟项的正文仍 exit 1，stdout 为空。`--body-only` 与 `--json`、`--label` 互斥。
+**纯正文（dogfood #97；JSON 回灌 #108；归档读取 #127）**：对开放项，`show FILE ID --body-only` 输出该 issue 标题以下的正文，去除首尾分隔空行，保留内容空白与行尾约定；未编辑时可回灌 `body FILE ID --body-file -` 并保持字节不变。`show --json` 的 `body.content` 与 `--body-only` 内容一致（JSON 使用 LF），但**不补尾换行**：`--body-only` 会按源文件是否以换行结尾补一个，`body.content` 只做 LF join；回灌仍然是无操作。`body.text` 保留旧的含标题视图以兼容既有消费者。`list --json --with-body` 也附 `body.content`，可批量读取后直接回灌。对只有一个可识别 keep-body 归档的已关闭项，同一命令输出归档 payload；`show --json` 的 `body` 加 `archived: true`、`lineCount` 与 payload，内容按 v2/v3 版本规则提取。归档态保留 payload 原始前后空行（`reopen` 依赖这份快照逐字节还原），因此与开放态 `--body-only` 可能相差首尾空行；比较幂等性请用写回是否为 `(no changes)`。v3 的 N 条 payload 行记录逐行保留（包括空行和 marker-shaped 行），frame 与 metadata 不计入。legacy 归档不猜测 provenance note 边界，展示标题后至可见 end marker / H3 边界的全部文字。`list --closed --json --with-body` 同样附唯一归档的 body。无归档的已关闭项、缺正文或借用兄弟项的正文仍 exit 1，stdout 为空。`--body-only` 与 `--json`、`--label` 互斥。
 
 **正文归属（dogfood #69）**：`show` 先找本号自己的 `### Issue N:` 块；找不到时沿用「同一行只在首号写一段正文」的历史写法，借同一行其他号的正文——逗号行任一 id、区间行任一被覆盖的 id（`5–7` 的正文挂在 `6` 也算）——但某个 id 自己有独立行时（重复编号，E103）不借它的正文，`show` 与 `list --with-body` 同口径（第十四轮复审）；`--json` 的 `body` 带 `id`（正文真正属于哪个号）与 `inherited: true`，`criteria` 另带 `criteriaFrom`，文本模式在 stderr 写 `note: the body shown belongs to #N`、stdout 写明「正文属于 #N」。`check` 仍对没有自己正文的号报 E102。
 
