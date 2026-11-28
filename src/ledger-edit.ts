@@ -681,6 +681,7 @@ export function criteriaItemsFromBlock(lines: string[]): string[] {
   const first = parseLabelLine(visibility.text[0] ?? "");
   const items: string[] = [];
   let current = first?.rest.trim() ?? "";
+  let blank = false;
   const flush = () => {
     const text = current.replace(/\s+/g, " ").trim();
     if (text) items.push(text);
@@ -689,17 +690,29 @@ export function criteriaItemsFromBlock(lines: string[]): string[] {
   for (let index = 1; index < lines.length; index++) {
     if (visibility.hidden[index]) continue;
     const text = visibility.text[index]!;
-    if (fenced[index] && /^[ \t]*(?:`{3,}|~{3,})/.test(text)) continue;
-    if (text.trim() === "") continue;
+    if (fenced[index] && /^[ \t]*(?:`{3,}|~{3,})/.test(text)) {
+      // A fence directly after a blank still illustrates the current item.
+      blank = false;
+      continue;
+    }
+    if (text.trim() === "") {
+      blank = true;
+      continue;
+    }
     if (!fenced[index]) {
       const marker = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+(\S.*)$/.exec(text);
       if (marker) {
         flush();
         current = marker[1]!;
+        blank = false;
         continue;
       }
     }
+    // A blank line plus a new unindented paragraph starts another item;
+    // an indented continuation (or fenced example) still belongs to this one.
+    if (blank && !/^[ \t]/.test(text)) flush();
     current += (current ? " " : "") + text.trim();
+    blank = false;
   }
   flush();
   return items;

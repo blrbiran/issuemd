@@ -48,6 +48,18 @@ test("a fenced list is content, not a new item", async () => {
   expect(view.criteriaItems![0]).toContain("- not an item");
 });
 
+test("a paragraph after a blank becomes its own item", async () => {
+  const path = await ledger("**验收判据**\n\n1. A\n\n说明段。\n\n2. B\n");
+  const view = await show(path);
+  expect(view.criteriaItems).toEqual(["A", "说明段。", "B"]);
+});
+
+test("an indented continuation after a blank stays with its item", async () => {
+  const path = await ledger("**验收判据**\n\n1. A\n\n   续行说明。\n");
+  const view = await show(path);
+  expect(view.criteriaItems).toEqual(["A 续行说明。"]);
+});
+
 test("list --json --with-body carries the same items", async () => {
   const path = await ledger("**验收判据**\n\n1. A；带分号\n2. B\n");
   const batch = JSON.parse((await run(["list", path, "--json", "--with-body"])).stdout);
