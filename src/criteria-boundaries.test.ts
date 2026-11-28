@@ -63,7 +63,7 @@ test("a non-review heading followed by a different list kind stays quiet", async
   expect((await run(["close", path, "2", "--criteria-from-body"])).code).toBe(0);
 });
 
-test.each(["   **非目标**\n\n3. 仍属判据。", "**注意**\n\n3. 仍属判据。", "复核状态。\n\n1. 仍属判据？", "复核状态。\n\n```md\nSample\n```"])(
+test.each(["   **非目标**\n\n3. 仍属判据。", "**注意**\n\n3. 仍属判据。", "复核状态。\n\n```md\nSample\n```"])(
   "ambiguous list boundary refuses destructive automatic close (%j)", async (tail) => {
     const path = await ledger(`${criteria}\n\n${tail}\n`);
     const before = readFileSync(path, "utf8");
@@ -73,6 +73,13 @@ test.each(["   **非目标**\n\n3. 仍属判据。", "**注意**\n\n3. 仍属判
     expect(readFileSync(path, "utf8")).toBe(before);
   },
 );
+
+test("an ordered list restart after prose starts a new section", async () => {
+  const path = await ledger(`${criteria}\n\n复核状态。\n\n1. 另一个新列表。`);
+  expect(await warning(path, "W268")).toBeUndefined();
+  expect(JSON.parse((await run(["show", path, "2", "--json"])).stdout).criteria).toBe("1. 判据一。；2. 判据二。");
+  expect((await run(["close", path, "2", "--criteria-from-body", "--dry-run"])).code).toBe(0);
+});
 
 test.each(["**验收判据**：New", "**复核**\n\n**补充判据**：New", "散文\n\n**判定标准**\n\nNew"])(
   "append refuses visible criteria anywhere in the fragment (%j)", async (incoming) => {

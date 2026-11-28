@@ -391,6 +391,12 @@ function isReviewSectionLabel(label: string): boolean {
     /(?:复测|复核|核对|实测|边界|非目标|复测记录|复核记录|追加现场|相邻项|风险点|代码锚点|证据文件)$/.test(bare);
 }
 
+/** Whether a later list item continues `earlier` rather than starting a new list. */
+function continuesSameList(earlier: ListMarker, later: ListMarker): boolean {
+  if (earlier.ordered && later.ordered) return later.number! > earlier.number!;
+  return !earlier.ordered && !later.ordered;
+}
+
 /** Whether the first list after a boundary continues the list already in the block. */
 function continuesCriteriaList(blockLines: string[], blockLine: number, boundaryLine: number, visibility: BodyVisibility, fenced: boolean[]): boolean {
   let earlier: ListMarker | undefined;
@@ -473,42 +479,51 @@ export function labelBlock(
     let stop = line + 1;
     let boundary: LabelBlock["boundary"];
     let ambiguousProse: number | undefined;
-    let nextContinuation = 0;
+    let lastMarker: ListMarker | undefined;
     const listMargins: ListMargins[] = [];
     while (stop <= last) {
       const text = visibility.text[stop - 1]!;
-      if (!fenced[stop - 1] && !visibility.hidden[stop - 1]) {
+      const hidden = visibility.hidden[stop - 1];
+      const inFence = fenced[stop - 1];
+      if (!inFence && !hidden) {
         if (parseLabelLine(text)) {
           boundary = { line: stop, sawListItem: listMargins.length > 0 };
           break;
         }
         if (/^ {0,3}#{1,6}(?:\s|$)/.test(text)) break;
       }
-      if (label === "验收判据" && listMargins.length > 0 && !visibility.hidden[stop - 1] && text.trim() === "") {
+      if (label === "验收判据" && lastMarker && !hidden && !inFence && text.trim() === "") {
         let look = stop + 1;
         while (look <= last && (visibility.hidden[look - 1] || visibility.text[look - 1]!.trim() === "")) look++;
         if (look <= last && !fenced[look - 1] && parseLabelLine(visibility.text[look - 1]!)) {
           boundary = { line: look, sawListItem: true };
           break;
         }
-        if (look <= last && !fenced[look - 1] && !LIST_ITEM.test(visibility.text[look - 1]!) && !isListContinuation(visibility.text[look - 1]!, listMargins)) {
-          const proseLine = look;
-          if (nextContinuation <= look) {
-            for (; look <= last; look++) {
-              const candidate = visibility.text[look - 1]!;
-              if (visibility.hidden[look - 1]) continue;
-              if (!fenced[look - 1] && (parseLabelLine(candidate) != null || /^ {0,3}#{1,6}(?:\s|$)/.test(candidate))) break;
-              if (LIST_ITEM.test(candidate) || isListContinuation(candidate, listMargins) || fenced[look - 1] || /^[ \t]*(?:`{3,}|~{3,})/.test(candidate)) {
-                nextContinuation = look;
-                break;
-              }
+        const first = look <= last ? visibility.text[look - 1]! : undefined;
+        if (first !== undefined && !fenced[look - 1] && !LIST_ITEM.test(first) && !isListContinuation(first, listMargins)) {
+          // A blank line followed by prose ends the block unless a later list
+          // continues the same list (ordered number increasing, or the same
+          // bullet kind). A different list kind / restart is a new section.
+          let continues = false;
+          for (let next = look + 1; next <= last; next++) {
+            if (visibility.hidden[next - 1]) continue;
+            const candidate = visibility.text[next - 1]!;
+            if (!fenced[next - 1] && (parseLabelLine(candidate) != null || /^ {0,3}#{1,6}(?:\s|$)/.test(candidate))) break;
+            if (fenced[next - 1] || /^[ \t]*(?:`{3,}|~{3,})/.test(candidate) || isListContinuation(candidate, listMargins)) {
+              continues = true;
+              break;
             }
-            if (nextContinuation < proseLine) break;
+            const later = listMarker(candidate);
+            if (later) {
+              continues = continuesSameList(lastMarker, later);
+              break;
+            }
           }
-          ambiguousProse ??= proseLine;
+          if (!continues) break;
+          ambiguousProse ??= look;
         }
       }
-      if (!fenced[stop - 1] && !visibility.hidden[stop - 1]) {
+      if (!inFence && !hidden) {
         const item = listItemMargins(text);
         if (item) {
           while (listMargins.length > 0) {
@@ -518,6 +533,8 @@ export function labelBlock(
           }
           listMargins.push(item);
         }
+        const marker = listMarker(text);
+        if (marker) lastMarker = marker;
       }
       stop++;
     }
