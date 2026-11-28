@@ -66,7 +66,7 @@
 
 本轮按用户对四个口径的拍板执行，并处理 dogfooding #103/#104/#106/#107/#114/#115/#120/#123/#138/#140/#150/#151/#152。设计经独立 subagent 复审（1 blocker + 11 should-fix 全部纳入）后实施；实现完成后又派了一次独立复审。Spec / plan：`docs/superpowers/specs/2026-11-28-strictness-references-and-verbs-design.md`、`docs/superpowers/plans/2026-11-28-strictness-references-and-verbs.md`。
 
-- **#152 / #150**：`ProseReference` 增 `local`；`selfLedgerName()` 逐词剥引用前缀（`见本`、`登记在本`、`根据本`、`the current`），`日本台账` 仍判 external。新增 `referenceCeiling()`（`max(maxIssueId, highWater) + 1`，过滤畸形 high-water）与 `reservedProseReferences()`；裸写只在 ≤ ceiling 时占号，显式本地引用不受上限限制。`cmdNew` 的两个占号入口（分配与写入前复核）都走同一函数。dogfood W271 22 → 1（剩 `#149`，在 high-water 内且确属 cafe 引用，需测试者加前缀）。
+- **#152 / #150**：`ProseReference` 增 `local`；`selfLedgerName()` 按**字符**剥引用前缀（`见本`、`参考本`、`列入本`、`载于本`、`登记在本`、`the current`），词表遗漏不会再把自指翻成 external；`日本台账` 仍判 external。新增 `referenceCeiling()`（`max(maxIssueId, highWater) + 1`，过滤畸形 high-water）与 `reservedProseReferences()`；裸写只在 ≤ ceiling 时占号，显式本地引用不受上限限制。`cmdNew` 的两个占号入口（分配与写入前复核）都走同一函数。dogfood W271 22 → 1（剩 `#149`，在 high-water 内且确属 cafe 引用，需测试者加前缀）。
 - **#106 / #138**：`STRICT_EXEMPT_WARNINGS = {W201, W202, W250, W264}`。W264 指针块要求「标签为 `判据（不变）` 类 + 无列表项 + 文本整段为无变化断言」；`同上，但还需离线通过。` 仍报。W264 文案点明改名会产生重复标签并给出 `--keep-body` / `--criteria` 出路。
 - **#103**：`labelBlock()` 的空行 lookahead 改为「同一列表续接」：有序编号递增或同为无序才续接；类型不同或 `1.` 重启即新节。围栏定界行不产生 `ambiguousProse`（保持 round23 的 W268 计数）。真实台账逐条比较 `criteria`：dogfood 0 diffs、cafe 0 diffs；`criteriaBlocks` 保留原文。
 - **#120/#123**：`criteriaItems` 只读字段（`show --json` 与 `list --json --with-body`），按原始列表项切分，分号留在条目内；关闭表无法还原时 `[criteria]` + `criteriaJoined: true`，有唯一归档且文本一致时用归档恢复。cafe 83 个开放项、143 个已关闭项均带字段（100 条 joined）。
@@ -76,7 +76,7 @@
 - **#107**：`--version` 输出 `0.1.0 (build: <dir>)`；`counts --markdown` 输出一条可直接粘进头注的 bullet。
 - **#114**：close 缺判据文案写明 `--no-criteria` 文件变小、`--keep-body` 文件变大且之后可 prune。
 - **文档**：`docs/spec.md` 的 W201/W264/W268/W271 行、读视图 `criteriaItems`、`skills/issuemd/SKILL.md` 的 strict 说明与命令示例、`README.md` 的命令表均已同步。
-- **验证**：`npm run typecheck`、`npm test` 1059 pass / 0 fail、`npm run build` 成功。只读复测：dogfood 0 errors / 2 warnings（W201×1、W271×1），`--strict` exit 3（仅剩 W271）；cafe 0/10（W250×8、W264×2），`--strict` exit 0；两份 `criteria` 与 `main` 构建逐条相同，SHA-256 未变（dogfood `75bb00da…`、cafe `17cbcb54…`）。Orca 台账原路径仍不存在，未复测。
+- **验证**：`npm run typecheck`、`npm test` 1066 pass / 0 fail、`npm run build` 成功。只读复测：dogfood 0 errors / 2 warnings（W201×1、W271×1），`--strict` exit 3（仅剩 W271）；cafe 0/10（W250×8、W264×2），`--strict` exit 0；两份 `criteria` 与 `main` 构建逐条相同，SHA-256 未变（dogfood `75bb00da…`、cafe `17cbcb54…`）。Orca 台账原路径仍不存在，未复测。
 - **等待后续裁定 / 测试者复测**：
   - 裸写 `#149`（cafe 引用）仍在 high-water 内，按设计继续报 W271；测试者若要清零可加 `cafe 台账` 前缀。
   - #103 的「列表续接」规则会缩短部分 `criteria`（只去掉被误吞的叙述）；若测试者认为某条真实判据被截断，需带样本反馈。
