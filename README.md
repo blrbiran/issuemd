@@ -8,6 +8,7 @@ A CLI for **single-file issue ledgers** — the kind of Markdown where a table h
 issuemd check   FILE [--json] [--strict] [--verify-commits]
 issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]
 issuemd show    FILE ID [--body-only | [--json] [--label 验收判据]]
+issuemd find    FILE PATTERN [--json]
 issuemd counts  FILE [--json]
 issuemd read    FILE <H2 heading>
 
@@ -20,7 +21,7 @@ issuemd body    FILE ID --body-file PATH|- [--append]
 issuemd priority FILE ID P0|P1|P2|P3|""
 issuemd split   FILE ID
 issuemd prune   FILE ID (--dry-run | --confirm --if-unchanged SNAPSHOT)
-issuemd sync    FILE [--guide | --fix-tables | --criteria-labels | --fix-hashes]
+issuemd sync    FILE [--guide | --fix-tables | --criteria-labels | --fix-hashes [--require-complete]]
                       [--titles [--prefer body|table] [--move-progress | --drop-progress]]
 issuemd adopt   FILE [--dry-run] [--report PATH]
 ```

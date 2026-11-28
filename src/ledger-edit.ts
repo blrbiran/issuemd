@@ -11,7 +11,7 @@
 import type { LedgerRow, TableKind } from "./ledger.js";
 import { KEPT_BODY_VERSION_V3, KEPT_BODY_START, keptBodyLinesMarker, KEPT_BODY_END } from "./ledger.js";
 import { STATUS_CLASSES } from "./ledger-check.js";
-import { inlineCodeRanges, fencedLines, isEscapedMarkdownChar, multilineInlineCodeRanges } from "./scan.js";
+import { inlineCodeRanges, fencedLines, isEscapedMarkdownChar, multilineInlineCodeRanges, scanFences } from "./scan.js";
 export { fencedLines } from "./scan.js";
 
 // ---- cells -------------------------------------------------------------
@@ -164,30 +164,7 @@ export function ascendingRows(rows: LedgerRow[]): boolean {
 
 /** True when the last line leaves a code fence open. */
 export function endsInFence(lines: string[], inBody = false): boolean {
-  let fence: { char: string; len: number; margin: number } | undefined;
-  let listMargin = 0;
-  for (const line of lines) {
-    const leading = /^[ \t]*/.exec(line)![0];
-    let indent = 0;
-    for (const char of leading) indent += char === "\t" ? 4 - (indent % 4) : 1;
-    const text = line.slice(leading.length);
-    if (fence && fence.margin > indent && text) fence = undefined;
-    if (!fence && inBody && text && indent < listMargin) listMargin = 0;
-    const margin = fence?.margin ?? listMargin;
-    const delimiter = indent >= margin && indent - margin <= 3 ? /^(`{3,}|~{3,})([\s\S]*)$/.exec(text) : null;
-    if (!fence) {
-      if (delimiter && !(delimiter[1]!.startsWith("`") && delimiter[2]!.includes("`"))) {
-        fence = { char: delimiter[1]![0]!, len: delimiter[1]!.length, margin };
-      } else if (inBody && indent - listMargin <= 3) {
-        const item = /^(?:[-*+]|\d{1,9}[.)])( {1,4})(?=\S)/.exec(text);
-        if (item) listMargin = indent + item[0].length;
-      }
-    } else if (delimiter && delimiter[1]![0] === fence.char &&
-        delimiter[1]!.length >= fence.len && /^[ \t]*$/.test(delimiter[2]!)) {
-      fence = undefined;
-    }
-  }
-  return fence !== undefined;
+  return scanFences(lines, inBody).unclosed !== undefined;
 }
 
 // ---- bodies ------------------------------------------------------------

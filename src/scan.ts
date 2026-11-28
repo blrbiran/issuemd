@@ -184,11 +184,15 @@ function matchHeading(line: string, lineNo: number): Heading | null {
  * Body consumers also recognize fences relative to a list item's content margin.
  * A standalone indented code block does not open a fence.
  */
-export function fencedLines(lines: string[], inBody = false): boolean[] {
-  const out = new Array<boolean>(lines.length).fill(false);
-  let fence: { char: string; len: number; margin: number } | undefined;
+export type FenceScan = { fenced: boolean[]; unclosed?: { line: number } };
+
+/** Scan fence masks and retain the opener of a fence left open at the range end. */
+export function scanFences(lines: string[], inBody = false, ignored: boolean[] = []): FenceScan {
+  const fenced = new Array<boolean>(lines.length).fill(false);
+  let fence: { char: string; len: number; margin: number; line: number } | undefined;
   let listMargin = 0;
   for (let index = 0; index < lines.length; index++) {
+    if (ignored[index]) continue;
     const line = lines[index]!;
     const leading = /^[ \t]*/.exec(line)![0];
     let indent = 0;
@@ -200,21 +204,25 @@ export function fencedLines(lines: string[], inBody = false): boolean[] {
     const delimiter = indent >= margin && indent - margin <= 3 ? /^(`{3,}|~{3,})([\s\S]*)$/.exec(text) : null;
     if (!fence) {
       if (delimiter && !(delimiter[1]!.startsWith("`") && delimiter[2]!.includes("`"))) {
-        fence = { char: delimiter[1]![0]!, len: delimiter[1]!.length, margin };
-        out[index] = true;
+        fence = { char: delimiter[1]![0]!, len: delimiter[1]!.length, margin, line: index + 1 };
+        fenced[index] = true;
       } else if (inBody && indent - listMargin <= 3) {
         const item = /^(?:[-*+]|\d{1,9}[.)])( {1,4})(?=\S)/.exec(text);
         if (item) listMargin = indent + item[0].length;
       }
       continue;
     }
-    out[index] = true;
+    fenced[index] = true;
     if (delimiter && delimiter[1]![0] === fence.char &&
         delimiter[1]!.length >= fence.len && /^[ \t]*$/.test(delimiter[2]!)) {
       fence = undefined;
     }
   }
-  return out;
+  return { fenced, ...(fence ? { unclosed: { line: fence.line } } : {}) };
+}
+
+export function fencedLines(lines: string[], inBody = false): boolean[] {
+  return scanFences(lines, inBody).fenced;
 }
 
 export function isEscapedMarkdownChar(text: string, at: number): boolean {

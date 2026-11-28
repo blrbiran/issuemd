@@ -31,11 +31,13 @@ import { fileURLToPath } from "node:url";
 
 import { inlineCodeRanges, scan } from "./scan.js";
 import { hashRepairContextSkipReason, hashRepairRanges, hashRepairSkipReason, hashSpans } from "./hash-scan.js";
+import { matchProgressCue } from "./progress-matcher.js";
 import { buildSections, countLines } from "./sections.js";
 import { decodeDocument, joinDocument, readRaw, writeAtomically, type Document } from "./io.js";
 import { parseId, parseIds, compareIds, IdSet, type IdSpan } from "./issue-id.js";
 import { archiveInventory as discoverArchives, archivePayloadRange, archivePayloadSnapshot, hiddenArchiveRefusal, locateArchivePayload, validateSerializedArchive, bodyBlocks, countSuffix, DEFAULT_LIMITS, effectiveLimits, highWaterRecords, HIGH_WATER_MARKER, htmlBlockLines, LIMITS_MARKER, limitsRecords, maxIssueId, parseLedger, prunableArchive, type Diagnostic } from "./ledger.js";
 import { checkLedger, checkParsedLedger, PRIORITIES, STATUS_CLASSES, summaryKey } from "./ledger-check.js";
+import { findLedgerText, proseReferences } from "./ledger-search.js";
 import {
   bodySkeleton,
   bodyVisibility,
@@ -99,6 +101,7 @@ const COMMANDS = {
   list: { usage: "issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]", options: ["status", "priority", "closed", "expand", "json", "with-body"] },
   show: { usage: "issuemd show    FILE ID [--body-only | [--json] [--label NAME]]", options: ["json", "label", "body-only"] },
   counts: { usage: "issuemd counts  FILE [--json]", options: ["json"] },
+  find: { usage: "issuemd find    FILE PATTERN [--json]", options: ["json"] },
   limits: { usage: "issuemd limits  FILE [--body-bytes N] [--body-lines N] [--clear]", options: ["body-bytes", "body-lines", "clear", "dry-run", "if-unchanged"] },
   read: { usage: "issuemd read    FILE <H2 heading>", options: [] },
   new: { usage: "issuemd new     FILE --title T [--id N] [--status S] [--priority P] [--body-file PATH|-] [--allow-duplicate-title]", options: ["title", "id", "status", "priority", "body-file", "allow-duplicate-title", "dry-run", "if-unchanged"] },
@@ -110,7 +113,7 @@ const COMMANDS = {
   priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run", "if-unchanged"] },
   split: { usage: "issuemd split   FILE ID", options: ["dry-run", "if-unchanged"] },
   prune: { usage: "issuemd prune   FILE ID (--dry-run | --confirm --if-unchanged SNAPSHOT)", options: ["confirm", "dry-run", "if-unchanged"] },
-  sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress] | --criteria-labels | --fix-hashes]", options: ["guide", "fix-tables", "titles", "criteria-labels", "fix-hashes", "prefer", "move-progress", "drop-progress", "dry-run", "if-unchanged"] },
+  sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress] | --criteria-labels | --fix-hashes [--require-complete]]", options: ["guide", "fix-tables", "titles", "criteria-labels", "fix-hashes", "require-complete", "prefer", "move-progress", "drop-progress", "dry-run", "if-unchanged"] },
   adopt: { usage: "issuemd adopt   FILE [--dry-run] [--report PATH]", options: ["dry-run", "report", "if-unchanged"] },
 } as const satisfies Record<string, { usage: string; options: readonly string[] }>;
 type Command = keyof typeof COMMANDS;
@@ -152,6 +155,7 @@ const OPTION_HELP: Record<string, string> = {
   titles: "--titles                  sync: align body headings with index summaries",
   "criteria-labels": "--criteria-labels         sync: rename one unambiguous nearby criteria label per issue",
   "fix-hashes": "--fix-hashes              sync: wrap W202 literal hashes in safe body/appendix prose spans",
+  "require-complete": "--require-complete       sync --fix-hashes: refuse if any W202 warning would remain",
   confirm: "--confirm                 prune: delete the reviewed archive (requires --if-unchanged snapshot)",
   prefer: "--prefer <body|table>     sync --titles: which side wins (default body)",
   "move-progress": "--move-progress           sync --titles: move progress text into the body",
@@ -163,7 +167,7 @@ const OPTION_HELP: Record<string, string> = {
     "                            also the `snapshot` field of JSON views), so you apply what you reviewed",
 };
 
-const READ_COMMANDS: Command[] = ["check", "list", "show", "counts", "read"];
+const READ_COMMANDS: Command[] = ["check", "list", "show", "find", "counts", "read"];
 const VERSION = (() => {
   const directory = dirname(fileURLToPath(import.meta.url));
   for (const path of [resolve(directory, "../package.json"), resolve(directory, "../../package.json")]) {
@@ -279,6 +283,7 @@ const OPTIONS = {
   titles: { type: "boolean" },
   "criteria-labels": { type: "boolean" },
   "fix-hashes": { type: "boolean" },
+  "require-complete": { type: "boolean" },
   prefer: { type: "string" },
   "move-progress": { type: "boolean" },
   "drop-progress": { type: "boolean" },
@@ -335,6 +340,8 @@ export async function run(argv: string[]): Promise<CliResult> {
   switch (head) {
     case "check":
       return cmdCheck(positionals.slice(1), values);
+    case "find":
+      return cmdFind(positionals.slice(1), values);
     case "list":
       return cmdList(positionals.slice(1), values);
     case "show":
@@ -470,6 +477,26 @@ function cmdCheck(rest: string[], v: Values): CliResult {
   } catch (error) {
     return err(`issuemd check: ${(error as Error).message}\n`, 2);
   }
+}
+
+function cmdFind(rest: string[], v: Values): CliResult {
+  const [file, pattern] = rest;
+  if (!file || !pattern || /[\r\n]/.test(pattern) || rest.length !== 2) {
+    return err(`usage: ${COMMANDS.find.usage}\nProvide a non-empty single-line literal pattern. For a leading dash, put -- before the pattern.\n`, 2);
+  }
+  const loaded = loadFile(file);
+  if ("code" in loaded) return loaded;
+  const ledger = parseLedger(loaded.src);
+  const unusable = unusableLedger(ledger);
+  if (unusable) return unusable;
+  const { errors, warnings } = checkParsedLedger(ledger, file);
+  const matches = findLedgerText(ledger, pattern);
+  const stdout = v.json
+    ? JSON.stringify({ file, snapshot: snapshotOf(loaded.src), diagnostics: { errors, warnings }, matches }, null, 2) + "\n"
+    : matches.length
+      ? matches.map(({ id, table, line, where, text }) => `L${line}\t#${id}\t${table}\t${where}\t${text}`).join("\n") + "\n"
+      : "(no matches)\n";
+  return { code: 0, stdout, stderr: structureNote(errors) };
 }
 
 function cmdList(rest: string[], v: Values): CliResult {
@@ -1440,11 +1467,13 @@ function cmdNew(rest: string[], v: Values): CliResult {
   // Ids cited by W225 tables are reserved but not issues: skip them one by
   // one instead of jumping past the largest (an error-code table citing 500
   // must not move the next issue to 501).
+  const proseReservations = new Map(proseReferences(ledger).reverse().map((reference) => [reference.id, reference]));
   let next = max + 1;
-  for (let cited = unreadableHolding(ledger, String(next), ledger.cited); cited;
-    cited = unreadableHolding(ledger, String(next), ledger.cited)) {
+  if (v.id == null) while (Number.isSafeInteger(next)) {
+    const cited = unreadableHolding(ledger, String(next), ledger.cited);
+    if (!cited && !proseReservations.has(String(next))) break;
     // Step over the whole cited span at once (`1–900000000` must not loop).
-    const span = (cited.ids ?? []).find((s) => s.suffix === "" && s.start <= next && next <= s.end);
+    const span = cited?.ids?.find((s) => s.suffix === "" && s.start <= next && next <= s.end);
     next = span ? span.end + 1 : next + 1;
   }
   let idText = String(next);
@@ -1470,6 +1499,8 @@ function cmdNew(rest: string[], v: Values): CliResult {
     if (findRow(ledger, idText)) return err(`issuemd new: id ${idText} already exists\n`, 2);
     const bad = unreadableHolding(ledger, idText);
     if (bad) return err(`issuemd new: id ${idText} already exists in an unreadable row (L${bad.line}: ${bad.reason})\n`, 2);
+    const reference = proseReservations.get(idText);
+    if (reference) return err(`issuemd new: id ${idText} is reserved by a prose reference at L${reference.line}; pick another id\n`, 2);
     const cited = unreadableHolding(ledger, idText, ledger.cited);
     if (cited) {
       return err(
@@ -1514,6 +1545,10 @@ function cmdNew(rest: string[], v: Values): CliResult {
   const committed = commit(file, loaded, errors, lines, !!v["dry-run"], {
     receipt: `#${idText} new`,
     validateCandidate(candidate) {
+      const reference = proseReferences(candidate).find(({ id }) => id === idText);
+      if (reference) {
+        return err(`issuemd new: id ${idText} is reserved by a prose reference in the proposed ledger at L${reference.line}; pick another --id or edit the incoming text\n`, 2);
+      }
       const cited = unreadableHolding(candidate, idText, candidate.cited);
       if (!cited) return;
       return err(
@@ -2527,7 +2562,6 @@ function syncFixHashes(
 ): CliResult {
   const lines = [...loaded.lines];
   const hashWarnings = warnings.filter(({ code }) => code === "W202");
-  if (hashWarnings.length === 0) return commit(file, loaded, errors, lines, !!v["dry-run"]);
   const fenced = fencedLines(lines, true);
   const visibility = bodyVisibility(lines, fenced);
   const rawHtml = htmlBlockLines(lines, fenced);
@@ -2606,13 +2640,26 @@ function syncFixHashes(
     }
     lines[lineNo - 1] = text;
   }
-  const result = commit(file, loaded, errors, lines, !!v["dry-run"], edits.length ? { receipt: "sync --fix-hashes" } : undefined);
-  if (result.code !== 0) return result;
+  let remaining = 0;
+  const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
+    ...(edits.length ? { receipt: "sync --fix-hashes" } : {}),
+    observeCheck(report) {
+      remaining = report.warnings.filter(({ code }) => code === "W202").length;
+    },
+    validateCandidate() {
+      if (v["require-complete"] && remaining > 0) {
+        return err(`issuemd sync --fix-hashes: --require-complete found ${remaining} remaining W202 warning(s); nothing written\n`, 3);
+      }
+      return undefined;
+    },
+  });
+  const wrapVerb = result.code === 0 ? "wrapped" : "would wrap";
   const notes = [
-    ...edits.map(({ line, column, id, hash }) => `wrapped W202${id ? ` #${id}` : ""} at L${line}:${column}: ${hash}`),
+    ...edits.map(({ line, column, id, hash }) => `${wrapVerb} W202${id ? ` #${id}` : ""} at L${line}:${column}: ${hash}`),
     ...skipped.map(({ line, column, reason }) => `skipped W202 at L${line}${column == null ? "" : `:${column}`}: ${reason}`),
   ];
-  return notes.length ? { ...result, stderr: `${result.stderr}${notes.join("\n")}\n` } : result;
+  const summary = `W202: wrapped ${edits.length}, skipped ${skipped.length}, remaining ${remaining}\n`;
+  return { ...result, stderr: `${result.stderr}${summary}${notes.length ? `${notes.join("\n")}\n` : ""}` };
 }
 
 const errorIdentity = (diagnostics: Diagnostic[]) => diagnostics
@@ -2672,6 +2719,9 @@ function cmdSync(rest: string[], v: Values): CliResult {
   const file = rest[0];
   if (file == null || rest.length !== 1) {
     return err(`usage: ${COMMANDS.sync.usage}\n`, 2);
+  }
+  if (v["require-complete"] && !v["fix-hashes"]) {
+    return err("issuemd sync: --require-complete requires --fix-hashes\n", 2);
   }
   const modes = [!!v.guide, !!v["fix-tables"], !!v.titles, !!v["criteria-labels"], !!v["fix-hashes"]].filter(Boolean).length;
   if (modes === 0) return err("issuemd sync: choose --guide, --fix-tables, --titles, --criteria-labels or --fix-hashes\n", 2);
@@ -2797,6 +2847,7 @@ function syncTitles(
   // Rows sync cannot touch (several ids share one summary) are reported, so
   // "nothing drifted" and "drifted but skipped" no longer look identical.
   const skipped: string[] = [];
+  const unmoved: string[] = [];
   for (const row of ledger.rows.open) {
     if (row.ids.length !== 1 || row.ids[0]!.start !== row.ids[0]!.end) {
       const drifted = row.ids
@@ -2810,23 +2861,32 @@ function syncTitles(
     if (!block) continue;
     // `\|` in a heading renders as `|`: not drift (E106 compares the same way).
     const title = unescapeCell(block.title);
-    if (foldWhitespace(title) === foldWhitespace(row.summary)) continue;
+    if (foldWhitespace(title) === foldWhitespace(row.summary)) {
+      const progress = v["move-progress"] ? matchProgressCue(row.summary) : undefined;
+      if (progress) unmoved.push(
+        `issuemd sync --titles --move-progress: #${id} still has W260 progress text ` +
+        `${JSON.stringify(progress.cue)} at summary column ${progress.column}. ` +
+        "Review the issue, use 'issuemd rename FILE ID <title>', then preserve the progress note with 'issuemd body FILE ID --append --body-file -'.\n",
+      );
+      continue;
+    }
     changes.push({ id, oldSummary: row.summary, title, rowLine: row.line, bodyLine: block.line });
   }
   const skippedNote = skipped.length === 0
     ? ""
     : `issuemd sync --titles: skipped ${skipped.length} multi-id row(s) whose summary differs from a body title ` +
       `(split the row first, then re-run): ${skipped.map((ids) => `#${ids}`).join("; ")}\n`;
+  const notes = skippedNote + unmoved.join("");
   if (changes.length === 0) {
     // Same contract as every other dry-run: say "(no changes)", give the snapshot.
     return v["dry-run"]
-      ? { code: 0, stdout: "(no changes)\n", stderr: snapshotNote(loaded) + skippedNote }
-      : { code: 0, stdout: "(no changes)\n", stderr: skippedNote };
+      ? { code: 0, stdout: "(no changes)\n", stderr: snapshotNote(loaded) + notes }
+      : { code: 0, stdout: "(no changes)\n", stderr: notes };
   }
 
   // Only --prefer body loses the table wording; --prefer table copies it into
   // the heading, so there only real progress words are refused (review 11).
-  const progress = changes.filter((change) => prefer === "body" || PROGRESS.test(change.oldSummary));
+  const progress = changes.filter((change) => prefer === "body" || matchProgressCue(change.oldSummary) != null);
   if (prefer === "body" && progress.length > 0 &&
       (v.prefer !== "body" || (!v["move-progress"] && !v["drop-progress"]))) {
     const listed = progress.map(({ id, oldSummary, title }) => `  #${id}  摘要: ${oldSummary}；正文标题: ${title}`).join("\n");
@@ -2875,13 +2935,13 @@ function syncTitles(
   }
 
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], { receipt: "sync --titles" });
-  if (result.code !== 0) return skippedNote ? { ...result, stderr: result.stderr + skippedNote } : result;
+  if (result.code !== 0) return notes ? { ...result, stderr: result.stderr + notes } : result;
   const changesNote = changes.map((change) => prefer === "body"
     ? `updated #${change.id} summary: ${JSON.stringify(change.oldSummary)} → ${JSON.stringify(change.title)}`
     : `updated #${change.id} body title: ${JSON.stringify(change.title)} → ${JSON.stringify(change.oldSummary)}`
   ).join("\n");
   const note = changesNote ? `${changesNote}\n` : "";
-  return { ...result, stderr: result.stderr + note + skippedNote };
+  return { ...result, stderr: result.stderr + note + notes };
 }
 
 /** Add a separator row after any pipe block that lacks one. */
@@ -2924,5 +2984,4 @@ const COLUMN_HEADERS: Record<number, string> = {
   5: "# | 状态 | P | 摘要 | 判据",
 };
 
-const PROGRESS = /已落地|仍缺|仍无|仍逐|仍走/;
 const foldWhitespace = (text: string) => text.trim().replace(/\s+/g, " ");

@@ -4,7 +4,10 @@ import { dirname, resolve } from "node:path";
 import { compareIds, idText, IdSet, parseId, type IdSpan } from "./issue-id.js";
 import { archiveInventory, hiddenArchiveReason, locateArchivePayload, archivePayloadRange, bodyBlocks, countSuffix, effectiveLimits, type EffectiveLimits, highWaterRecords, limitsRecords, maxIssueId, parseLedger, ISSUE_HEADING, type Diagnostic, type LedgerRow, type TableKind } from "./ledger.js";
 import { hashSpans } from "./hash-scan.js";
+import { matchProgressCue } from "./progress-matcher.js";
+import { missingProseReferences } from "./ledger-search.js";
 import { ARCHIVE_HEADING, bodyLabels, bodyVisibility, criteriaBoundaryHints, criteriaLabelHint, criteriaOccurrencesFromLabelBlocks, criteriaTextFromOccurrences, fencedLines, labelBlocksIn, unescapeCell } from "./ledger-edit.js";
+import { scanFences } from "./scan.js";
 
 import { STATUS_CLASSES } from "./statuses.js";
 export { STATUS_CLASSES };
@@ -100,6 +103,31 @@ function checkStatusBlock(ledger: Ledger) {
  * dimensions that actually exceed are named; a bare "exceeds limits" left
  * users unable to tell whether to shorten, split, or raise the limit (#118).
  */
+function ignoredFenceLines(
+  lines: string[],
+  masks: { fenced: boolean[]; comments: boolean[]; rawHtml: boolean[] },
+  startLine: number,
+  count: number,
+): boolean[] {
+  let hiddenFence: { char: string; length: number } | undefined;
+  return Array.from({ length: count }, (_, index) => {
+    const absoluteIndex = startLine + index - 1;
+    const line = lines[absoluteIndex] ?? "";
+    const delimiter = /^ {0,3}(`{3,}|~{3,})([\s\S]*)$/.exec(line);
+    if (hiddenFence && delimiter && delimiter[1]![0] === hiddenFence.char &&
+        delimiter[1]!.length >= hiddenFence.length && /^[ \t]*$/.test(delimiter[2]!)) {
+      hiddenFence = undefined;
+      return true;
+    }
+    const htmlHidden = masks.comments[absoluteIndex] || masks.rawHtml[absoluteIndex];
+    if (htmlHidden && masks.fenced[absoluteIndex] && delimiter &&
+        !(delimiter[1]!.startsWith("`") && delimiter[2]!.includes("`"))) {
+      hiddenFence = { char: delimiter[1]![0]!, length: delimiter[1]!.length };
+    }
+    return !!htmlHidden;
+  });
+}
+
 function checkBodySize(
   lines: string[],
   line: number,
@@ -125,6 +153,7 @@ function checkBodySize(
 function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind, IdSet>, limits: EffectiveLimits) {
   const { lines, visible, errors, warnings } = ledger;
   const { body, bodies } = checkHeadings(ledger);
+  const markdownMasks = archiveInventory(ledger).masks;
   const byId = new Map<string, LedgerRow>();
   const ranges: RowId[] = [];
   for (const entry of openEntries) {
@@ -152,6 +181,12 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
       errors.push({ code: "E106", line, id, message: "Body title and index summary differ", expected: row.summary, actual: title });
     }
     const bodyLines = lines.slice(line - 1, end);
+    const ignored = ignoredFenceLines(lines, markdownMasks, line, bodyLines.length);
+    const unclosedFence = scanFences(bodyLines, true, ignored).unclosed;
+    if (unclosedFence) warnings.push({
+      code: "W270", line: line + unclosedFence.line - 1, id,
+      message: "Unclosed fenced code block; close the fence before modifying this issue section",
+    });
     const fenced = fencedLines(bodyLines, true);
     const labelLines = new Map<string, number[]>();
     for (const { label: name, line: current } of bodyLabels(bodyLines, 2, bodyLines.length, fenced)) {
@@ -237,7 +272,6 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
 }
 
 const foldWhitespace = (text: string) => text.trim().replace(/\s+/g, " ");
-const PROGRESS = /已落地|仍缺|仍无|仍逐|仍走/;
 
 function checkRows(ledger: Ledger, ids: Record<TableKind, IdSet>) {
   const { rows, errors, warnings } = ledger;
@@ -251,8 +285,15 @@ function checkRows(ledger: Ledger, ids: Record<TableKind, IdSet>) {
       }
       if (!category) warnings.push({ ...info, code: "W220", message: `Undeclared status: ${row.status}` });
       else if (category !== kind) errors.push({ ...info, code: "E112", message: `Status ${row.status} belongs in the ${category} table` });
-      if (kind === "open" && PROGRESS.test(row.summary)) {
-        warnings.push({ ...info, code: "W260", message: "Move progress text from the summary into the body" });
+      const progress = kind === "open" ? matchProgressCue(row.summary) : undefined;
+      if (progress) {
+        warnings.push({
+          ...info,
+          code: "W260",
+          cue: progress.cue,
+          column: progress.column,
+          message: `Move progress text from the summary into the body (matched ${JSON.stringify(progress.cue)} at column ${progress.column})`,
+        });
       }
       if (kind === "closed" && row.status === "并入") {
         const target = parseId(/#(\d+[a-z]?)\b/.exec(row.criteria)?.[1] ?? "");
@@ -297,6 +338,22 @@ function checkAppendix(ledger: Ledger, limits: EffectiveLimits) {
       warnings.push({ code: "W253", line, id, message: "Another copy of this issue's body already exists (body, archive or escaped copy in 附录)" });
     }
   };
+  for (const appendix of appendices) {
+    const appendixLines = lines.slice(appendix.line_start, appendix.line_end);
+    const ignored = ignoredFenceLines(lines, masks, appendix.line_start + 1, appendixLines.length);
+    for (const { section } of archives.filter(({ appendix: owner }) => owner.line_start === appendix.line_start)) {
+      const located = locateArchivePayload(ledger, section, masks);
+      if (!located.range || located.range.version === "legacy") continue;
+      for (let line = section.line_start; line <= located.range.framingEnd; line++) {
+        ignored[line - appendix.line_start - 1] = true;
+      }
+    }
+    const unclosedFence = scanFences(appendixLines, true, ignored).unclosed;
+    if (unclosedFence) warnings.push({
+      code: "W270", line: appendix.line_start + unclosedFence.line,
+      message: "Unclosed fenced code block; close the fence before modifying this appendix section",
+    });
+  }
   for (const appendix of appendices) {
     for (let line = appendix.line_start + 1; line <= appendix.line_end; line++) {
       if (!isVisible(line)) continue;
@@ -537,6 +594,11 @@ export function checkParsedLedger(parsed: Ledger, file: string, options: Options
     checkDuplicateSummaries(ledger);
     checkAppendix(ledger, limits);
     checkGuide(ledger);
+    for (const { id, line, start } of missingProseReferences(parsed)) {
+      warnings.push({ code: "W271", id, line, column: Array.from(parsed.lines[line - 1]!.slice(0, start)).length + 1,
+        message: `Prose references untracked #${id}. This ID is reserved against reuse`,
+      });
+    }
     const highWater = highWaterRecords(ledger);
     if (highWater.length > 1 || highWater.some((record) => record.value == null)) {
       warnings.push({

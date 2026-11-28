@@ -23,6 +23,7 @@ export type Diagnostic = {
   code: string;
   line: number;
   column?: number;
+  cue?: string;
   message: string;
   id?: string;
   expected?: string;
