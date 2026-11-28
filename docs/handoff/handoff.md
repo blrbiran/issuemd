@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-28（第二十七轮，诊断噪声、判据边界与归档清理）。写给下一位接手者。
+更新于 2026-11-28（第二十八轮，strict 分层、引用判号、判据终点与语义编辑动词）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -15,11 +15,12 @@
 
 ## 一句话现状
 
-`issuemd` P0–P5 已完成。包版本为 `0.1.0`。外部 dogfooding 台账由测试者维护，本轮核对至 #150（Orca 测试台账当前位置不明）。
+`issuemd` P0–P5 已完成。包版本为 `0.1.0`。外部 dogfooding 台账由测试者维护，本轮核对至 #152（Orca 测试台账当前位置不明）。
 
-- `criteria FILE ID --criteria TEXT` 安全替换开放项的验收判据。开放项的 `close --criteria` 现在需要显式 `--status S`。详见「第二十六轮」。
-- W268 不再把复核/边界小节标题当成判据歧义；只遮归档信封会 fail closed（W269）；显式跨台账引用不占号；`prune` 可删任意位置的 verified v2/v3 归档。详见「第二十七轮」。
-
+- `--strict` 只对「数据保全 / 结构」类 warning 失败：W201、W202、W250、W264 是 advisory。W261/W265/W268/W269/W270/W271 等仍失败。详见「第二十八轮」。
+- 裸写的跨台账引用只保护 `high-water + 1` 以内；`本台账 #N` / `见本台账 #N` 永远按本地处理。dogfood 台账 W271 22 → 1。
+- 新增 `criteriaItems`（JSON 读视图）、`narrow`、`body --append --before`、`counts --markdown`、`--version` 构建路径、`sync --criteria-labels --force`。
+- W264 识别纯指针（`判据（不变）` + 无变化断言）；判据块在「列表后空行 + 普通叙述」处结束，除非同一列表续接。
 - 判据与归档保全覆盖 #103、#124、#131、#133、#138、#141、#142、#145。使用 `find FILE PATTERN --json` 搜索历史，W270 定位未闭合围栏，W271 显示尚未登记的引用号。
 - `sync --fix-hashes` 提供汇总和 `--require-complete`。W260 与标题同步共用进展词匹配规则。详见「第二十五轮」。
 
@@ -60,6 +61,27 @@
    - **接受不改的 4 项**见「第十四轮」小节（`--expand` 行序、snapshot 原始字节、`--with-body` 省键、close 选项互斥）。若想让 `list --expand` 按编号排序，或让 snapshot 跨编码相等，说一声即可——都只影响输出顺序/口径，改动很小。
 
 9. **第十一轮报审（备查）**：Q1 W225 编号占用（已执行，第十二轮维持）；Q2 更多「台账表小节」词（未做，推荐暂不做：改成 E124 会把 `## 已完成` 的行当开放项）；Q3 年份标题（第十二轮已做）；Q4 `list --json` 暴露被占用编号（第十二轮已做，`citedRows`）；Q5 台账复测留给测试者。
+
+## 第二十八轮（2026-11-28）
+
+本轮按用户对四个口径的拍板执行，并处理 dogfooding #103/#104/#106/#107/#114/#115/#120/#123/#138/#140/#150/#151/#152。设计经独立 subagent 复审（1 blocker + 11 should-fix 全部纳入）后实施；实现完成后又派了一次独立复审。Spec / plan：`docs/superpowers/specs/2026-11-28-strictness-references-and-verbs-design.md`、`docs/superpowers/plans/2026-11-28-strictness-references-and-verbs.md`。
+
+- **#152 / #150**：`ProseReference` 增 `local`；`selfLedgerName()` 逐词剥引用前缀（`见本`、`登记在本`、`根据本`、`the current`），`日本台账` 仍判 external。新增 `referenceCeiling()`（`max(maxIssueId, highWater) + 1`，过滤畸形 high-water）与 `reservedProseReferences()`；裸写只在 ≤ ceiling 时占号，显式本地引用不受上限限制。`cmdNew` 的两个占号入口（分配与写入前复核）都走同一函数。dogfood W271 22 → 1（剩 `#149`，在 high-water 内且确属 cafe 引用，需测试者加前缀）。
+- **#106 / #138**：`STRICT_EXEMPT_WARNINGS = {W201, W202, W250, W264}`。W264 指针块要求「标签为 `判据（不变）` 类 + 无列表项 + 文本整段为无变化断言」；`同上，但还需离线通过。` 仍报。W264 文案点明改名会产生重复标签并给出 `--keep-body` / `--criteria` 出路。
+- **#103**：`labelBlock()` 的空行 lookahead 改为「同一列表续接」：有序编号递增或同为无序才续接；类型不同或 `1.` 重启即新节。围栏定界行不产生 `ambiguousProse`（保持 round23 的 W268 计数）。真实台账逐条比较 `criteria`：dogfood 0 diffs、cafe 0 diffs；`criteriaBlocks` 保留原文。
+- **#120/#123**：`criteriaItems` 只读字段（`show --json` 与 `list --json --with-body`），按原始列表项切分，分号留在条目内；关闭表无法还原时 `[criteria]` + `criteriaJoined: true`，有唯一归档且文本一致时用归档恢复。cafe 83 个开放项、143 个已关闭项均带字段（100 条 joined）。
+- **#140**：新增 `narrow FILE ID --criteria TEXT [--status S] [--note TEXT | --note-file PATH]`（判据 + 开放状态 + 带日期复核记录，一次原子写；每步重新解析，拒绝闭合状态/竞争判据/含标签的 note）；新增 `body --append --before LABEL`（唯一可见标签前插入，比较 criteria 文本与歧义提示的多重集合而非绝对行号）。
+- **#104**：`sync --criteria-labels` 默认只改带列表项的候选，否则 `skipped … pass --force`；`--force` 放行。「指针已覆盖」的块不进入候选；`new`/`body` 的 W261 提示不受列表项门禁影响。
+- **#151**：`close` 的新旧判据回显按 UTF-8 字节截断到 ~120 B 并附 `(N chars)`；`(no changes)` 不打印 override 行。
+- **#107**：`--version` 输出 `0.1.0 (build: <dir>)`；`counts --markdown` 输出一条可直接粘进头注的 bullet。
+- **#114**：close 缺判据文案写明 `--no-criteria` 文件变小、`--keep-body` 文件变大且之后可 prune。
+- **文档**：`docs/spec.md` 的 W201/W264/W268/W271 行、读视图 `criteriaItems`、`skills/issuemd/SKILL.md` 的 strict 说明与命令示例、`README.md` 的命令表均已同步。
+- **验证**：`npm run typecheck`、`npm test` 1059 pass / 0 fail、`npm run build` 成功。只读复测：dogfood 0 errors / 2 warnings（W201×1、W271×1），`--strict` exit 3（仅剩 W271）；cafe 0/10（W250×8、W264×2），`--strict` exit 0；两份 `criteria` 与 `main` 构建逐条相同，SHA-256 未变（dogfood `75bb00da…`、cafe `17cbcb54…`）。Orca 台账原路径仍不存在，未复测。
+- **等待后续裁定 / 测试者复测**：
+  - 裸写 `#149`（cafe 引用）仍在 high-water 内，按设计继续报 W271；测试者若要清零可加 `cafe 台账` 前缀。
+  - #103 的「列表续接」规则会缩短部分 `criteria`（只去掉被误吞的叙述）；若测试者认为某条真实判据被截断，需带样本反馈。
+  - 仍未做：#115 的归档占比 warning、#138 的 `criteria --drop-block/--merge` 机械出口、#108/#144 的归档归一化视图（契约已写死，需测试者改判据）、#140 的通用 review 动词、#107 的 git sha 粒度。
+- **集成**：本轮改动逐阶段提交在 `feat/round28-strictness-refs-verbs`，全部完成后 fast-forward 合入 `main`、build，并按用户本轮临时授权 push 一次。已合并分支删除。下一轮从干净 `main` 开始；用 `git status --short --branch` 与 `git rev-list --left-right --count origin/main...main` 现查。
 
 ## 第二十七轮（2026-11-28）
 

@@ -2528,7 +2528,9 @@ function cmdNarrow(rest: string[], v: Values): CliResult {
     validateCandidate(candidate) {
       const view = viewIssue(candidate, idText);
       if (!view) return err(`issuemd narrow: the edited ledger no longer has #${idText}\n`, 3);
-      if (view.criteria !== value) {
+      // The read view folds runs of spaces inside a line; compare the same way.
+      const sameLine = (text: string | undefined) => (text ?? "").replace(/\s+/g, " ").trim();
+      if (sameLine(view.criteria) !== sameLine(value)) {
         return err(`issuemd narrow: the edit did not land as one criteria line; nothing written\n`, 3);
       }
       const baseline = checkParsedLedger(ledger, file);
