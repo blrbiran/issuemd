@@ -1,6 +1,6 @@
 # issuemd 交接文档
 
-更新于 2026-11-28（第二十五轮，判据、归档保全、搜索与诊断）。写给下一位接手者。
+更新于 2026-11-28（第二十六轮，开放项判据编辑与诊断复核）。写给下一位接手者。
 
 > **版本定位方式**：本文档自身的提交就是最新一次改动，所以**不要**在此写死 commit hash。
 > 需要基线时现查：
@@ -15,7 +15,9 @@
 
 ## 一句话现状
 
-`issuemd` P0–P5 已完成。包版本为 `0.1.0`。外部 dogfooding 台账由测试者维护，本轮核对至 #146。
+`issuemd` P0–P5 已完成。包版本为 `0.1.0`。外部 dogfooding 台账由测试者维护，本轮核对至 #147。
+
+- `criteria FILE ID --criteria TEXT` 安全替换开放项的验收判据。开放项的 `close --criteria` 现在需要显式 `--status S`。详见「第二十六轮」。
 
 - 判据与归档保全覆盖 #103、#124、#131、#133、#138、#141、#142、#145。使用 `find FILE PATTERN --json` 搜索历史，W270 定位未闭合围栏，W271 显示尚未登记的引用号。
 - `sync --fix-hashes` 提供汇总和 `--require-complete`。W260 与标题同步共用进展词匹配规则。详见「第二十五轮」。
@@ -32,7 +34,7 @@
 
 ## 等待用户决策 / 动作
 
-1. **push 的常规约定仍由用户手动执行**。2026-11-28 本轮用户临时授权收尾 push `origin main`。后续轮次按常规约定，远端差异用 `git rev-list --left-right --count origin/main...main` 现查。
+1. **push 默认由用户手动执行**。是否有待推送提交，以 `git rev-list --left-right --count origin/main...main` 为准。自动审批要求直接确认本轮推送授权。
 2. **发版（用户决定时机，2026-11-25 明确「暂不发版」）**：`npm version minor` → `npm publish`（`prepack` 会自动 build `dist/`）→ `git push --follow-tags`。发布前冒烟：`npm pack --pack-destination <scratch>` → 临时目录 `npm install <tgz>` → `npx issuemd new/check` + `import('@blrbiran/issuemd')`；包内不能出现 `.cafe`、`scripts/`、`.dist-test`。
 3. dogfooding 台账状态由测试者更新，**我们不写**（用户 2026-11-24 裁定）。#53 建议把已达标条目与「owner 裁定不做」的判据在台账里标注出来，这同样留给测试者。
 4. `.cafe` 已移出版本库并加入 `.gitignore`（本地文件保留）。其他 clone 拉到那次提交时，git 会删掉它们工作区里的 `.cafe`，需从上一提交恢复（`git show <移出前的提交>:.cafe > .cafe`）。
@@ -57,6 +59,16 @@
    - **接受不改的 4 项**见「第十四轮」小节（`--expand` 行序、snapshot 原始字节、`--with-body` 省键、close 选项互斥）。若想让 `list --expand` 按编号排序，或让 snapshot 跨编码相等，说一声即可——都只影响输出顺序/口径，改动很小。
 
 9. **第十一轮报审（备查）**：Q1 W225 编号占用（已执行，第十二轮维持）；Q2 更多「台账表小节」词（未做，推荐暂不做：改成 E124 会把 `## 已完成` 的行当开放项）；Q3 年份标题（第十二轮已做）；Q4 `list --json` 暴露被占用编号（第十二轮已做，`citedRows`）；Q5 台账复测留给测试者。
+
+## 第二十六轮（2026-11-28）
+
+- **#147** 新增 `issuemd criteria FILE ID --criteria TEXT`。输入一行 Markdown，编辑唯一开放项正文的 `**验收判据**`，支持 `--dry-run` 与 `--if-unchanged`。缺块时可插入。多重判据、补充判据和边界不明的证据要求人工复核。开放项执行 `close --criteria` 需要显式 `--status S`，显式覆盖不同判据时在预演和写入回执列出新旧值。已关闭项仍用 `close --criteria` 修正单元格。见 `docs/superpowers/specs/2026-11-28-open-criteria-edit-design.md` 及同名实现计划。
+- **W268** 把空行后、顶格的 `**非目标**` 视为独立小节。缩进在列表项内的同名标签和其他有歧义的边界仍受关闭保护。三份相同快照的 W268 合计从 54 降到 35。
+- **W271/W264**：28 个 dogfood 命中为跨台账引用，Cafe 还有一个历史探针，Orca 有两个本地历史号。W271 文案已明确警告的范围是本台账，保留精确编号占用及 strict 行为。W264 复核确认有新增、替换及要求实际不同的复述，继续保留原文相同的豁免和自动关闭保护。
+- **#108/#144**：开放项的 `show --json` 和 `list --json --with-body` 已提供可回灌的 `body.content`。误传带标题的 `body.text` 时，错误现在给出这两个提取途径，回灌验证文件字节一致。JSON 字符串和 CLI 输出在末尾换行、EOL、归档边缘空白有契约差异。后续建议新增统一规范化读视图，保留原始归档 payload 供可逆重开。
+- **验证**：typecheck 和 946 项测试通过。新构建只读复测 dogfood 0 errors / 38 warnings（W264 ×2、W268 ×8、W271 ×28），Cafe 0/31（W250 ×8、W264 ×2、W268 ×20、W271 ×1），Orca 0/58（W201 ×11、W250 ×16、W264 ×22、W268 ×7、W271 ×2）。三份 `--strict` 均 exit 3，SHA-256 前后相同。
+- **后续设计**：#120/#123 的新版闭表编码须区分历史扁平文本和有条目边界的新数据，保留读取兼容，并与 #111 的转义限制一起评估。#140 已有保护性复核追加和单块判据编辑，仍缺多行 Markdown 判据、原子状态联动与头注契约。`counts` 是状态计数来源。跨台账作用域须有明确的引用目标，再考虑改变 W271 和分配器。继续由测试者维护外部台账状态。
+- **集成定位**：检查 `git status --short --branch` 和 `git rev-list --left-right --count origin/main...main`。推送等用户直接确认，包版本保持 `0.1.0`。
 
 ## 第二十五轮（2026-11-28）
 

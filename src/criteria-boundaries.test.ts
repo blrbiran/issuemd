@@ -35,7 +35,14 @@ test.each([
   expect((await run(["close", path, "2", "--criteria-from-body", "--dry-run"])).code).toBe(0);
 });
 
-test.each(["**注意**\n\n3. 仍属判据。", "复核状态。\n\n1. 仍属判据？", "复核状态。\n\n```md\nSample\n```"])(
+test("the exact 非目标 section ends the criteria list without W268", async () => {
+  const path = await ledger(`${criteria}\n\n**非目标**\n\n- Do not add a new command.`);
+  expect(await warning(path, "W268")).toBeUndefined();
+  expect((await run(["close", path, "2", "--criteria-from-body"])).code).toBe(0);
+  expect(JSON.parse((await run(["show", path, "2", "--json"])).stdout).criteria).toBe("1. 判据一。；2. 判据二。");
+});
+
+test.each(["   **非目标**\n\n3. 仍属判据。", "**注意**\n\n3. 仍属判据。", "复核状态。\n\n1. 仍属判据？", "复核状态。\n\n```md\nSample\n```"])(
   "ambiguous list boundary refuses destructive automatic close (%j)", async (tail) => {
     const path = await ledger(`${criteria}\n\n${tail}\n`);
     const before = readFileSync(path, "utf8");

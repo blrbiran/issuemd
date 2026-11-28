@@ -288,7 +288,7 @@ test("new preserves its high-water id after a closed row is removed", async () =
   expect(first.code).toBe(0);
   const retired = first.stdout.trim();
   expect(readFileSync(ledger, "utf8")).toContain(`<!-- issuemd:high-water: ${retired} -->`);
-  expect((await run(["close", ledger, retired, "--criteria", "recorded"])).code).toBe(0);
+  expect((await run(["close", ledger, retired, "--status", "已修", "--criteria", "recorded"])).code).toBe(0);
 
   const withoutRow = readFileSync(ledger, "utf8")
     .split("\n")
@@ -423,6 +423,15 @@ test("JSON body.content is the machine-readable body-only form", async () => {
   expect(bodyOnly.stdout).toBe(`${expected}\n`);
   const listed = JSON.parse((await run(["list", ledger, "--json", "--with-body"])).stdout);
   expect(listed.issues.find(({ id }: { id: string }) => id === "2")?.body.content).toBe(expected);
+
+  const before = readFileSync(ledger, "utf8");
+  const mistaken = fixture("body-content-mistaken.md", shown.body.text);
+  const refused = await run(["body", ledger, "2", "--body-file", mistaken]);
+  expect(refused.code).toBe(2);
+  expect(refused.stderr).toContain("body.content");
+  const roundTrip = fixture("body-content-roundtrip.md", shown.body.content);
+  expect((await run(["body", ledger, "2", "--body-file", roundTrip])).stdout).toContain("(no changes)");
+  expect(readFileSync(ledger, "utf8")).toBe(before);
 });
 
 test("criteria ends after its final list before ordinary status prose", async () => {

@@ -99,7 +99,7 @@ test("close refuses to make a pre-existing E106 disappear", async () => {
   const source = canonical.replace("### Issue 2: 侧栏宽度不可调", "### Issue 2: 侧栏宽度不可调（旧）");
   const file = ledgerFile("close-e106.md", source);
   const before = readFileSync(file, "utf8");
-  const result = await run(["close", file, "2", "--criteria", "closed"]);
+  const result = await run(["close", file, "2", "--status", "已修", "--criteria", "closed"]);
   expect(result.code).toBe(3);
   expect(result.stderr).toContain("E106");
   expect(result.stderr).toContain("#2");
@@ -121,7 +121,7 @@ test("close refuses to erase a baseline heading-count error", async () => {
   const file = ledgerFile("close-e121.md", source);
   expect(JSON.parse((await run(["check", file, "--json"])).stdout).errors.some(({ code }: { code: string }) => code === "E121")).toBe(true);
   const before = readFileSync(file, "utf8");
-  const result = await run(["close", file, "2", "--criteria", "closed"]);
+  const result = await run(["close", file, "2", "--status", "已修", "--criteria", "closed"]);
   expect(result.code).toBe(3);
   expect(result.stderr).toContain("E121");
   expect(readFileSync(file, "utf8")).toBe(before);
@@ -131,7 +131,7 @@ test("close may resolve the selected issue's own missing-body E102", async () =>
   const source = canonical.replace("### Issue 2: 侧栏宽度不可调\n\n", "");
   const file = ledgerFile("close-own-e102.md", source);
   expect(JSON.parse((await run(["check", file, "--json"])).stdout).errors.some(({ code, id }: { code: string; id?: string }) => code === "E102" && id === "2")).toBe(true);
-  const result = await run(["close", file, "2", "--criteria", "closed"]);
+  const result = await run(["close", file, "2", "--status", "已修", "--criteria", "closed"]);
   expect(result.code).toBe(0);
   expect((await run(["check", file])).code).toBe(0);
 });
@@ -236,7 +236,7 @@ test("reopen of a no-criteria row succeeds and points out the missing acceptance
 
 test("reopen keeps an archived body criterion current when the closed cell differs", async () => {
   const file = ledgerFile("reopen-archive-criteria.md", canonical);
-  expect((await run(["close", file, "2", "--keep-body", "--criteria", "closed-cell B"])).code).toBe(0);
+  expect((await run(["close", file, "2", "--status", "已修", "--keep-body", "--criteria", "closed-cell B"])).code).toBe(0);
   expect((await run(["reopen", file, "2"])).code).toBe(0);
   const issue = JSON.parse((await run(["show", file, "2", "--json"])).stdout);
   expect(issue.criteria).toBe("重启后保持上次宽度。");
@@ -405,7 +405,7 @@ test("reopen protects a commit hash adjacent to an unmatched backtick", async ()
 test("reopen does not confuse a closure-criterion substring in archive prose with the criterion itself", async () => {
   const source = canonical.replace("**现象**：侧栏固定 240px，无法拖拽。", "**现象**：run the test suite before closing.");
   const file = ledgerFile("reopen-criterion-substring.md", source);
-  expect((await run(["close", file, "2", "--keep-body", "--criteria", "test"])).code).toBe(0);
+  expect((await run(["close", file, "2", "--status", "已修", "--keep-body", "--criteria", "test"])).code).toBe(0);
   expect((await run(["reopen", file, "2"])).code).toBe(0);
   const issue = JSON.parse((await run(["show", file, "2", "--json"])).stdout);
   expect(issue.labels["关闭时判据"]).toBe("test");

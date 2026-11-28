@@ -330,9 +330,9 @@ Ledger
 | W262 | 报告未闭合 HTML 注释的起始行。围栏、管道表格行和同一行配对反引号中的字面分隔符不参与扫描。多行注释以 `-->` 开头的可见文本行收尾。H1/H2、受管理的 issue 或归档标题以及归档结束标记构成注释边界。正确闭合的注释隐藏其示例表，未闭合范围内的自由格式 issue 形表仍进入 `citedRows` 并保留编号。`--strict` 因 W262 失败。 |
 | W263 | `--verify-commits` 在非 Git worktree 中跳过：列出首个待验证 hash 的行号与说明。普通 `check` 可成功，`--strict` 失败；有效 Git worktree 中缺少 commit 仍报 W240。 |
 | W264 | 正文已有可提升的 `**验收判据**`，其后另有未计入的非空判据块。候选标签包括已有判据别名、以「判据」结尾的标签（可带括注）及 `判定标准`、`完成标准`、`验收标准`、`必须满足`，每块各报行号，`--strict` 失败。排除正式判据之前的描述性标签、`关闭时判据`、空块和仅注释块。`sync --criteria-labels` 仍用较窄的别名规则。默认 close 与 `--criteria-from-body` 拒绝移除正文。`--keep-body` 保留原文。审阅后可以用显式 `--criteria` 或 `--no-criteria` 选定判据列的值并关闭。 |
-| W268 | 判据列表后出现可能分隔判据条目的独立粗体标签，或同一个判据块内的无缩进段落后还有列表或 fence。保留该段的读取结果并报告歧义行，`--strict` 失败。把复核内容放在 `**复核记录**：` 下可明确边界。默认 close 与 `--criteria-from-body` 拒绝删正文，可用审阅后的 `--criteria`、`--no-criteria` 或 `--keep-body`。 |
+| W268 | 判据列表后出现可能分隔判据条目的独立粗体标签（`**非目标**` 视为独立小节），或同一个判据块内的无缩进段落后还有列表或 fence。保留该段的读取结果并报告歧义行，`--strict` 失败。把复核内容放在 `**复核记录**：` 下可明确边界。默认 close 与 `--criteria-from-body` 拒绝删正文，可用审阅后的 `--status S --criteria TEXT`、`--no-criteria` 或 `--keep-body`。 |
 | W270 | 正文或可见附录以未闭合代码围栏收尾，指出起始行。正文诊断带编号。修复围栏后再写入，`--strict` 失败。 |
-| W271 | 正文或附录中的可见 `#N` / `#Na` 引用了未登记编号。带编号和首次引用的位置，`--strict` 失败。`new` 顺序跳过该号，显式 `--id` 拒绝占用，也会复核将要写入的正文。持久化高水位继续独立追踪已分配号码。 |
+| W271 | 正文或附录中的可见 `#N` / `#Na` 引用了本台账未登记的编号。裸写的跨台账引用也会命中。带编号和首次引用的位置，`--strict` 失败。`new` 顺序跳过该号，显式 `--id` 拒绝占用，也会复核将要写入的正文。持久化高水位继续独立追踪已分配号码。 |
 | W265 | 前言里的 `issuemd:high-water` 标记重复/格式错误，或它高于当前表格最大编号（可能有历史行被删）；`new` 使用该高水位避免重新分配编号。 |
 | W266 | 存在多个 `## 附录`，`check` 每个标题各报一条，`--strict` 失败。归档写入、恢复和 `read FILE 附录` 都报 W266、列出所有候选行号并拒绝猜选。 |
 | W267 | 台账前言的 `issuemd:limits` 格式无效或重复。使用默认值，`--strict` 失败。 |
@@ -417,7 +417,7 @@ issuemd new FILE --id 77 --title "…"        # 显式给号（撞号报错）
 ### 7.2 `close`
 
 ```bash
-issuemd close FILE 57 --criteria-from-body   # 或 --criteria "…"
+issuemd close FILE 57 --criteria-from-body   # 或 --status 已修 --criteria "…"
 ```
 
 事务：从索引删行 → 从正文删块（`--keep-body` 时把该块移入 `## 附录` 并 warn W250；归档以 `&lt;!-- issuemd:kept-body:v3 -->`、`&lt;!-- issuemd:kept-body:lines:N -->` 保存 exact payload line count，N 条 payload 后有一个独立空 frame 和 `&lt;!-- issuemd:kept-body:end -->`；`reopen` 用同一 locator 恢复原始 N 条记录）→ 已关闭表按编号插入 → 把正文 `**验收判据**` 块提升为判据列（**判据去重的关键**：开放时在正文，关闭后在表）。
@@ -427,14 +427,14 @@ issuemd close FILE 57 --criteria-from-body   # 或 --criteria "…"
 | 参数 | 行为 |
 |---|---|
 | `--criteria TEXT` | 用给定文本；按标题约定解转义（`\|` 表示字面竖线），换行折叠为空格（单元格不能换行），二者都在第十四轮；空串或全空白 → exit 2（多半是变量没设，要空判据请用 `--no-criteria`） |
-| `--criteria-from-body` | 提升正文的 `**验收判据**` 块（`**验收判据：**` 写法等同；标签下 fence 里的内容属于判据；多段或列表以 `；` 连接）。块不存在或为空（fence 里出现的标签行是示例，不算）→ exit 2，不写。若自动提升会删除多块判据、非空的后续判据别名，或 W268 标记的句子形粗体边界，也 exit 2；先审阅并用 `--criteria TEXT` 明确完整结果，或用 `--keep-body` 保留原文。
+| `--criteria-from-body` | 提升正文的 `**验收判据**` 块（`**验收判据：**` 写法等同；标签下 fence 里的内容属于判据；多段或列表以 `；` 连接）。块不存在或为空（fence 里出现的标签行是示例，不算）→ exit 2，不写。若自动提升会删除多块判据、非空的后续判据别名，或 W268 标记的句子形粗体边界，也 exit 2；先审阅并用 `--status S --criteria TEXT` 明确完整结果，或用 `--keep-body` 保留原文。
 
 | `--no-criteria` | 明确以空判据关闭 |
 | 都不给 | 正文有一个无歧义的非空判据块 → 自动提升；若存在 W268 边界、多块或非空后续别名且 close 会删除正文 → exit 2 并要求显式审阅；没有判据时 `--keep-body` 允许空判据（正文整体保留，信息不丢），否则 exit 2，要求三选一 |
 
-`--status S` 选关闭状态（默认 `已修`）。对已关闭编号执行 `close FILE ID --criteria TEXT` 时，只更新关闭表判据格，不改状态、摘要或正文，并在 stderr 报告旧值与新值。**标签块**的边界：从 `**标签**` 行到下一个可识别的标签行或标题为止；标签行必须独立成行或在粗体标签后使用 `:` / `：` 分隔内容，粗体强调句（如 `**必须**先完成 A`）属于当前块。闭合的 HTML 注释和 fence 内的粗体行不会创建标签边界；注释原文仍保留在 raw body 输出中。空行与列表都属于它；列表续行按 marker 的内容列缩进判断（制表符按 4 列 tab stop 计算）。在验收判据已有列表项后，空行再接无缩进普通段落会结束判据块；若该段后还有列表项或 fence，读取时继续计入，并用 W268 提醒关闭前确认归属。独立粗体标签将可能属于同一列表的判据条目隔开时也报 W268。需要复核的内容建议另起 `**复核记录**：` 标签。`**标签**（括注）：正文` 同样可明确边界。提升进单元格时段落与列表项以 `；` 连接、无序列表符号去掉、fence 内代码保留。
+`--status S` 选关闭状态（默认 `已修`）。开放项使用 `close --criteria TEXT` 时必须显式指定 `--status S`，否则 exit 2。只改开放项验收判据用 `issuemd criteria FILE ID --criteria TEXT`。该命令接受一行非空 Markdown，替换唯一且边界清晰的 `**验收判据**` 块，或在没有判据标签时追加一块。建议先预演，再携带快照写入。对已关闭编号执行 `close FILE ID --criteria TEXT` 时，只更新关闭表判据格，不改状态、摘要或正文，并在 stderr 报告旧值与新值。**标签块**的边界：从 `**标签**` 行到下一个可识别的标签行或标题为止；标签行必须独立成行或在粗体标签后使用 `:` / `：` 分隔内容，粗体强调句（如 `**必须**先完成 A`）属于当前块。闭合的 HTML 注释和 fence 内的粗体行不会创建标签边界；注释原文仍保留在 raw body 输出中。空行与列表都属于它；列表续行按 marker 的内容列缩进判断（制表符按 4 列 tab stop 计算）。在验收判据已有列表项后，空行再接无缩进普通段落会结束判据块；若该段后还有列表项或 fence，读取时继续计入，并用 W268 提醒关闭前确认归属。独立粗体标签将可能属于同一列表的判据条目隔开时也报 W268。需要复核的内容建议另起 `**复核记录**：` 标签。`**标签**（括注）：正文` 同样可明确边界。提升进单元格时段落与列表项以 `；` 连接、无序列表符号去掉、fence 内代码保留。
 
-正文里有多个 `**验收判据**` 块时，`show --json.criteria` 为兼容仍按顺序以 `；` 展平所有非空块，`criteriaBlocks` 保留各块边界。`check` 用 W206 列出所有块的行号；普通 close 与 `--criteria-from-body` 在会删除正文时拒绝自动把多块展平进表格。读完全部块后，可用显式 `--criteria TEXT` 提交完整合并结果，或用 `--keep-body` 保留原文。即使一个判据块内含字面 `；`，旧闭表格也无法还原条目边界；结构化 JSON 与 keep-body 归档保留原始行。
+正文里有多个 `**验收判据**` 块时，`show --json.criteria` 为兼容仍按顺序以 `；` 展平所有非空块，`criteriaBlocks` 保留各块边界。`check` 用 W206 列出所有块的行号；普通 close 与 `--criteria-from-body` 在会删除正文时拒绝自动把多块展平进表格。读完全部块后，可用显式 `--status S --criteria TEXT` 提交完整合并结果，或用 `--keep-body` 保留原文。即使一个判据块内含字面 `；`，旧闭表格也无法还原条目边界；结构化 JSON 与 keep-body 归档保留原始行。
 
 `--keep-body` 的拒绝情形（exit 3，不写）：准备插入归档的目标 `## 附录` 小节末尾处于未闭合的 fence 里（归档会被吞进代码块，`check` 与 `reopen` 都看不到）；任一附录里已有该编号的归档（`reopen` 会恢复错的那份）；正文中的 v3 archive marker-shaped 文本由 payload line count 保留，不会被当作边界；若候选归档 end marker 被未闭合的 fence/raw-text HTML block 隐藏，close exit 3、不写。正文中的多行 HTML 注释由 v3 end marker 闭合，W262 仍报告其起始行。没有正文块时 `--keep-body` 无物可留，按「都不给」处理并在报错里说明。
 
@@ -561,7 +561,8 @@ lilmd 的 7 个缺陷实测见附录 A.1。它们的**根因是 `writeFileSync` 
   issuemd reopen  FILE ID [--status S] [--allow-duplicate-title]
   issuemd status  FILE ID NEW_STATUS
   issuemd rename  FILE ID "NEW TITLE" [--allow-duplicate-title]
-  issuemd body    FILE ID --body-file PATH|- [--append]
+  issuemd body    FILE ID (--body-file PATH|- [--append] | --move-evidence LABEL)
+  issuemd criteria FILE ID --criteria TEXT
   issuemd priority FILE ID P0|P1|P2|P3|""
   issuemd split   FILE ID
   issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table]

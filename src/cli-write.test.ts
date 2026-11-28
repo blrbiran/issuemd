@@ -184,7 +184,7 @@ describe("close", () => {
 
   test("--criteria writes the column verbatim", async () => {
     const path = ledger();
-    await run(["close", path, "4", "--criteria", "手工验收通过"]);
+    await run(["close", path, "4", "--status", "已修", "--criteria", "手工验收通过"]);
     expect(text(path)).toContain("| 4 | 已修 | P3 | 长列表滚动掉帧 | 手工验收通过 |");
     expect((await clean(path)).code).toBe(0);
   });

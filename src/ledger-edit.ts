@@ -655,7 +655,11 @@ export function criteriaBoundaryHints(
     const boundary = block.boundary;
     if (!boundary?.sawListItem) continue;
     const standalone = /^ {0,3}\*\*([^*]+)\*\*[ \t]*$/.exec(visibility.text[boundary.line - 1]!);
-    if (!standalone || isCriteriaLabel(labelName(standalone[1]!))) continue;
+    if (!standalone) continue;
+    const label = labelName(standalone[1]!);
+    const separateNonGoals = /^\*\*非目标\*\*[ \t]*$/.test(lines[boundary.line - 1]!) &&
+      lines[boundary.line - 2]?.trim() === "";
+    if (separateNonGoals || isCriteriaLabel(label)) continue;
     const stop = blocks.find(({ line }) => line > boundary.line)?.line ?? lines.length + 1;
     for (let next = boundary.line; next < stop - 1; next++) {
       if (visibility.hidden[next] || fenced[next]) continue;
@@ -668,6 +672,51 @@ export function criteriaBoundaryHints(
     }
   }
   return hints;
+}
+
+/** Replace only the demonstrably owned portion of one acceptance-criteria block. */
+export function editOpenCriteria(body: string[], value: string, offset: number): { body: string[] } | { error: string } {
+  const fenced = fencedLines(body, true);
+  const blocks = labelBlocksIn(body, 1, body.length, fenced);
+  const canonical = blocks.filter(({ label }) => label === "验收判据");
+  const competing = blocks.filter(({ label, text }) => label !== "验收判据" && isCriteriaLabel(label) && text !== "");
+  if (canonical.length > 1 || competing.length > 0) {
+    const locations = [...canonical, ...competing].map(({ line }) => `L${line + offset}`).join(", ");
+    return { error: `competing criteria at ${locations}; review the body before replacing criteria` };
+  }
+  const ambiguity = criteriaBoundaryHints(body, offset).at(0);
+  if (ambiguity) return { error: `ambiguous criteria at L${ambiguity.line}: ${ambiguity.detail}` };
+  const block = canonical[0];
+  let start = body.length;
+  while (start > 1 && body[start - 1]!.trim() === "") start--;
+  let count = 0;
+  let addition = ["", `**验收判据**：${value}`];
+  if (block) {
+    start = block.line - 1;
+    count = block.lines.length;
+    const unsafe = block.lines.findIndex((line, index) => {
+      if (/<!--|-->/.test(line) || fenced[start + index]) return true;
+      if (index === 0 || line.trim() === "") return false;
+      const listMarker = /^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+\S/.test(line);
+      const thematicBreak = /^(?:-(?:[ \t]*-){2,}|\*(?:[ \t]*\*){2,})$/.test(line.trim());
+      return !listMarker || thematicBreak;
+    });
+    if (unsafe >= 0) return { error: `unclear criteria ownership at L${block.line + offset + unsafe}; review the body before replacing criteria` };
+    const prefix = /^ {0,3}\*\*(?:[^*]+[:：]\*\*[ \t]*|[^*]+\*\*(?:[ \t]*[:：][ \t]*)?)/.exec(block.lines[0]!)?.[0];
+    if (!prefix) return { error: `cannot preserve the criteria label at L${block.line + offset}` };
+    const delimiter = /[:：](?:\*\*)?[ \t]*$/.test(prefix) ? "" : "：";
+    addition = [`${prefix}${delimiter}${value}`];
+  }
+  const candidate = [...body.slice(0, start), ...addition, ...body.slice(start + count)];
+  const after = labelBlocksIn(candidate);
+  const criteriaAt = start + addition.length;
+  const edited = after.find(({ line }) => line === criteriaAt);
+  const otherLabels = (entries: LabelBlock[]) => entries.filter(({ label }) => label !== "验收判据").map(({ label, inline }) => [label, inline]);
+  if (edited?.label !== "验收判据" || edited.inline !== value.trimStart() || edited.lines.length !== 1 ||
+      JSON.stringify(otherLabels(after)) !== JSON.stringify(otherLabels(blocks))) {
+    return { error: `edit would obscure content or change a label boundary at L${criteriaAt + offset}` };
+  }
+  return { body: candidate };
 }
 
 // ---- controlled blocks -------------------------------------------------

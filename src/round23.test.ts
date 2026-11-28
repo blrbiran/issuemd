@@ -124,7 +124,7 @@ test("close refuses to promote criteria cut by a sentence-shaped bold boundary",
   expect(refused.stderr).toContain("重启后必须保留窗口宽度");
   expect(readFileSync(ledger, "utf8")).toBe(before);
 
-  const explicit = await run(["close", ledger, "2", "--criteria", "reviewed complete criteria"]);
+  const explicit = await run(["close", ledger, "2", "--status", "已修", "--criteria", "reviewed complete criteria"]);
   expect(explicit.code).toBe(0);
   expect(readFileSync(ledger, "utf8")).toContain("reviewed complete criteria");
 });

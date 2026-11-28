@@ -662,7 +662,7 @@ describe("#27 W202 only for hashes that would rot", () => {
   test("criteria-column commits and UUIDs are not W202; body hashes still are", async () => {
     const path = await withIssue("**现象**：thread 550e8400-e29b-41d4-a716-446655440000 和 deadbee\n\n**验收判据**：x\n");
     expect((await run(["new", path, "--title", "乙", "--body-file", body("**现象**：a\n\n**验收判据**：y\n")])).code).toBe(0);
-    await run(["close", path, "2", "--criteria", "commit 1a131d6 修复"]);
+    await run(["close", path, "2", "--status", "已修", "--criteria", "commit 1a131d6 修复"]);
     const report = JSON.parse((await run(["check", path, "--json"])).stdout);
     const flagged = report.warnings.filter((w: { code: string }) => w.code === "W202").map((w: { message: string }) => w.message);
     expect(flagged.some((m: string) => m.includes("deadbee"))).toBe(true);
@@ -744,7 +744,7 @@ describe("review: adopt keeps every cell and reads named columns", () => {
 describe("review: write verbs", () => {
   test("reopen of a kept body keeps the criteria the close recorded", async () => {
     const path = await withIssue("**现象**：a\n");
-    await run(["close", path, "1", "--keep-body", "--criteria", "manual X"]);
+    await run(["close", path, "1", "--keep-body", "--status", "已修", "--criteria", "manual X"]);
     expect((await run(["reopen", path, "1"])).code).toBe(0);
     expect(text(path)).toContain("manual X");
   });
@@ -1224,7 +1224,7 @@ describe("probe: write verbs (round nine)", () => {
     expect(refused.stderr).toContain("L");
     expect(text(path)).toBe(before);
 
-    expect((await run(["close", path, "1", "--criteria", "A；B"])).code).toBe(0);
+    expect((await run(["close", path, "1", "--status", "已修", "--criteria", "A；B"])).code).toBe(0);
     expect(await closedCriteria(path)).toBe("A；B");
   });
 
@@ -1843,12 +1843,12 @@ describe("probe11: black-box findings after round eleven", () => {
     const path = file();
     expect((await run(["new", path, "--title", "甲"])).code).toBe(0);
     expect(text(path).endsWith("\n")).toBe(false);
-    const dry = await run(["close", path, "1", "--criteria", "x", "--keep-body", "--dry-run"]);
+    const dry = await run(["close", path, "1", "--status", "已修", "--criteria", "x", "--keep-body", "--dry-run"]);
     expect(dry.stdout).toContain("\\ No newline at end of file");
     const out = `${path}.patched`;
     const patched = spawnSync("patch", ["-s", "-o", out, path], { input: dry.stdout });
     expect(patched.status).toBe(0);
-    await run(["close", path, "1", "--criteria", "x", "--keep-body"]);
+    await run(["close", path, "1", "--status", "已修", "--criteria", "x", "--keep-body"]);
     expect(readFileSync(out, "utf8")).toBe(text(path));
   });
 });

@@ -55,7 +55,7 @@ test.each(["补充判据", "新增判据", "收窄判据", "判定标准", "完�
 
 test("a reviewed override or preserved body can close with an overlooked criteria block", async () => {
   const body = "**验收判据**：Works online.\n\n**补充判据**：Works offline.\n";
-  for (const flags of [["--criteria", "Works online and offline."], ["--no-criteria"]]) {
+  for (const flags of [["--status", "已修", "--criteria", "Works online and offline."], ["--no-criteria"]]) {
     const ledger = await ledgerWithBody(body);
     expect((await run(["close", ledger, "2", ...flags])).code).toBe(0);
     expect(readFileSync(ledger, "utf8")).not.toContain("**补充判据**");

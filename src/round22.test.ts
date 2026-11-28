@@ -202,7 +202,7 @@ describe("write receipts", () => {
     const path = ledgerFrom(fixture, "");
     const body = await run(["body", path, "2", "--append", "--body-file", bigBody(2)]);
     expect(body.stderr).toMatch(/wrote .*#2 body appended/);
-    const closed = await run(["close", path, "2", "--criteria", "ok"]);
+    const closed = await run(["close", path, "2", "--status", "已修", "--criteria", "ok"]);
     expect(closed.stderr).toMatch(/wrote .*#2 closed as 已修/);
     const reopened = await run(["reopen", path, "2"]);
     expect(reopened.stderr).toMatch(/wrote .*#2 reopened as 未决/);
@@ -217,14 +217,14 @@ describe("write receipts", () => {
 describe("write diagnostics", () => {
   test("close --criteria says the pipe was escaped", async () => {
     const path = ledgerFrom(fixture, "");
-    const result = await run(["close", path, "2", "--criteria", "a | b"]);
+    const result = await run(["close", path, "2", "--status", "已修", "--criteria", "a | b"]);
     expect(result.code).toBe(0);
     expect(result.stderr).toContain("W205");
   });
 
   test("a criteria without a pipe stays silent on W205", async () => {
     const path = ledgerFrom(fixture, "");
-    const result = await run(["close", path, "2", "--criteria", "plain"]);
+    const result = await run(["close", path, "2", "--status", "已修", "--criteria", "plain"]);
     expect(result.stderr).not.toContain("W205");
   });
 

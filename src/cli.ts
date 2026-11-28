@@ -49,6 +49,7 @@ import {
   criteriaBoundaryHints,
   isCriteriaLabel,
   extractCriteria,
+  editOpenCriteria,
   bodyLabels,
   unescapeCell,
   formatRow,
@@ -111,6 +112,7 @@ const COMMANDS = {
   status: { usage: "issuemd status  FILE ID NEW_STATUS", options: ["dry-run", "if-unchanged"] },
   rename: { usage: "issuemd rename  FILE ID \"NEW TITLE\" [--allow-duplicate-title]", options: ["allow-duplicate-title", "dry-run", "if-unchanged"] },
   body: { usage: "issuemd body    FILE ID (--body-file PATH|- [--append] | --move-evidence LABEL)", options: ["body-file", "append", "move-evidence", "dry-run", "if-unchanged"] },
+  criteria: { usage: "issuemd criteria FILE ID --criteria TEXT", options: ["criteria", "dry-run", "if-unchanged"] },
   priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run", "if-unchanged"] },
   split: { usage: "issuemd split   FILE ID", options: ["dry-run", "if-unchanged"] },
   prune: { usage: "issuemd prune   FILE ID (--dry-run | --confirm --if-unchanged SNAPSHOT)", options: ["confirm", "dry-run", "if-unchanged"] },
@@ -147,7 +149,9 @@ const OPTION_HELP: Record<string, string> = {
     "                            Pass '-' to read from stdin",
   append: "--append                  body: add text at the end of the existing issue body",
   "move-evidence": "--move-evidence <LABEL>   body: move one visible evidence block into 附录 and link it from the body",
-  criteria: "--criteria <TEXT>         close: criteria column text; on a closed id, correct that cell only",
+  criteria: "--criteria <TEXT>         criteria: replace the open body's acceptance criteria with one Markdown line\n" +
+    "                            close: on an open id, requires --status and removes the body unless --keep-body\n" +
+    "                            close: on a closed id, correct the criteria cell only",
   "criteria-from-body":
     "--criteria-from-body      close: lift the **验收判据** block into the column (the default\n" +
     "                            when the body has one); refuses if it is missing or empty",
@@ -368,6 +372,8 @@ export async function run(argv: string[]): Promise<CliResult> {
       return cmdRename(positionals.slice(1), values);
     case "body":
       return cmdBody(positionals.slice(1), values);
+    case "criteria":
+      return cmdCriteria(positionals.slice(1), values);
     case "priority":
       return cmdPriority(positionals.slice(1), values);
     case "split":
@@ -1298,8 +1304,8 @@ function readBodyFile(spec: string, verb = "new"): { lines: string[] } | CliResu
     if (lines.length > 0 && /^ {0,3}#{1,6}[ \t]+Issue\s+\S+?\s*:/.test(lines[0]!)) {
       return err(
         `issuemd ${verb}: --body-file starts with an issue heading ('${lines[0]!.trim()}'); ` +
-          "the body is the text below the heading, which issuemd writes itself. Drop that first line " +
-          "(show --json body.text includes it)\n",
+          "the body is the text below the heading, which issuemd writes itself. " +
+          "Use show --body-only or extract body.content from show --json (body.text includes the heading)\n",
         2,
       );
     }
@@ -1634,6 +1640,10 @@ function cmdClose(rest: string[], v: Values): CliResult {
       receipt: `#${idText} criteria`,
     });
   }
+  if (v.criteria != null && v.status == null) {
+    return err(`issuemd close: #${idText} is open. To edit its acceptance criteria, use 'issuemd criteria FILE ID --criteria TEXT'. ` +
+      "To close it with supplied criteria, pass --status S explicitly and use --keep-body if you want to retain the body.\n", 2);
+  }
   const status = v.status ?? "已修";
   if (statusCategory(status) !== "closed") {
     return err(`issuemd close: '${status}' is not a closed status\n`, 2);
@@ -1679,7 +1689,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
     const details = [...new Set(criteriaRisks.map(({ code, message }) => `${code} ${message}`))].join("; ");
     return err(
       `issuemd close: #${idText} has ambiguous criteria boundaries (${details}); ` +
-        "review and merge with --criteria TEXT, use --no-criteria intentionally, or preserve the body with --keep-body\n",
+        "review and merge with --status S --criteria TEXT, use --no-criteria intentionally, or preserve the body with --keep-body\n",
       2,
     );
   }
@@ -1697,7 +1707,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
       return err(
         `issuemd close: #${idText} has no non-empty **验收判据** in its body; ` +
           (hintText || "a label line inside a code fence is an example and does not count; ") +
-          "pass --criteria TEXT or --no-criteria\n",
+          "pass --status S --criteria TEXT or --no-criteria\n",
         2,
       );
     }
@@ -1709,14 +1719,14 @@ function cmdClose(rest: string[], v: Values): CliResult {
   } else if (v["keep-body"]) {
     return err(
       `issuemd close: #${idText} has no body to keep and no criteria to record; ` +
-        "pass --criteria TEXT, or --no-criteria to close it without criteria on purpose\n",
+        "pass --status S --criteria TEXT, or --no-criteria to close it without criteria on purpose\n",
       2,
     );
   } else {
     return err(
       `issuemd close: #${idText} has no criteria to record (no --criteria and no non-empty **验收判据** in the body). ` +
         (labelHint ? `${labelHint.message}. ` : "") +
-        "Pass --criteria TEXT to record a conclusion, --no-criteria to leave the cell empty and delete the body, or --keep-body to retain evidence in 附录 (the body stays in the file)\n",
+        "Pass --status S --criteria TEXT to record a conclusion, --no-criteria to leave the cell empty and delete the body, or --keep-body to retain evidence in 附录 (the body stays in the file)\n",
       2,
     );
   }
@@ -1732,7 +1742,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
   if (unescapeCell(escapeCell(criteria)) !== criteria) {
     return err(
       `issuemd close: the criteria contain '\\|' (a backslash directly before a pipe), which a table cell cannot store without changing it; ` +
-        "pass --criteria with the text as it should read in the table, or close with --keep-body --no-criteria to keep the body verbatim in 附录\n",
+        "pass --status S --criteria with the text as it should read in the table, or close with --keep-body --no-criteria to keep the body verbatim in 附录\n",
       2,
     );
   }
@@ -1818,8 +1828,12 @@ function cmdClose(rest: string[], v: Values): CliResult {
     if (invalid) return err(`issuemd close: refusing to write v3 archive for #${idText}: ${invalid}\n`, 3);
   }
 
+  const overrideNote = v.criteria != null && fromBody != null && criteria !== fromBody
+    ? `#${idText} closing criteria override: ${JSON.stringify(fromBody)} → ${JSON.stringify(criteria)}\n`
+    : undefined;
   let overLimit: Diagnostic | undefined;
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
+    report: overrideNote,
     observeCheck(report) { overLimit = report.warnings.find(({ code, id }) => code === "W201" && id === idText); },
     allowLost: (diagnostic) => diagnostic.code === "E102" && diagnostic.id === idText,
     preserveTrailingBlanks,
@@ -2302,6 +2316,41 @@ function cmdBody(rest: string[], v: Values): CliResult {
     : "";
   const notes = `${aliasHint}${overLimitNote}`;
   return notes ? { ...result, stderr: result.stderr + notes } : result;
+}
+
+function cmdCriteria(rest: string[], v: Values): CliResult {
+  const [file, idText] = rest;
+  const value = v.criteria;
+  if (file == null || idText == null || rest.length !== 2 || value == null) {
+    return err(`usage: ${COMMANDS.criteria.usage}\n`, 2);
+  }
+  if (value.trim() === "" || /[\r\n]|<!--|-->/.test(value)) {
+    return err("issuemd criteria: --criteria must be one nonempty Markdown line without HTML comment delimiters\n", 2);
+  }
+  const opened = openLedger(file, v["if-unchanged"]);
+  if ("code" in opened) return opened;
+  const { loaded, ledger, errors } = opened;
+  const found = findRow(ledger, idText);
+  if (!found) return missingIssue("criteria", idText);
+  const refused = perIdRefusal("criteria", idText, found);
+  if (refused) return refused;
+  if (found.table === "closed") {
+    return err(`issuemd criteria: #${idText} is closed; use 'issuemd close FILE ID --criteria TEXT' to correct its table cell\n`, 2);
+  }
+  const bodies = bodyBlocks(ledger).filter(({ id }) => spanText(id) === idText);
+  const owners = [...ledger.rows.open, ...ledger.rows.closed].filter(({ ids }) => ids.some((span) =>
+    span.suffix === found.span.suffix && span.start <= found.span.start && found.span.start <= span.end));
+  if (bodies.length !== 1 || owners.length !== 1 || unreadableHolding(ledger, idText)) {
+    return err(`issuemd criteria: #${idText} needs one unambiguous open row and its own body\n`, 2);
+  }
+  const block = bodies[0]!;
+  const edit = editOpenCriteria(loaded.lines.slice(block.line - 1, block.end), value, block.line - 1);
+  if ("error" in edit) return err(`issuemd criteria: #${idText} ${edit.error}\n`, 2);
+  const lines = [...loaded.lines.slice(0, block.line - 1), ...edit.body, ...loaded.lines.slice(block.end)];
+  return commit(file, loaded, errors, lines, !!v["dry-run"], {
+    receipt: `#${idText} acceptance criteria updated`,
+    preserveTrailingBlanks: true,
+  });
 }
 
 /** Change one row's priority; the only row field that had no verb (dogfood #30). */

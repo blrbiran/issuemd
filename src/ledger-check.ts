@@ -209,7 +209,7 @@ function checkBodies(ledger: Ledger, openEntries: RowId[], ids: Record<TableKind
     for (const hint of criteriaBoundaryHints(bodyLines, line - 1, fenced, visibility, sourceBlocks)) {
       warnings.push({
         code: "W268", line: hint.line, id,
-        message: `L${hint.line}: ${hint.detail}. Mark review notes with **复核记录**： or use reviewed --criteria or --keep-body`,
+        message: `L${hint.line}: ${hint.detail}. Mark review notes with **复核记录**： or close with --status S and reviewed --criteria TEXT, or use --keep-body`,
       });
     }
     checkBodySize(lines, line, end, limits, id, warnings);
@@ -596,7 +596,7 @@ export function checkParsedLedger(parsed: Ledger, file: string, options: Options
     checkGuide(ledger);
     for (const { id, line, start } of missingProseReferences(parsed)) {
       warnings.push({ code: "W271", id, line, column: Array.from(parsed.lines[line - 1]!.slice(0, start)).length + 1,
-        message: `Prose references untracked #${id}. This ID is reserved against reuse`,
+        message: `Prose references #${id}, which is not tracked in this ledger. This ID is reserved against reuse here`,
       });
     }
     const highWater = highWaterRecords(ledger);

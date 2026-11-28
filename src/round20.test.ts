@@ -206,7 +206,7 @@ test("close permits a boundary marker inside a list-nested fence", async () => {
   const source = canonical.replace("**根因**：宽度写死在 CSS 变量。", `**根因**：宽度写死在 CSS 变量。\n\n${body}`);
   const file = fixture("fenced-archive-marker-in-list.md", source);
 
-  expect((await run(["close", file, "2", "--keep-body", "--criteria", "recorded"])).code).toBe(0);
+  expect((await run(["close", file, "2", "--status", "已修", "--keep-body", "--criteria", "recorded"])).code).toBe(0);
   expect((await run(["reopen", file, "2"])).code).toBe(0);
   const shown = await run(["show", file, "2", "--body-only"]);
   expect(shown.stdout).toContain(marker);

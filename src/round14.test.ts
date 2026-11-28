@@ -69,7 +69,7 @@ describe("close: a criteria a table cell cannot store is refused, not changed", 
 
   test("--criteria input keeps the title convention: \\| means a literal pipe", async () => {
     const path = await withIssue("**验收判据**：x\n");
-    expect((await run(["close", path, "1", "--criteria", "echo a \\| b"])).code).toBe(0);
+    expect((await run(["close", path, "1", "--status", "已修", "--criteria", "echo a \\| b"])).code).toBe(0);
     // The cell stores the escaped form; reading it back yields the logical text.
     expect(text(path)).toContain("| 1 | 已修 | P2 | 甲 | echo a \\| b |");
     const view = JSON.parse((await run(["show", path, "1", "--json"])).stdout);
@@ -341,7 +341,7 @@ describe("review 14: follow-ups found by the independent review", () => {
 
   test("a multi-line --criteria is folded instead of misdiagnosed", async () => {
     const path = await withIssue("**验收判据**：x\n");
-    const result = await run(["close", path, "1", "--criteria", "甲\n乙"]);
+    const result = await run(["close", path, "1", "--status", "已修", "--criteria", "甲\n乙"]);
     expect(result.code).toBe(0);
     const view = JSON.parse((await run(["show", path, "1", "--json"])).stdout);
     expect(view.criteria).toBe("甲 乙");
