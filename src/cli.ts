@@ -47,6 +47,8 @@ import {
   criteriaAliasRepair,
   criteriaOccurrences,
   criteriaBoundaryHints,
+  labelBlock,
+  blockHasListItems,
   isCriteriaLabel,
   extractCriteria,
   editOpenCriteria,
@@ -102,7 +104,7 @@ const COMMANDS = {
   check: { usage: "issuemd check   FILE [--json] [--strict] [--verify-commits]", options: ["json", "strict", "verify-commits"] },
   list: { usage: "issuemd list    FILE [--status S] [--priority P] [--closed] [--expand] [--json [--with-body]]", options: ["status", "priority", "closed", "expand", "json", "with-body"] },
   show: { usage: "issuemd show    FILE ID [--body-only | [--json] [--label NAME]]", options: ["json", "label", "body-only"] },
-  counts: { usage: "issuemd counts  FILE [--json]", options: ["json"] },
+  counts: { usage: "issuemd counts  FILE [--json | --markdown]", options: ["json", "markdown"] },
   find: { usage: "issuemd find    FILE PATTERN [--json]", options: ["json"] },
   limits: { usage: "issuemd limits  FILE [--body-bytes N] [--body-lines N] [--clear]", options: ["body-bytes", "body-lines", "clear", "dry-run", "if-unchanged"] },
   read: { usage: "issuemd read    FILE <H2 heading>", options: [] },
@@ -116,7 +118,7 @@ const COMMANDS = {
   priority: { usage: "issuemd priority FILE ID P0|P1|P2|P3|\"\"", options: ["dry-run", "if-unchanged"] },
   split: { usage: "issuemd split   FILE ID", options: ["dry-run", "if-unchanged"] },
   prune: { usage: "issuemd prune   FILE ID (--dry-run | --confirm --if-unchanged SNAPSHOT)", options: ["confirm", "dry-run", "if-unchanged"] },
-  sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress] | --criteria-labels | --fix-hashes [--require-complete]]", options: ["guide", "fix-tables", "titles", "criteria-labels", "fix-hashes", "require-complete", "prefer", "move-progress", "drop-progress", "dry-run", "if-unchanged"] },
+  sync: { usage: "issuemd sync    FILE [--guide | --fix-tables | --titles [--prefer body|table] [--move-progress | --drop-progress] | --criteria-labels [--force] | --fix-hashes [--require-complete]]", options: ["guide", "fix-tables", "titles", "criteria-labels", "force", "fix-hashes", "require-complete", "prefer", "move-progress", "drop-progress", "dry-run", "if-unchanged"] },
   adopt: { usage: "issuemd adopt   FILE [--dry-run] [--report PATH]", options: ["dry-run", "report", "if-unchanged"] },
 } as const satisfies Record<string, { usage: string; options: readonly string[] }>;
 type Command = keyof typeof COMMANDS;
@@ -124,8 +126,8 @@ type Command = keyof typeof COMMANDS;
 /** Option help, one entry per flag; continuation lines start with spaces. */
 const OPTION_HELP: Record<string, string> = {
   json: "--json                    machine-readable JSON output (read commands)",
-  version: "--version                 print the installed package version",
-  strict: "--strict                  check: fail on warnings (W250 is informational and never fails)",
+  version: "--version                 print the installed package version and the running build directory",
+  strict: "--strict                  check: fail on warnings except W201, W202, W250 and W264",
   "verify-commits": "--verify-commits          check: verify commit references in the ledger directory (W240)",
   status:
     "--status <S>              list: filter; new/reopen: open status (未决); close: closed status (已修)",
@@ -135,6 +137,7 @@ const OPTION_HELP: Record<string, string> = {
   "body-lines": "--body-lines <N>          limits: W201 line limit for one issue body (default 300)",
   clear: "--clear                   limits: remove the marker and use the defaults",
   closed: "--closed                  list: show the closed table instead of the index",
+  markdown: "--markdown                counts: print one Markdown bullet with the same counts",
   expand: "--expand                  list: one entry per id (a `20, 24` or `7–20` row becomes several)",
   "with-body":
     "--with-body               list --json: add each issue's body labels and 验收判据 from one parse\n" +
@@ -161,6 +164,7 @@ const OPTION_HELP: Record<string, string> = {
   "fix-tables": "--fix-tables              sync: add missing table separator rows",
   titles: "--titles                  sync: align body headings with index summaries",
   "criteria-labels": "--criteria-labels         sync: rename one unambiguous nearby criteria label per issue",
+  force: "--force                   sync --criteria-labels: rename even when the block has no list items",
   "fix-hashes": "--fix-hashes              sync: wrap W202 literal hashes in safe body/appendix prose spans",
   "require-complete": "--require-complete       sync --fix-hashes: refuse if any W202 warning would remain",
   confirm: "--confirm                 prune: delete the reviewed archive (requires --if-unchanged snapshot)",
@@ -175,9 +179,9 @@ const OPTION_HELP: Record<string, string> = {
 };
 
 const READ_COMMANDS: Command[] = ["check", "list", "show", "find", "counts", "read"];
+const BUILD_DIR = dirname(fileURLToPath(import.meta.url));
 const VERSION = (() => {
-  const directory = dirname(fileURLToPath(import.meta.url));
-  for (const path of [resolve(directory, "../package.json"), resolve(directory, "../../package.json")]) {
+  for (const path of [resolve(BUILD_DIR, "../package.json"), resolve(BUILD_DIR, "../../package.json")]) {
     try {
       const pkg = JSON.parse(readFileSync(path, "utf8")) as { name?: string; version?: string };
       if (pkg.name === "@blrbiran/issuemd" && pkg.version) return pkg.version;
@@ -258,6 +262,7 @@ const OPTIONS = {
   version: { type: "boolean" },
   strict: { type: "boolean" },
   "verify-commits": { type: "boolean" },
+  markdown: { type: "boolean" },
   // limits
   "body-bytes": { type: "string" },
   "body-lines": { type: "string" },
@@ -290,6 +295,7 @@ const OPTIONS = {
   "fix-tables": { type: "boolean" },
   titles: { type: "boolean" },
   "criteria-labels": { type: "boolean" },
+  force: { type: "boolean" },
   "fix-hashes": { type: "boolean" },
   "require-complete": { type: "boolean" },
   prefer: { type: "string" },
@@ -322,7 +328,7 @@ export async function run(argv: string[]): Promise<CliResult> {
   const { values, positionals } = parsed;
   const head = positionals[0];
   if (head == null) {
-    if (values.version) return ok(`${VERSION}\n`);
+    if (values.version) return ok(`${VERSION} (build: ${BUILD_DIR})\n`);
     return values.help ? ok(HELP) : err("issuemd: missing command. Try 'issuemd list FILE' or 'issuemd --help'\n", 2);
   }
   if (Object.hasOwn(COMMANDS, head)) {
@@ -658,6 +664,7 @@ function citedRowsField(ledger: ReturnType<typeof parseLedger>) {
 function cmdCounts(rest: string[], v: Values): CliResult {
   const file = rest[0];
   if (file == null || rest.length !== 1) return err(`usage: ${COMMANDS.counts.usage}\n`, 2);
+  if (v.markdown && v.json) return err("issuemd counts: choose --markdown or --json\n", 2);
   const loaded = loadFile(file);
   if ("code" in loaded) return loaded;
   const ledger = parseLedger(loaded.src);
@@ -667,7 +674,8 @@ function cmdCounts(rest: string[], v: Values): CliResult {
   const stderr = structureNote(report.errors, new Set(ledger.unreadable.map((row) => row.line))) +
     unreadableNote(ledger);
   if (v.json) return { code: 0, stdout: JSON.stringify({ file, snapshot: snapshotOf(loaded.src), counts: report.counts, ...citedRowsField(ledger), ...diagnosticsField(report.errors, report.warnings) }, null, 2) + "\n", stderr };
-  return { code: 0, stdout: summaryLine(report.counts, openStatusCounts(ledger.rows.open)) + "\n", stderr };
+  const summary = summaryLine(report.counts, openStatusCounts(ledger.rows.open));
+  return { code: 0, stdout: (v.markdown ? `- ${summary.replace(/ {3}/, " · ")}` : summary) + "\n", stderr };
 }
 
 function cmdShow(rest: string[], v: Values): CliResult {
@@ -1614,6 +1622,20 @@ function criteriaPipeNote(criteria: string, raw: string): string {
   return pipe + rewritten;
 }
 
+/** Keep a one-line receipt short: a 900-character old criterion used to push `wrote` off screen. */
+function shortenNote(value: string, byteLimit = 120): string {
+  if (Buffer.byteLength(value) <= byteLimit) return JSON.stringify(value);
+  let bytes = 0;
+  let kept = "";
+  for (const char of value) {
+    const width = Buffer.byteLength(char);
+    if (bytes + width > byteLimit - 3) break; // leave room for the ellipsis
+    bytes += width;
+    kept += char;
+  }
+  return `${JSON.stringify(kept + "…")} (${Array.from(value).length} chars)`;
+}
+
 function cmdClose(rest: string[], v: Values): CliResult {
   const file = rest[0];
   const idText = rest[1];
@@ -1652,7 +1674,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
     const lines = [...loaded.lines];
     lines[found.row.line - 1] = replaceCell(lines[found.row.line - 1]!, 4, criteria);
     return commit(file, loaded, errors, lines, !!v["dry-run"], {
-      report: `updated #${idText} criteria: ${JSON.stringify(found.row.criteria)} → ${JSON.stringify(criteria)}\n` + criteriaPipeNote(criteria, v.criteria),
+      report: `updated #${idText} criteria: ${shortenNote(found.row.criteria ?? "")} → ${shortenNote(criteria)}\n` + criteriaPipeNote(criteria, v.criteria),
       receipt: `#${idText} criteria`,
     });
   }
@@ -1742,7 +1764,8 @@ function cmdClose(rest: string[], v: Values): CliResult {
     return err(
       `issuemd close: #${idText} has no criteria to record (no --criteria and no non-empty **验收判据** in the body). ` +
         (labelHint ? `${labelHint.message}. ` : "") +
-        "Pass --status S --criteria TEXT to record a conclusion, --no-criteria to leave the cell empty and delete the body, or --keep-body to retain evidence in 附录 (the body stays in the file)\n",
+        "Pass --status S --criteria TEXT to record a conclusion, --no-criteria to leave the cell empty and delete the body (the file shrinks), " +
+        "or --keep-body to retain evidence in 附录 (the file grows; prune later when reopen is no longer needed)\n",
       2,
     );
   }
@@ -1845,7 +1868,7 @@ function cmdClose(rest: string[], v: Values): CliResult {
   }
 
   const overrideNote = v.criteria != null && fromBody != null && criteria !== fromBody
-    ? `#${idText} closing criteria override: ${JSON.stringify(fromBody)} → ${JSON.stringify(criteria)}\n`
+    ? `#${idText} closing criteria override: ${shortenNote(fromBody)} → ${shortenNote(criteria)}\n`
     : undefined;
   let overLimit: Diagnostic | undefined;
   const result = commit(file, loaded, errors, lines, !!v["dry-run"], {
@@ -2892,6 +2915,13 @@ function syncCriteriaLabels(
       continue;
     }
     const candidate = repair.eligible;
+    // Renaming prose that is not criteria-shaped would erase W261 and
+    // promote a status sentence into the acceptance criteria (dogfood #104).
+    const aliasBlock = labelBlock(bodyLines, candidate.line - body.line + 1, bodyLines.length, candidate.label);
+    if (!blockHasListItems(aliasBlock) && !v.force) {
+      skipped.push(`#${id}: block has no list items; pass --force to rename it anyway`);
+      continue;
+    }
     const source = loaded.lines[candidate.line - 1]!;
     const parsed = /^([ \t]{0,3})\*\*([^*]+)\*\*(.*)$/.exec(source);
     if (!parsed) continue;

@@ -549,6 +549,8 @@ test("unknown commands keep failure status when help is requested", async () => 
 test("version flag reports the package version and appears in help", async () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   const version = await run(["--version"]);
-  expect(version).toEqual({ code: 0, stdout: `${pkg.version}\n`, stderr: "" });
+  expect(version.code).toBe(0);
+  expect(version.stderr).toBe("");
+  expect(version.stdout).toMatch(new RegExp(`^${pkg.version.replace(/\./g, "\\.")} \\(build: /.*\\)\\n$`));
   expect((await run(["--help"])).stdout).toContain("issuemd --version");
 });

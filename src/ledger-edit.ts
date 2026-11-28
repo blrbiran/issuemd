@@ -582,6 +582,18 @@ export function labelBlocksIn(
   return blocks;
 }
 
+/** Whether a label block contains at least one visible list item (criteria-shaped content). */
+export function blockHasListItems(block: LabelBlock | undefined): boolean {
+  if (!block) return false;
+  const fenced = fencedLines(block.lines, true);
+  const visibility = bodyVisibility(block.lines, fenced);
+  for (let index = 1; index < block.lines.length; index++) {
+    if (fenced[index] || visibility.hidden[index]) continue;
+    if (LIST_ITEM.test(visibility.text[index]!)) return true;
+  }
+  return false;
+}
+
 /** The `**验收判据**` block of a body as one line; undefined when absent or empty. */
 /** `；`-join, but a part that already ends in a clause mark keeps its own. */
 export function joinClauses(parts: string[]): string {
